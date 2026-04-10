@@ -1,0 +1,17 @@
+[project]
+name = "fastmolwidget"
+version = "0.1.0"
+description = "A PyQt widget to display crystal structures"
+readme = "README.md"
+authors = [
+    { name = "Daniel Kratzert", email = "dkratzert@gmx.de" }
+]
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+fastmolwidget = "fastmolwidget:main"
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12.0"]
+build-backend = "uv_build"
