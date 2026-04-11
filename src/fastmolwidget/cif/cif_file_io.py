@@ -21,7 +21,6 @@ if hasattr(gemmi, 'set_leak_warnings'):
     gemmi.set_leak_warnings(False)
 
 from gemmi.cif import as_string, Document, Loop, quote
-from packaging.version import Version
 
 
 class GemmiError(Exception):
