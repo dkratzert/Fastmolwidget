@@ -40,6 +40,15 @@ def test_molecule_widget_creation():
     assert widget.bond_drawer == widget._draw_bond_rounded
 
 
+def test_adp_intersection_line_width_scales_with_zoom():
+    widget = MoleculeWidget()
+    widget._factor = 0.2
+    thin = widget._adp_intersection_line_width()
+    widget._factor = 1.0
+    thick = widget._adp_intersection_line_width()
+    assert thick > thin
+
+
 def test_molecule_widget_with_cif():
     cif = CifReader(data / '1979688_small.cif')
     adp_dict = {dp.label: (dp.U11, dp.U22, dp.U33, dp.U23, dp.U13, dp.U12) for dp in cif.displacement_parameters()}

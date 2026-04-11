@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastmolwidget.atoms import get_radius_from_element, element2color
+from fastmolwidget.sdm import Atomtuple
 
 """
 A versatile 2D/3D molecule drawing widget for PyQt/PySide.
@@ -179,6 +180,10 @@ class MoleculeWidget(QtWidgets.QWidget):
     def minimumSizeHint(self) -> QtCore.QSize:
         """Reasonable minimum size for molecule rendering."""
         return QtCore.QSize(320, 220)
+
+    def _adp_intersection_line_width(self) -> float:
+        """Return a zoom-aware stroke width for ADP intersection lines."""
+        return max(1.0, min(6.0, self._factor * 3.0))
 
     def set_bond_width(self, width: int):
         """Set the width of the bonds."""
@@ -853,6 +858,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         # Use cosmetic pen so line width is independent of the QTransform scale
         pen = self._painter.pen()
         pen.setCosmetic(True)
+        pen.setWidthF(self._adp_intersection_line_width())
         self._painter.setPen(pen)
         self._painter.setBrush(Qt.BrushStyle.NoBrush)
 
@@ -961,7 +967,9 @@ class MoleculeWidget(QtWidgets.QWidget):
                     self._painter.setPen(pen)
                     self._painter.drawEllipse(QRectF(-r1, -r2, 2 * r1, 2 * r2))
 
-                    cross_pen = QPen(QColor(0, 0, 0, 120), 1, Qt.PenStyle.SolidLine)
+                    cross_pen = QPen(QColor(0, 0, 0, 120), self._adp_intersection_line_width(),
+                                     Qt.PenStyle.SolidLine)
+                    cross_pen.setCosmetic(True)
                     self._painter.setPen(cross_pen)
                     self._draw_principal_arcs(atom, r1, r2, angle)
 
