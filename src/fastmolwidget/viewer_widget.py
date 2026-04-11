@@ -69,7 +69,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
 
         # apply initial defaults to the renderer
         self._render_widget.set_bond_width(3)
-        self._render_widget.labels = False
+        self._render_widget.show_labels(False)
         self._render_widget.show_round_bonds(True)
 
         # ── layout ───────────────────────────────────────────────────────────
