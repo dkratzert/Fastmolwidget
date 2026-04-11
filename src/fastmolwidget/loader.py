@@ -20,7 +20,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Generator
 
-
 from shelxfile import Shelxfile
 
 from fastmolwidget.cif.cif_file_io import CifReader, adp
@@ -39,7 +38,6 @@ class MoleculeLoader:
     :param widget: The molecule widget to populate.
     """
 
-    # Maps file suffixes (lower-cased) to the internal loader method names.
     _FORMAT_MAP: dict[str, str] = {
         '.cif': '_load_cif',
         '.res': '_load_shelx',
@@ -84,12 +82,11 @@ class MoleculeLoader:
     # ------------------------------------------------------------------
 
     def _load_cif(self, path: Path, *, keep_view: bool = False) -> None:
-        """Load a CIF file using the existing :class:`CifReader`."""
+        """Load a CIF file using :class:`CifReader`."""
         cif = CifReader(path)
-        atoms = list(cif.atoms_orth)
-        cell = cif.cell[:6]
-        adps = self._load_adps_from_cif(cif.displacement_parameters())
-        self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
+        self._widget.open_molecule(atoms=(list(cif.atoms_orth)),
+                                   cell=cif.cell[:6],
+                                   adps=(self._load_adps_from_cif(cif.displacement_parameters())),
                                    keep_view=keep_view)
 
     @staticmethod

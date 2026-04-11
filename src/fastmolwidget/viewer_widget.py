@@ -8,10 +8,6 @@ Usage::
     viewer.load_file("structure.cif")
     viewer.show()
 
-Or pass the file name directly to the constructor::
-
-    viewer = MoleculeViewerWidget("structure.cif")
-    viewer.show()
 """
 
 from __future__ import annotations
@@ -29,8 +25,8 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
     with a control bar (ADP toggle, label toggle, bond style, hydrogen
     visibility, and bond-width adjustment).
 
-    The interface is intentionally minimal: provide a *filename* to display a
-    structure immediately, or call :meth:`load_file` at any later time.
+    The interface is intentionally minimal: call :meth:`load_file` to display a
+    structure.
 
     :param parent: Optional parent widget.
     """
