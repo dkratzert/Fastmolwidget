@@ -33,15 +33,13 @@ import sys
 from dataclasses import dataclass
 from math import sqrt, cos, sin, dist, radians, atan2, degrees, pi
 from pathlib import Path
-from typing import NoReturn, Callable
+from typing import NoReturn, Callable, Generator
 
 import numpy as np
 from qtpy import QtWidgets, QtCore, QtGui
 from qtpy.QtCore import Qt, QRectF
 from qtpy.QtGui import QPainter, QPen, QBrush, QColor, QMouseEvent, QPalette, QImage, QResizeEvent, QWheelEvent, \
     QRadialGradient, QLinearGradient, QTransform
-
-
 
 
 def calc_volume(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> float:
@@ -232,7 +230,8 @@ class MoleculeWidget(QtWidgets.QWidget):
             self.bond_drawer = self._draw_bond_rounded
         self.update()
 
-    def open_molecule(self, atoms: list[Atomtuple],
+    def open_molecule(self,
+                      atoms: list[Atomtuple],
                       cell: tuple[float, float, float, float, float, float] | None = None,
                       adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
                       keep_view: bool = False) -> None:
@@ -241,7 +240,8 @@ class MoleculeWidget(QtWidgets.QWidget):
         """
         self._load_molecule(atoms, cell, adps, keep_view=keep_view)
 
-    def grow_molecule(self, atoms: list[Atomtuple],
+    def grow_molecule(self,
+                      atoms: list[Atomtuple],
                       cell: tuple[float, float, float, float, float, float] | None = None,
                       adps: dict[str, tuple[float, float, float, float, float, float]] | None = None) -> None:
         """Updates the molecule while preserving the current view (zoom, pan, rotation)."""
@@ -330,6 +330,13 @@ class MoleculeWidget(QtWidgets.QWidget):
             self.atoms_size = self._factor * 70
 
         self.update()
+
+    def load_adps_from_cif(self, adps: Generator[adp, Any, None]):
+        adp_dict = {}
+        for dp in adps:
+            adp_dict[dp.label] = (to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+                                  to_float(dp.U23), to_float(dp.U13), to_float(dp.U12))
+        return adp_dict
 
     def calc_amatrix(self):
         """Compute the orthogonalisation matrix and reciprocal-lattice lengths."""
@@ -1118,17 +1125,13 @@ class Atom:
         return str((self.name, self.type_, self.coordinate))
 
 
-def display(atoms: list[Atomtuple],
-            cell: tuple[float, float, float, float, float, float] | None = None,
-            adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
-            grow_callback: Callable | None = None) -> NoReturn:
+def display(cif: CifReader, grow_callback: Callable | None = None) -> NoReturn:
     """Launch a standalone :class:`MoleculeWidget` viewer window for testing."""
     import time
     app = QtWidgets.QApplication(sys.argv)
     window = QtWidgets.QMainWindow()
-    render_widget = MoleculeWidget(None)
 
-    t1 = time.perf_counter()
+    render_widget = MoleculeWidget(None)
 
     adp_checkbox = QtWidgets.QCheckBox("Show ADP")
     label_checkbox = QtWidgets.QCheckBox("Show Labels")
@@ -1152,10 +1155,11 @@ def display(atoms: list[Atomtuple],
     bond_width_spinbox.valueChanged.connect(lambda x: render_widget.set_bond_width(x))
 
     render_widget.set_bond_width(3)
-    render_widget.open_molecule(atoms=atoms, cell=cell, adps=adps)
     render_widget.labels = False
     render_widget.show_round_bonds(True)
-    print(f'Time to display molecule: {time.perf_counter() - t1:5.4} s')
+
+    adps = render_widget.load_adps_from_cif(cif.displacement_parameters())
+    render_widget.open_molecule(atoms=list(cif.atoms_orth), cell=cif.cell[:6], adps=adps)
 
     central_widget = QtWidgets.QWidget()
     window.setCentralWidget(central_widget)
@@ -1176,9 +1180,9 @@ def display(atoms: list[Atomtuple],
         def handle_grow(checked: bool):
             if checked:
                 grown_atoms = grow_callback()
-                render_widget.grow_molecule(atoms=grown_atoms, cell=cell, adps=adps)
+                render_widget.grow_molecule(atoms=grown_atoms, cell=cif.cell[:6], adps=adps)
             else:
-                render_widget.grow_molecule(atoms=atoms, cell=cell, adps=adps)
+                render_widget.grow_molecule(atoms=list(cif.atoms_orth), cell=cif.cell[:6], adps=adps)
 
         grow_checkbox.toggled.connect(handle_grow)
         hl.addWidget(grow_checkbox)
@@ -1206,12 +1210,6 @@ if __name__ == "__main__":
     # cif = CifContainer(Path('test-data/4060314.cif'))
     cif.load_this_block(len(cif.doc) - 1)
 
-    # Build generic ADP dictionary
-    adp_dict = {}
-    for dp in cif.displacement_parameters():
-        adp_dict[dp.label] = (to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
-                              to_float(dp.U23), to_float(dp.U13), to_float(dp.U12))
-
 
     def build_grown_structure() -> list[Atomtuple]:
         # optional callback for symmetry expansion
@@ -1221,7 +1219,4 @@ if __name__ == "__main__":
         return sdm.packer(sdm, needsymm)
 
 
-    display(atoms=list(cif.atoms_orth),
-            cell=cif.cell[:6],
-            adps=adp_dict,
-            grow_callback=build_grown_structure)
+    display(cif, grow_callback=build_grown_structure)

@@ -11,6 +11,7 @@ from collections import namedtuple
 from collections.abc import Generator
 from contextlib import suppress
 from pathlib import Path
+from typing import Any, Generator
 
 import gemmi
 
@@ -21,6 +22,8 @@ if hasattr(gemmi, 'set_leak_warnings'):
     gemmi.set_leak_warnings(False)
 
 from gemmi.cif import as_string, Document, Loop, quote
+
+adp = namedtuple('adp', ('label', 'U11', 'U22', 'U33', 'U23', 'U13', 'U12'))
 
 
 class GemmiError(Exception):
@@ -571,7 +574,7 @@ class CifReader:
             yield atom(label=at.label, type=at.type_symbol, x=x, y=y, z=z,
                        part=at.disorder_group, occ=at.occ, u_eq=at.u_iso)
 
-    def displacement_parameters(self):
+    def displacement_parameters(self) -> Generator[adp, Any, None]:
         """
         Yields the anisotropic displacement parameters.
         """
@@ -582,7 +585,6 @@ class CifReader:
         u23 = self.block.find_loop('_atom_site_aniso_U_23')
         u13 = self.block.find_loop('_atom_site_aniso_U_13')
         u12 = self.block.find_loop('_atom_site_aniso_U_12')
-        adp = namedtuple('adp', ('label', 'U11', 'U22', 'U33', 'U23', 'U13', 'U12'))
         for label, u11, u22, u33, u23, u13, u12 in zip(labels, u11, u22, u33, u23, u13, u12, strict=True):
             yield adp(label=label, U11=u11, U22=u22, U33=u33, U12=u12, U13=u13, U23=u23)
 
