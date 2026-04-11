@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+
 from shelxfile import Shelxfile
 
 from fastmolwidget.cif.cif_file_io import CifReader
