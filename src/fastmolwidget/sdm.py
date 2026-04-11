@@ -22,11 +22,11 @@ try:
 except ImportError:
     HAS_CPP = False
 
-from finalcif.cif.atoms import get_radius_from_element
-from finalcif.tools.dsrmath import Array, SymmetryElement, Matrix, frac_to_cart
+from fastmolwidget.atoms import get_radius_from_element
+from fastmolwidget.dsrmath import Array, SymmetryElement, Matrix, frac_to_cart
 
 if TYPE_CHECKING:
-    from finalcif.cif.cif_file_io import CifContainer
+    from cif.cif_file_io import CifReader
 
 DEBUG = False
 Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix'), defaults=(None,))
@@ -416,7 +416,7 @@ class SDM:
 if __name__ == "__main__":
     from pathlib import Path
     from molecule2D import display
-    from finalcif.cif.cif_file_io import CifContainer
+    from cif.cif_file_io import CifReader
 
 
     def grow_structure(cif: CifContainer) -> list[Atomtuple]:
@@ -427,7 +427,7 @@ if __name__ == "__main__":
         return atoms
 
 
-    cif = CifContainer(Path('test-data/4060314.cif'))
+    cif = CifReader(Path('tests/test-data/4060314.cif'))
     # cif = CifContainer(Path(r'D:\_DEV\GitHub\FinalCif\test-data\p31c.cif'))
     # cif = CifContainer(r"D:\frames\Workordner\huge_structure\p-1-finalcif.cif")
     atoms = grow_structure(cif)

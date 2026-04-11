@@ -1,4 +1,6 @@
-A PyQt widget to display crystal structures
-###########################################
+# Fastmolwidget
+
+**A PyQt widget to display crystal structures**
+
 
 This is higly unfinished.

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from fastmolwidget.atoms import get_radius_from_element, element2color
+from fastmolwidget.cif.cif_file_io import CifReader
+
 """
 A versatile 2D/3D molecule drawing widget for PyQt/PySide.
 Renders molecules as ORTEP-style thermal ellipsoid plots (when anisotropic
@@ -38,9 +41,7 @@ from qtpy.QtCore import Qt, QRectF
 from qtpy.QtGui import QPainter, QPen, QBrush, QColor, QMouseEvent, QPalette, QImage, QResizeEvent, QWheelEvent, \
     QRadialGradient, QLinearGradient, QTransform
 
-from finalcif.cif.atoms import get_radius_from_element, element2color
-from finalcif.displaymol.sdm import Atomtuple
-from finalcif.tools.misc import to_float
+
 
 
 def calc_volume(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> float:
@@ -1191,39 +1192,35 @@ def display(atoms: list[Atomtuple],
 
 if __name__ == "__main__":
 
-    try:
-        from finalcif.cif.cif_file_io import CifContainer
-        from sdm import SDM
+    from fastmolwidget.tools import to_float
+    from sdm import SDM, Atomtuple
 
-        # Load sample data
-        # cif = CifContainer('test-data/p21c.cif')
-        # cif = CifContainer(r'../41467_2015.cif')  # huge
-        # cif = CifContainer(r"D:\frames\Workordner\huge_structure\p-1-finalcif.cif")
-        # cif = CifContainer('tests/examples/1979688.cif')
-        cif = CifContainer('test-data/p31c.cif')
-        # cif = CifContainer('/Users/daniel/Documents/GitHub/StructureFinder/test-data/668839.cif')
-        # cif = CifContainer(Path('test-data/4060314.cif'))
-        cif.load_this_block(len(cif.doc) - 1)
+    # Load sample data
+    # cif = CifContainer('test-data/p21c.cif')
+    # cif = CifContainer(r'../41467_2015.cif')  # huge
+    # cif = CifContainer(r"D:\frames\Workordner\huge_structure\p-1-finalcif.cif")
+    # cif = CifContainer('tests/examples/1979688.cif')
+    cif = CifReader('../tests/test-data/p31c.cif')
+    # cif = CifContainer('/Users/daniel/Documents/GitHub/StructureFinder/test-data/668839.cif')
+    # cif = CifContainer(Path('test-data/4060314.cif'))
+    cif.load_this_block(len(cif.doc) - 1)
 
-        # Build generic ADP dictionary
-        adp_dict = {}
-        for dp in cif.displacement_parameters():
-            adp_dict[dp.label] = (to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
-                                  to_float(dp.U23), to_float(dp.U13), to_float(dp.U12))
-
-
-        def build_grown_structure() -> list[Atomtuple]:
-            # optional callback for symmetry expansion
-            atoms_fract = tuple(cif.atoms_fract)
-            sdm = SDM(atoms_fract, cif.symmops, cif.cell[:6], centric=cif.is_centrosymm)
-            needsymm = sdm.calc_sdm()
-            return sdm.packer(sdm, needsymm)
+    # Build generic ADP dictionary
+    adp_dict = {}
+    for dp in cif.displacement_parameters():
+        adp_dict[dp.label] = (to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+                              to_float(dp.U23), to_float(dp.U13), to_float(dp.U12))
 
 
-        display(atoms=list(cif.atoms_orth),
-                cell=cif.cell[:6],
-                adps=adp_dict,
-                grow_callback=build_grown_structure)
+    def build_grown_structure() -> list[Atomtuple]:
+        # optional callback for symmetry expansion
+        atoms_fract = tuple(cif.atoms_fract)
+        sdm = SDM(atoms_fract, cif.symmops, cif.cell[:6], centric=cif.is_centrosymm)
+        needsymm = sdm.calc_sdm()
+        return sdm.packer(sdm, needsymm)
 
-    except ImportError:
-        print("FinalCif not found. Provide your own Atomtuples to run.")
+
+    display(atoms=list(cif.atoms_orth),
+            cell=cif.cell[:6],
+            adps=adp_dict,
+            grow_callback=build_grown_structure)

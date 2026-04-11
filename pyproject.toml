@@ -7,7 +7,12 @@ authors = [
     { name = "Daniel Kratzert", email = "dkratzert@gmx.de" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "gemmi>=0.7.5",
+    "numpy>=2.4.4",
+    "pyside6>=6.11.0",
+    "qtpy>=2.4.3",
+]
 
 [project.scripts]
 fastmolwidget = "fastmolwidget:main"
