@@ -32,12 +32,10 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
     The interface is intentionally minimal: provide a *filename* to display a
     structure immediately, or call :meth:`load_file` at any later time.
 
-    :param filename: Optional path to a structure file (``.cif``, ``.res``,
-        ``.ins``, or ``.xyz``).  Passed straight to :meth:`load_file`.
     :param parent: Optional parent widget.
     """
 
-    def __init__(self, filename: str | Path | None = None, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
 
         # ── molecule renderer ────────────────────────────────────────────────
@@ -85,10 +83,6 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         vl = QtWidgets.QVBoxLayout(self)
         vl.addWidget(self._render_widget)
         vl.addLayout(control_bar)
-
-        # ── optional initial file ─────────────────────────────────────────────
-        if filename is not None:
-            self.load_file(filename)
 
     # ------------------------------------------------------------------
     # Public API

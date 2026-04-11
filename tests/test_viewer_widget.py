@@ -24,16 +24,6 @@ def test_construction_no_args():
     assert w.render_widget is not None
 
 
-def test_construction_with_filename():
-    w = MoleculeViewerWidget(data / '1979688_small.cif')
-    assert len(w.render_widget.atoms) > 0
-
-
-def test_construction_with_str_filename():
-    w = MoleculeViewerWidget(str(data / '1979688_small.cif'))
-    assert len(w.render_widget.atoms) > 0
-
-
 # ------------------------------------------------------------------
 # load_file
 # ------------------------------------------------------------------
@@ -73,7 +63,8 @@ def test_load_missing_file():
 # ------------------------------------------------------------------
 
 def test_viewer_renders():
-    w = MoleculeViewerWidget(data / '1979688_small.cif')
+    w = MoleculeViewerWidget()
+    w.load_file(data / '1979688_small.cif')
     # app.processEvents()
     assert w.render_widget.width() > 0
     assert w.render_widget.height() > 0

@@ -93,7 +93,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.fontsize = 13
         self.bond_width = 3
         self.labels = True
-        self.show_adps = True
+        self._show_adps = True
         self.bond_drawer = self._draw_bond_rounded
 
         self.show_hydrogens_flag = True
@@ -229,7 +229,7 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def show_adps(self, value: bool):
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
-        self.show_adps = value
+        self._show_adps = value
         self.update()
 
     def show_round_bonds(self, bond_type: bool = True):
@@ -265,7 +265,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._cell = cell
         self._adp_map = adps if adps is not None else {}
 
-        if self._cell is not None and self.show_adps:
+        if self._cell is not None and self._show_adps:
             self.calc_amatrix()
 
         self.atoms.clear()
@@ -491,7 +491,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         dx = px - cx
         dy = py - cy
 
-        if self.show_adps and atom.u_cart is not None:
+        if self._show_adps and atom.u_cart is not None:
             a = atom.u_cart[0, 0]
             b = atom.u_cart[0, 1]
             c = atom.u_cart[1, 1]
@@ -528,7 +528,7 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         # Fallback for isotropic spheres or fixed-size circles
         circle_size = self.atoms_size
-        if self.show_adps and atom.u_iso is not None:
+        if self._show_adps and atom.u_iso is not None:
             r = sqrt(atom.u_iso) * self.scale * self.adp_scale
             circle_size = r * 2
 
@@ -663,7 +663,7 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def get_spherical_radius(self, atom: Atom) -> float:
         """Return an approximate isotropic radius for UI purposes (e.g. label offset)."""
-        if self.show_adps and atom.u_iso is not None:
+        if self._show_adps and atom.u_iso is not None:
             return sqrt(atom.u_iso)  # * self.adp_scale
         return 0.23
 
@@ -676,14 +676,14 @@ class MoleculeWidget(QtWidgets.QWidget):
         if not atom.adp_valid:
             return 0.23
 
-        if self.show_adps and atom.u_inv is not None:
+        if self._show_adps and atom.u_inv is not None:
             u = v / d
             val = np.dot(u, np.dot(atom.u_inv, u))
             if val > 0:
                 return self.adp_scale / sqrt(val)
 
         # Fallback to sphere
-        if self.show_adps and atom.u_iso is not None:
+        if self._show_adps and atom.u_iso is not None:
             return sqrt(atom.u_iso) * self.adp_scale
 
         return 0.23
@@ -913,14 +913,14 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def draw_atom(self, atom: Atom) -> None:
         """Draw a single atom as an ADP ellipsoid, isotropic sphere, or fixed-size circle."""
-        if self.show_adps and atom.u_cart is not None:
+        if self._show_adps and atom.u_cart is not None:
             if not atom.adp_valid:
                 self._draw_invalid_adp(atom)
                 return
         cx = atom.screenx
         cy = atom.screeny
 
-        if self.show_adps and atom.u_cart is not None:
+        if self._show_adps and atom.u_cart is not None:
             a = atom.u_cart[0, 0]
             b = atom.u_cart[0, 1]
             c = atom.u_cart[1, 1]
@@ -977,7 +977,7 @@ class MoleculeWidget(QtWidgets.QWidget):
                     return
 
         circle_size = self.atoms_size
-        if self.show_adps and atom.u_iso is not None:
+        if self._show_adps and atom.u_iso is not None:
             r = sqrt(atom.u_iso) * self.scale * self.adp_scale
             circle_size = r * 2
 
