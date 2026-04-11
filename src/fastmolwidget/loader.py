@@ -19,25 +19,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+
+from shelxfile import Shelxfile
+
 from fastmolwidget.cif.cif_file_io import CifReader
-from fastmolwidget.dsrmath import frac_to_cart
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.sdm import Atomtuple
-
-
-# SHELX instruction keywords – lines starting with one of these are *not*
-# atom coordinate lines.
-_SHELX_KEYWORDS = frozenset((
-    'TITL', 'CELL', 'ZERR', 'LATT', 'SYMM', 'SFAC', 'UNIT', 'L.S.', 'LIST',
-    'FVAR', 'WGHT', 'FMAP', 'PLAN', 'BOND', 'ACTA', 'CONF', 'HTAB', 'HKLF',
-    'END', 'TEMP', 'SIZE', 'EXTI', 'SWAT', 'MOLE', 'PART', 'AFIX', 'HFIX',
-    'SHEL', 'BASF', 'TWIN', 'DFIX', 'DANG', 'SADI', 'SAME', 'FLAT', 'SIMU',
-    'DELU', 'ISOR', 'FREE', 'CONN', 'MPLA', 'RTAB', 'ABIN', 'ANSC', 'ANSR',
-    'BLOC', 'BUMP', 'CGLS', 'CHIV', 'DEFS', 'EADP', 'EQIV', 'EXYZ', 'GRID',
-    'HOPE', 'LAUE', 'MERG', 'MORE', 'MOVE', 'OMIT', 'PRIG', 'REM', 'RESI',
-    'RIGU', 'SUMP', 'SPEC', 'STIR', 'TWST', 'WIGL', 'WPDB', 'XNPD',
-    'BIND', 'LONE', 'ANIS', 'DISP',
-))
 
 
 class MoleculeLoader:
@@ -108,7 +95,8 @@ class MoleculeLoader:
     # ------------------------------------------------------------------
 
     def _load_shelx(self, path: Path, *, keep_view: bool = False) -> None:
-        """Load a SHELX instruction (.res / .ins) file."""
+        """Load a SHELX instruction (.res / .ins) file using the
+        :mod:`shelxfile` library."""
         atoms, cell = self._parse_shelx(path)
         self._widget.open_molecule(atoms=atoms, cell=cell, adps=None,
                                    keep_view=keep_view)
@@ -145,88 +133,35 @@ class MoleculeLoader:
         list[Atomtuple],
         tuple[float, float, float, float, float, float],
     ]:
-        """Parse a SHELX .res / .ins file.
+        """Parse a SHELX .res / .ins file using the :mod:`shelxfile` library.
 
         Returns the atom list (in Cartesian coordinates) and the unit-cell
         parameters.
         """
-        text = path.read_text()
-        lines = text.splitlines()
+        shx = Shelxfile()
+        shx.read_file(path)
 
-        cell: tuple[float, float, float, float, float, float] | None = None
-        sfac_elements: list[str] = []
-        atoms: list[Atomtuple] = []
-
-        for raw_line in lines:
-            line = raw_line.strip()
-            if not line or line.startswith('!'):
-                continue
-
-            parts = line.split()
-            keyword = parts[0].upper()
-
-            if keyword == 'CELL':
-                # CELL lambda a b c alpha beta gamma
-                if len(parts) >= 8:
-                    cell = (
-                        float(parts[2]), float(parts[3]), float(parts[4]),
-                        float(parts[5]), float(parts[6]), float(parts[7]),
-                    )
-                continue
-
-            if keyword == 'SFAC':
-                # SFAC element1 element2 ...
-                # The extended SFAC form may include numeric scattering
-                # factor parameters after the element symbol; skip those.
-                sfac_elements.extend(p.capitalize() for p in parts[1:] if not _is_number(p))
-                continue
-
-            if keyword in _SHELX_KEYWORDS:
-                continue
-
-            if keyword in ('END', 'HKLF'):
-                break
-
-            # Potential atom line: label sfac_num x y z sof Uiso
-            if len(parts) >= 6 and _is_number(parts[1]):
-                sfac_idx = int(parts[1])
-                if sfac_idx < 1 or sfac_idx > len(sfac_elements):
-                    continue
-                try:
-                    frac_x = float(parts[2])
-                    frac_y = float(parts[3])
-                    frac_z = float(parts[4])
-                except ValueError:
-                    continue
-
-                element = sfac_elements[sfac_idx - 1]
-                label = parts[0]
-
-                # Parse the disorder part from the occupancy sign/prefix
-                sof_str = parts[5] if len(parts) > 5 else '11.00000'
-                part = 0
-                try:
-                    sof_val = float(sof_str)
-                    part_digit = int(sof_val / 10)
-                    if part_digit not in (0, 1):
-                        part = part_digit
-                except ValueError:
-                    pass
-
-                if cell is not None:
-                    cart = frac_to_cart([frac_x, frac_y, frac_z], list(cell))
-                    atoms.append(Atomtuple(
-                        label=label, type=element,
-                        x=cart[0], y=cart[1], z=cart[2],
-                        part=part,
-                    ))
-
-        if cell is None:
+        if shx.cell is None:
             raise ValueError(f"No CELL instruction found in SHELX file: {path}")
-        if not atoms:
-            raise ValueError(f"No atoms found in SHELX file: {path}")
 
-        return atoms, cell
+        cell = shx.cell
+        cell_params: tuple[float, float, float, float, float, float] = (
+            cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma,
+        )
+
+        atoms: list[Atomtuple] = []
+        for at in shx.atoms:
+            x, y, z = at.cart_coords
+            atoms.append(Atomtuple(
+                label=at.name,
+                type=at.element,
+                x=x,
+                y=y,
+                z=z,
+                part=at.part.n,
+            ))
+
+        return atoms, cell_params
 
     @staticmethod
     def _parse_xyz(path: Path) -> list[Atomtuple]:
@@ -266,12 +201,3 @@ class MoleculeLoader:
                 f"parsed from {path}"
             )
         return atoms
-
-
-def _is_number(s: str) -> bool:
-    """Return ``True`` if *s* can be interpreted as a float."""
-    try:
-        float(s)
-        return True
-    except ValueError:
-        return False
