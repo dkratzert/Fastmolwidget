@@ -414,21 +414,12 @@ class SDM:
 
 
 if __name__ == "__main__":
+    import sys
     from pathlib import Path
-    from molecule2D import display
-    from cif.cif_file_io import CifReader
+    from qtpy import QtWidgets
+    from fastmolwidget.viewer_widget import MoleculeViewerWidget
 
-
-    def grow_structure(cif: CifContainer) -> list[Atomtuple]:
-        atoms = tuple(cif.atoms_fract)
-        sdm = SDM(atoms, cif.symmops, cif.cell[:6], centric=cif.is_centrosymm)
-        needsymm = sdm.calc_sdm()
-        atoms = sdm.packer(sdm, needsymm)
-        return atoms
-
-
-    cif = CifReader(Path('tests/test-data/4060314.cif'))
-    # cif = CifContainer(Path(r'D:\_DEV\GitHub\FinalCif\test-data\p31c.cif'))
-    # cif = CifContainer(r"D:\frames\Workordner\huge_structure\p-1-finalcif.cif")
-    atoms = grow_structure(cif)
-    display(atoms, cell=cif.cell[:6], adps=cif.displacement_parameters())
+    app = QtWidgets.QApplication(sys.argv)
+    viewer = MoleculeViewerWidget(Path('tests/test-data/4060314.cif'))
+    viewer.show()
+    sys.exit(app.exec())

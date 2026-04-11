@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from fastmolwidget.atoms import get_radius_from_element, element2color
-from fastmolwidget.cif.cif_file_io import CifReader
 
 """
 A versatile 2D/3D molecule drawing widget for PyQt/PySide.
@@ -29,11 +28,9 @@ Mouse controls (inside :class:`MoleculeWidget`):
 - **Ctrl + Left click**: Toggle selection of multiple atoms and bonds.
 """
 
-import sys
 from dataclasses import dataclass
 from math import sqrt, cos, sin, dist, radians, atan2, degrees, pi
 from pathlib import Path
-from typing import NoReturn, Callable
 
 import numpy as np
 from qtpy import QtWidgets, QtCore, QtGui
@@ -1116,101 +1113,3 @@ class Atom:
 
     def __repr__(self) -> str:
         return str((self.name, self.type_, self.coordinate))
-
-
-def display(cif: CifReader, grow_callback: Callable | None = None) -> NoReturn:
-    """Launch a standalone :class:`MoleculeWidget` viewer window for testing."""
-    import time
-    from fastmolwidget.loader import MoleculeLoader  # Import here to avoid circular dependency
-    app = QtWidgets.QApplication(sys.argv)
-    window = QtWidgets.QMainWindow()
-
-    render_widget = MoleculeWidget(None)
-
-    adp_checkbox = QtWidgets.QCheckBox("Show ADP")
-    label_checkbox = QtWidgets.QCheckBox("Show Labels")
-    bond_type_checkbox = QtWidgets.QCheckBox("Round Bonds")
-    hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
-    grow_checkbox = QtWidgets.QCheckBox("Grow")
-
-    bw_label = QtWidgets.QLabel("Bond Width:")
-    bond_width_spinbox = QtWidgets.QSpinBox()
-    bond_width_spinbox.setRange(1, 15)
-    bond_width_spinbox.setValue(3)
-
-    adp_checkbox.setChecked(True)
-    bond_type_checkbox.setChecked(True)
-    hydrogens_checkbox.setChecked(True)
-
-    adp_checkbox.toggled.connect(lambda x: render_widget.show_adp(x))
-    label_checkbox.toggled.connect(lambda x: render_widget.show_labels(x))
-    bond_type_checkbox.toggled.connect(lambda x: render_widget.show_round_bonds(x))
-    hydrogens_checkbox.toggled.connect(lambda x: render_widget.show_hydrogens(x))
-    bond_width_spinbox.valueChanged.connect(lambda x: render_widget.set_bond_width(x))
-
-    render_widget.set_bond_width(3)
-    render_widget.labels = False
-    render_widget.show_round_bonds(True)
-
-    adps = MoleculeLoader._load_adps_from_cif(cif.displacement_parameters())
-    render_widget.open_molecule(atoms=list(cif.atoms_orth), cell=cif.cell[:6], adps=adps)
-
-    central_widget = QtWidgets.QWidget()
-    window.setCentralWidget(central_widget)
-    vl = QtWidgets.QVBoxLayout(central_widget)
-    window.setMinimumSize(1400, 900)
-    vl.addWidget(render_widget)
-
-    hl = QtWidgets.QHBoxLayout()
-    hl.addWidget(adp_checkbox)
-    hl.addWidget(label_checkbox)
-    hl.addWidget(bond_type_checkbox)
-    hl.addWidget(hydrogens_checkbox)
-    hl.addWidget(bw_label)
-    hl.addWidget(bond_width_spinbox)
-
-    if grow_callback is not None:
-
-        def handle_grow(checked: bool):
-            if checked:
-                grown_atoms = grow_callback()
-                render_widget.grow_molecule(atoms=grown_atoms, cell=cif.cell[:6], adps=adps)
-            else:
-                render_widget.grow_molecule(atoms=list(cif.atoms_orth), cell=cif.cell[:6], adps=adps)
-
-        grow_checkbox.toggled.connect(handle_grow)
-        hl.addWidget(grow_checkbox)
-    grow_checkbox.setChecked(True)
-
-    hl.addStretch()
-    vl.addLayout(hl)
-
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-
-    from fastmolwidget.tools import to_float
-    from sdm import SDM, Atomtuple
-
-    # Load sample data
-    # cif = CifContainer('test-data/p21c.cif')
-    # cif = CifContainer(r'../41467_2015.cif')  # huge
-    # cif = CifContainer(r"D:\frames\Workordner\huge_structure\p-1-finalcif.cif")
-    # cif = CifContainer('tests/examples/1979688.cif')
-    cif = CifReader('../../tests/test-data/p31c.cif')
-    # cif = CifContainer('/Users/daniel/Documents/GitHub/StructureFinder/test-data/668839.cif')
-    # cif = CifContainer(Path('test-data/4060314.cif'))
-    cif.load_this_block(len(cif.doc) - 1)
-
-
-    def build_grown_structure() -> list[Atomtuple]:
-        # optional callback for symmetry expansion
-        atoms_fract = tuple(cif.atoms_fract)
-        sdm = SDM(atoms_fract, cif.symmops, cif.cell[:6], centric=cif.is_centrosymm)
-        needsymm = sdm.calc_sdm()
-        return sdm.packer(sdm, needsymm)
-
-
-    display(cif, grow_callback=build_grown_structure)
