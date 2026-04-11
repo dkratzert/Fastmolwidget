@@ -35,7 +35,7 @@ _SHELX_KEYWORDS = frozenset((
     'DELU', 'ISOR', 'FREE', 'CONN', 'MPLA', 'RTAB', 'ABIN', 'ANSC', 'ANSR',
     'BLOC', 'BUMP', 'CGLS', 'CHIV', 'DEFS', 'EADP', 'EQIV', 'EXYZ', 'GRID',
     'HOPE', 'LAUE', 'MERG', 'MORE', 'MOVE', 'OMIT', 'PRIG', 'REM', 'RESI',
-    'RIGU', 'SUMP', 'SPEC', 'STIR', 'SUMP', 'TWST', 'WIGL', 'WPDB', 'XNPD',
+    'RIGU', 'SUMP', 'SPEC', 'STIR', 'TWST', 'WIGL', 'WPDB', 'XNPD',
     'BIND', 'LONE', 'ANIS', 'DISP',
 ))
 
@@ -176,6 +176,8 @@ class MoleculeLoader:
 
             if keyword == 'SFAC':
                 # SFAC element1 element2 ...
+                # The extended SFAC form may include numeric scattering
+                # factor parameters after the element symbol; skip those.
                 sfac_elements.extend(p.capitalize() for p in parts[1:] if not _is_number(p))
                 continue
 
