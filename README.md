@@ -2,25 +2,26 @@
 
 **A PyQt/PySide6 widget to display crystal structures**
 
-Fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in 2D projection with interactive mouse controls. It supports ORTEP-style anisotropic displacement parameter (ADP) ellipsoids, ball-and-stick diagrams, and plain sphere representations — all drawn with a pure-Python QPainter backend (no OpenGL required).
+Fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in 2D projection with interactive mouse controls. 
+It supports anisotropic displacement parameter (ADP) ellipsoids, ball-and-stick diagrams, and plain sphere representations — 
+all drawn with a pure-Python QPainter backend (no OpenGL required).
 
 ## Screenshot
 
 ![Fastmolwidget showing an ORTEP-style crystal structure](https://github.com/user-attachments/assets/7946ef73-7e74-475d-a5c6-2012243b9f77)
 
-*ORTEP-style view of a CIF structure with ADP ellipsoids, round bonds, and hydrogen atoms. The control bar allows toggling display options interactively.*
+*View of a crystal structure froma CIF file with ADP ellipsoids. The control bar allows toggling display options interactively.*
 
 ## Features
 
-- **ORTEP-style ADP ellipsoids** at the 50 % probability level, rendered from anisotropic displacement parameters
-- **Ball-and-stick** and **isotropic sphere** representations as fallbacks when no ADPs are present
-- **3D-shaded round bonds** or flat bonds (switchable at runtime)
+- **ADP ellipsoids** at the 50 % probability level, rendered from anisotropic displacement parameters
+- **Ball-and-stick** and **isotropic sphere** representations as fallbacks or when speed is more important than detail
 - **Interactive mouse controls**: rotate (left-drag), zoom (right-drag), pan (middle-drag), scroll wheel to resize labels
 - **Atom and bond selection**: single click or Ctrl+click for multi-selection; emits `atomClicked` / `bondClicked` Qt signals
 - **Hydrogen visibility toggle**
 - **Atom label display toggle** with adjustable font size
 - **Bond width** adjustment via spin box
-- **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ
+- **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — `MoleculeWidget` is a plain `QWidget` subclass; drop it into any layout
 - **Ready-to-use** `MoleculeViewerWidget` bundles the renderer with a full control bar
 
@@ -38,19 +39,19 @@ Fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and 
 pip install fastmolwidget
 ```
 
-**Requirements**: Python ≥ 3.14, PySide6, NumPy, gemmi, shelxfile, qtpy.
+**Requirements**: Python ≥ 3.14, PyQt6, NumPy, gemmi, shelxfile, qtpy.
 
 ## Quick Start
 
-### Standalone viewer (recommended)
+### Standalone viewer
 
 ```python
 from qtpy.QtWidgets import QApplication
 from fastmolwidget import MoleculeViewerWidget
 
 app = QApplication([])
-viewer = MoleculeViewerWidget("structure.cif")
-viewer.resize(900, 680)
+viewer = MoleculeViewerWidget()
+viewer.load_file("structure.cif")
 viewer.show()
 app.exec()
 ```
@@ -104,7 +105,7 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 
 ## API Overview
 
-### `MoleculeViewerWidget(filename=None, parent=None)`
+### `MoleculeViewerWidget(parent=None)`
 
 A self-contained widget combining `MoleculeWidget` with the control bar described above.
 
