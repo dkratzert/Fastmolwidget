@@ -18,13 +18,15 @@ Example usage::
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Generator
 
 
 from shelxfile import Shelxfile
 
-from fastmolwidget.cif.cif_file_io import CifReader
+from fastmolwidget.cif.cif_file_io import CifReader, adp
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.sdm import Atomtuple
+from fastmolwidget.tools import to_float
 
 
 class MoleculeLoader:
@@ -86,9 +88,30 @@ class MoleculeLoader:
         cif = CifReader(path)
         atoms = list(cif.atoms_orth)
         cell = cif.cell[:6]
-        adps = self._widget.load_adps_from_cif(cif.displacement_parameters())
+        adps = self._load_adps_from_cif(cif.displacement_parameters())
         self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
                                    keep_view=keep_view)
+
+    @staticmethod
+    def _load_adps_from_cif(
+        adps: Generator[adp, Any, None],
+    ) -> dict[str, tuple[float, float, float, float, float, float]]:
+        """Convert a generator of CIF displacement parameters into the ADP
+        mapping expected by :meth:`MoleculeWidget.open_molecule`.
+
+        :param adps: Generator of :class:`~fastmolwidget.cif.cif_file_io.adp`
+            named-tuples produced by
+            :meth:`~fastmolwidget.cif.cif_file_io.CifReader.displacement_parameters`.
+        :returns: A dict mapping atom labels to ``(U11, U22, U33, U23, U13,
+            U12)`` tuples of floats.
+        """
+        adp_dict: dict[str, tuple[float, float, float, float, float, float]] = {}
+        for dp in adps:
+            adp_dict[dp.label] = (
+                to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+                to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
+            )
+        return adp_dict
 
     # ------------------------------------------------------------------
     # SHELX .res / .ins loading
