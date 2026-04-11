@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastmolwidget.atoms import get_radius_from_element, element2color
 from fastmolwidget.cif.cif_file_io import CifReader
-from fastmolwidget.tools import to_float
 
 """
 A versatile 2D/3D molecule drawing widget for PyQt/PySide.
@@ -34,7 +33,7 @@ import sys
 from dataclasses import dataclass
 from math import sqrt, cos, sin, dist, radians, atan2, degrees, pi
 from pathlib import Path
-from typing import NoReturn, Callable, Generator
+from typing import NoReturn, Callable
 
 import numpy as np
 from qtpy import QtWidgets, QtCore, QtGui
@@ -331,13 +330,6 @@ class MoleculeWidget(QtWidgets.QWidget):
             self.atoms_size = self._factor * 70
 
         self.update()
-
-    def load_adps_from_cif(self, adps: Generator[adp, Any, None]):
-        adp_dict = {}
-        for dp in adps:
-            adp_dict[dp.label] = (to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
-                                  to_float(dp.U23), to_float(dp.U13), to_float(dp.U12))
-        return adp_dict
 
     def calc_amatrix(self):
         """Compute the orthogonalisation matrix and reciprocal-lattice lengths."""
@@ -1129,6 +1121,7 @@ class Atom:
 def display(cif: CifReader, grow_callback: Callable | None = None) -> NoReturn:
     """Launch a standalone :class:`MoleculeWidget` viewer window for testing."""
     import time
+    from fastmolwidget.loader import MoleculeLoader  # Import here to avoid circular dependency
     app = QtWidgets.QApplication(sys.argv)
     window = QtWidgets.QMainWindow()
 
@@ -1159,7 +1152,7 @@ def display(cif: CifReader, grow_callback: Callable | None = None) -> NoReturn:
     render_widget.labels = False
     render_widget.show_round_bonds(True)
 
-    adps = render_widget.load_adps_from_cif(cif.displacement_parameters())
+    adps = MoleculeLoader._load_adps_from_cif(cif.displacement_parameters())
     render_widget.open_molecule(atoms=list(cif.atoms_orth), cell=cif.cell[:6], adps=adps)
 
     central_widget = QtWidgets.QWidget()
