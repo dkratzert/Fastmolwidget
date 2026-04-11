@@ -216,7 +216,6 @@ class CifReader:
             return
         if not self.is_writable(filename):
             raise PermissionError(f'Failed to open {filename.resolve()} for writing: Operation not permitted')
-        self.order_cif_keys()
         print('Saving CIF to', Path(filename).resolve())
         options = gemmi.cif.WriteOptions()
         options.prefer_pairs = False
@@ -292,13 +291,6 @@ class CifReader:
         if self['_shelx_fab_file']:
             return self['_shelx_fab_file']
         return ''
-
-    @property
-    def hklf_number(self) -> int:
-        hklf = 4
-        if self.res_file_data:
-            hklf = self._hklf_number_from_shelxl_file()
-        return hklf
 
     @property
     def hkl_file_without_foot(self) -> str:

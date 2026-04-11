@@ -1134,6 +1134,7 @@ def display(atoms: list[Atomtuple],
     label_checkbox = QtWidgets.QCheckBox("Show Labels")
     bond_type_checkbox = QtWidgets.QCheckBox("Round Bonds")
     hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
+    grow_checkbox = QtWidgets.QCheckBox("Grow")
 
     bw_label = QtWidgets.QLabel("Bond Width:")
     bond_width_spinbox = QtWidgets.QSpinBox()
@@ -1171,7 +1172,6 @@ def display(atoms: list[Atomtuple],
     hl.addWidget(bond_width_spinbox)
 
     if grow_callback is not None:
-        grow_checkbox = QtWidgets.QCheckBox("Grow")
 
         def handle_grow(checked: bool):
             if checked:
@@ -1182,6 +1182,7 @@ def display(atoms: list[Atomtuple],
 
         grow_checkbox.toggled.connect(handle_grow)
         hl.addWidget(grow_checkbox)
+    grow_checkbox.setChecked(True)
 
     hl.addStretch()
     vl.addLayout(hl)
@@ -1200,7 +1201,7 @@ if __name__ == "__main__":
     # cif = CifContainer(r'../41467_2015.cif')  # huge
     # cif = CifContainer(r"D:\frames\Workordner\huge_structure\p-1-finalcif.cif")
     # cif = CifContainer('tests/examples/1979688.cif')
-    cif = CifReader('../tests/test-data/p31c.cif')
+    cif = CifReader('../../tests/test-data/p31c.cif')
     # cif = CifContainer('/Users/daniel/Documents/GitHub/StructureFinder/test-data/668839.cif')
     # cif = CifContainer(Path('test-data/4060314.cif'))
     cif.load_this_block(len(cif.doc) - 1)

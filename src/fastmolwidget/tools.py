@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 
 def to_float(st) -> float | list[float] | None:
     if isinstance(st, list):
@@ -53,4 +55,4 @@ def isnumeric(value: str) -> bool:
 
 def grouper(inputs, n, fillvalue=None):
     iters = [iter(inputs)] * n
-    return it.zip_longest(*iters, fillvalue=fillvalue)
+    return itertools.zip_longest(*iters, fillvalue=fillvalue)
