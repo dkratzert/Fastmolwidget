@@ -47,6 +47,8 @@ class MoleculeLoader:
 
     def __init__(self, widget: MoleculeWidget) -> None:
         self._widget = widget
+        self._grow_enabled: bool = False
+        self._last_path: Path | None = None
 
     @property
     def widget(self) -> MoleculeWidget:
@@ -64,6 +66,7 @@ class MoleculeLoader:
         :raises FileNotFoundError: If the file does not exist.
         """
         path = Path(path)
+        self._last_path = path
         suffix = path.suffix.lower()
         loader_name = self._FORMAT_MAP.get(suffix)
         if loader_name is None:
@@ -77,6 +80,19 @@ class MoleculeLoader:
         loader = getattr(self, loader_name)
         loader(path, keep_view=keep_view)
 
+    def set_grow(self, enabled: bool) -> None:
+        """Toggle SDM grow mode and reload the current CIF if one is loaded.
+
+        Grow expands the asymmetric unit to complete molecules using crystal
+        symmetry.  Has no effect when the last loaded file is not a CIF.
+
+        :param enabled: ``True`` to enable structure growing, ``False`` to
+            revert to the bare asymmetric unit.
+        """
+        self._grow_enabled = enabled
+        if self._last_path is not None and self._last_path.suffix.lower() == '.cif':
+            self.load_file(self._last_path, keep_view=True)
+
     # ------------------------------------------------------------------
     # CIF loading
     # ------------------------------------------------------------------
@@ -84,10 +100,38 @@ class MoleculeLoader:
     def _load_cif(self, path: Path, *, keep_view: bool = False) -> None:
         """Load a CIF file using :class:`CifReader`."""
         cif = CifReader(path)
-        self._widget.open_molecule(atoms=(list(cif.atoms_orth)),
-                                   cell=cif.cell[:6],
-                                   adps=(self._load_adps_from_cif(cif.displacement_parameters())),
-                                   keep_view=keep_view)
+        atoms = (
+            self._compute_grown_atoms(cif)
+            if self._grow_enabled
+            else list(cif.atoms_orth)
+        )
+        self._widget.open_molecule(
+            atoms=atoms,
+            cell=cif.cell[:6],
+            adps=self._load_adps_from_cif(cif.displacement_parameters()),
+            keep_view=keep_view,
+        )
+
+    @staticmethod
+    def _compute_grown_atoms(cif: CifReader) -> list:
+        """Expand the asymmetric unit to complete molecules via the SDM.
+
+        Reads fractional-coordinate atoms, runs the Shortest Distance Matrix
+        algorithm with the CIF's symmetry operators, and returns the packed
+        Cartesian-coordinate atom list.
+
+        :param cif: The parsed CIF to grow.
+        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
+            coordinates including all symmetry-generated atoms that complete
+            the molecule(s).
+        """
+        from fastmolwidget.sdm import SDM
+
+        # SDM.calc_molindex mutates the atom lists in place – pass a fresh copy
+        fract_atoms = list(cif.atoms_fract)
+        sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
+        need_symm = sdm.calc_sdm()
+        return sdm.packer(sdm, need_symm)
 
     @staticmethod
     def _load_adps_from_cif(

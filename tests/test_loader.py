@@ -160,3 +160,34 @@ def test_loaded_molecule_renders(loader, widget):
     widget.show()
     pixmap = widget.grab()
     assert not pixmap.isNull()
+
+
+# ------------------------------------------------------------------
+# Grow (SDM)
+# ------------------------------------------------------------------
+
+def test_grow_produces_more_atoms_than_asym_unit(widget):
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / '1979688_small.cif')
+    asym_count = len(widget.atoms)
+    loader.set_grow(True)
+    grown_count = len(widget.atoms)
+    assert grown_count >= asym_count, "Grown structure should have at least as many atoms"
+
+
+def test_grow_toggle_restores_asym_unit(widget):
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / '1979688_small.cif')
+    asym_count = len(widget.atoms)
+    loader.set_grow(True)
+    loader.set_grow(False)
+    assert len(widget.atoms) == asym_count
+
+
+def test_grow_has_no_effect_on_xyz(widget):
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / 'test_molecule.xyz')
+    count_before = len(widget.atoms)
+    loader.set_grow(True)  # should silently do nothing for non-CIF
+    assert len(widget.atoms) == count_before
+
