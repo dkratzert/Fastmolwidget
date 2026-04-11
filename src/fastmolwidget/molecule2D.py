@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastmolwidget.atoms import get_radius_from_element, element2color
 from fastmolwidget.cif.cif_file_io import CifReader
+from fastmolwidget.tools import to_float
 
 """
 A versatile 2D/3D molecule drawing widget for PyQt/PySide.
