@@ -61,7 +61,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._hydrogens_checkbox.setChecked(True)
 
         # wire controls to renderer
-        self._adp_checkbox.toggled.connect(self._render_widget.show_adp)
+        self._adp_checkbox.toggled.connect(self._render_widget.show_adps)
         self._label_checkbox.toggled.connect(self._render_widget.show_labels)
         self._bond_type_checkbox.toggled.connect(self._render_widget.show_round_bonds)
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)

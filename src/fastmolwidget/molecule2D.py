@@ -227,7 +227,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.labels = value
         self.update()
 
-    def show_adp(self, value: bool):
+    def show_adps(self, value: bool):
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
         self.show_adps = value
         self.update()

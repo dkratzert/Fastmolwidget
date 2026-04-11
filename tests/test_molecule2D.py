@@ -102,7 +102,7 @@ def test_molecule_widget_toggles():
     assert widget.show_hydrogens_flag is False
 
     # Test ADP visibility
-    widget.show_adp(False)
+    widget.show_adps(False)
     assert widget.show_adps is False
 
     # Test bond type toggle
