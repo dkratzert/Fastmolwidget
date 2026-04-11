@@ -110,3 +110,14 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         :raises FileNotFoundError: If the file does not exist.
         """
         self._loader.load_file(filename)
+
+if __name__ == '__main__':
+
+    app = QtWidgets.QApplication.instance()
+    if not app:
+        app = QtWidgets.QApplication([])
+
+    w = MoleculeViewerWidget()
+    w.load_file('../../tests/test-data/1979688_small.cif')
+    w.show()
+    app.exec()
