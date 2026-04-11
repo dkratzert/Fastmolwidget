@@ -416,13 +416,10 @@ class SDM:
 if __name__ == "__main__":
     import sys
     from pathlib import Path
-    from cif.cif_file_io import CifReader
     from qtpy import QtWidgets
     from fastmolwidget.viewer_widget import MoleculeViewerWidget
 
-
-    cif = CifReader(Path('tests/test-data/4060314.cif'))
     app = QtWidgets.QApplication(sys.argv)
-    viewer = MoleculeViewerWidget()
+    viewer = MoleculeViewerWidget(Path('tests/test-data/4060314.cif'))
     viewer.show()
     sys.exit(app.exec())
