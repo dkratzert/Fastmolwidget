@@ -112,5 +112,6 @@ if __name__ == '__main__':
 
     w = MoleculeViewerWidget()
     w.load_file('../../tests/test-data/p31c.cif')
+    #w.load_file('../../tests/test-data/p31c-finalcif.res')
     w.show()
     app.exec()
