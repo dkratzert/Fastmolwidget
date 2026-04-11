@@ -172,6 +172,14 @@ class MoleculeWidget(QtWidgets.QWidget):
         palette.setColor(QPalette.ColorRole.Window, color)
         self.setPalette(palette)
 
+    def sizeHint(self) -> QtCore.QSize:
+        """Preferred starting size so the render area stays visible in layouts."""
+        return QtCore.QSize(640, 480)
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        """Reasonable minimum size for molecule rendering."""
+        return QtCore.QSize(320, 220)
+
     def set_bond_width(self, width: int):
         """Set the width of the bonds."""
         self.bond_width = width

@@ -74,7 +74,9 @@ def test_load_missing_file():
 
 def test_viewer_renders():
     w = MoleculeViewerWidget(data / '1979688_small.cif')
-    w.resize(600, 400)
     w.show()
+    app.processEvents()
+    assert w.render_widget.width() > 0
+    assert w.render_widget.height() > 0
     pixmap = w.grab()
     assert not pixmap.isNull()
