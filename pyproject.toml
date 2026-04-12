@@ -3,17 +3,40 @@ name = "fastmolwidget"
 version = "0.1.0"
 description = "A PyQt widget to display crystal structures"
 readme = "README.md"
+license = { file = "LICENSE" }
 authors = [
     { name = "Daniel Kratzert", email = "dkratzert@gmx.de" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.12"
+keywords = ["chemistry", "crystallography", "qt", "widget", "molecule"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Software Development :: User Interfaces",
+]
 dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.4.4",
-    "pyside6-essentials>=6.11.0",
     "qtpy>=2.4.3",
     "shelxfile>=22",
 ]
+
+[project.optional-dependencies]
+pyside6 = [
+    "pyside6-essentials>=6.11.0",
+]
+pyqt6 = [
+    "pyqt6>=6.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/dkratzert/Fastmolwidget"
+Repository = "https://github.com/dkratzert/Fastmolwidget"
+Issues = "https://github.com/dkratzert/Fastmolwidget/issues"
 
 [dependency-groups]
 dev = [

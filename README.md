@@ -39,7 +39,15 @@ all drawn with a pure-Python QPainter backend (no OpenGL required).
 pip install fastmolwidget
 ```
 
-**Requirements**: Python ≥ 3.14, PyQt6, NumPy, gemmi, shelxfile, qtpy.
+By default, `fastmolwidget` installs **without a concrete Qt binding**.
+Install one binding explicitly via extras:
+
+```bash
+pip install "fastmolwidget[pyside6]"
+pip install "fastmolwidget[pyqt6]"
+```
+
+**Requirements**: Python >= 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
 
 ## Quick Start
 
@@ -132,3 +140,19 @@ Format-aware loader that populates a `MoleculeWidget`.
 BSD 2-Clause License — see [LICENSE](LICENSE) for details.
 
 © 2026 Daniel Kratzert
+
+## Maintainer Release Workflow
+
+The release workflow is tag-driven and currently publishes to **TestPyPI** only.
+
+1. Ensure `project.version` in `pyproject.toml` is the version to publish.
+2. Create and push a matching tag in the format `version-X.Y.Z`.
+3. GitHub Actions builds sdist/wheel and uploads to TestPyPI.
+
+Example:
+
+```bash
+git tag version-0.1.0
+git push origin version-0.1.0
+```
+
