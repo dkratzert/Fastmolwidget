@@ -226,3 +226,24 @@ def test_grow_has_no_effect_on_xyz(widget):
     loader.set_grow(True)  # should silently do nothing for non-CIF
     assert len(widget.atoms) == count_before
 
+
+def test_grow_shelx_produces_more_atoms(widget):
+    """Grow should expand the asymmetric unit for .res files too."""
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / 'p31c-finalcif.res')
+    asym_count = len(widget.atoms)
+    loader.set_grow(True)
+    grown_count = len(widget.atoms)
+    assert grown_count > asym_count, "Grown .res structure should have more atoms"
+
+
+def test_grow_shelx_toggle_restores_asym_unit(widget):
+    """Toggling grow off should restore the original atom count for .res files."""
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / 'p31c-finalcif.res')
+    asym_count = len(widget.atoms)
+    loader.set_grow(True)
+    loader.set_grow(False)
+    assert len(widget.atoms) == asym_count
+
+

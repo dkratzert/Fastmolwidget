@@ -80,17 +80,22 @@ class MoleculeLoader:
         loader = getattr(self, loader_name)
         loader(path, keep_view=keep_view)
 
+    _GROWABLE_FORMATS: frozenset[str] = frozenset({'.cif', '.res', '.ins'})
+
     def set_grow(self, enabled: bool) -> None:
-        """Toggle SDM grow mode and reload the current CIF if one is loaded.
+        """Toggle SDM grow mode and reload the current file if it supports
+        crystal symmetry (CIF or SHELX).
 
         Grow expands the asymmetric unit to complete molecules using crystal
-        symmetry.  Has no effect when the last loaded file is not a CIF.
+        symmetry.  Has no effect when the last loaded file is an XYZ (no
+        symmetry information).
 
         :param enabled: ``True`` to enable structure growing, ``False`` to
             revert to the bare asymmetric unit.
         """
         self._grow_enabled = enabled
-        if self._last_path is not None and self._last_path.suffix.lower() == '.cif':
+        if (self._last_path is not None
+                and self._last_path.suffix.lower() in self._GROWABLE_FORMATS):
             self.load_file(self._last_path, keep_view=True)
 
     # ------------------------------------------------------------------
@@ -162,8 +167,52 @@ class MoleculeLoader:
         """Load a SHELX instruction (.res / .ins) file using the
         :mod:`shelxfile` library."""
         atoms, cell, adps = self._parse_shelx(path)
+        if self._grow_enabled:
+            atoms = self._compute_grown_atoms_shelx(path)
         self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
                                    keep_view=keep_view)
+
+    @staticmethod
+    def _compute_grown_atoms_shelx(path: Path) -> list:
+        """Expand the asymmetric unit of a SHELX file to complete molecules
+        via the SDM, analogous to :meth:`_compute_grown_atoms` for CIF files.
+
+        :param path: Path to the SHELX ``.res`` / ``.ins`` file.
+        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
+            coordinates including all symmetry-generated atoms.
+        """
+        from fastmolwidget.sdm import SDM
+
+        shx = Shelxfile()
+        shx.read_file(path)
+
+        cell_params: tuple[float, float, float, float, float, float] = (
+            shx.cell.a, shx.cell.b, shx.cell.c,
+            shx.cell.alpha, shx.cell.beta, shx.cell.gamma,
+        )
+
+        # Build fractional-coordinate atom lists (mutable – SDM mutates them)
+        fract_atoms: list[list] = []
+        for at in shx.atoms:
+            if at.qpeak:
+                continue
+            x, y, z = at.frac_coords
+            fract_atoms.append(
+                [at.name, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
+            )
+
+        # Collect symmetry operations as comma-separated strings (skip identity)
+        symmops: list[str] = []
+        for s in shx.symmcards:
+            op_str = s.to_shelxl()
+            # SDM already includes identity; only add non-identity ops
+            symmops.append(op_str)
+
+        centric = shx.latt.centric if shx.latt else False
+
+        sdm = SDM(fract_atoms, symmops, cell_params, centric=centric)
+        need_symm = sdm.calc_sdm()
+        return sdm.packer(sdm, need_symm)
 
     # ------------------------------------------------------------------
     # XYZ loading
