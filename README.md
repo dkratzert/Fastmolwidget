@@ -10,7 +10,7 @@ all drawn with a pure-Python QPainter backend (no OpenGL required).
 
 ![Fastmolwidget showing an ORTEP-style crystal structure](https://github.com/user-attachments/assets/7946ef73-7e74-475d-a5c6-2012243b9f77)
 
-*View of a crystal structure froma CIF file with ADP ellipsoids. The control bar allows toggling display options interactively.*
+*View of a crystal structure from a CIF file with ADP ellipsoids. The control bar allows toggling display options interactively.*
 
 ## Features
 
@@ -114,12 +114,85 @@ A self-contained widget combining `MoleculeWidget` with the control bar describe
 
 ### `MoleculeWidget(parent=None)`
 
-The low-level renderer. Feed it atom data directly via `open_molecule()`.
+The low-level renderer widget. It is a plain `QWidget` subclass that you can drop into any layout.
+Provide atom data directly via `open_molecule()` instead of loading a file through `MoleculeLoader`.
 
-- `open_molecule(atoms, cell=None, adps=None, keep_view=False)` — display a new structure
-- `grow_molecule(atoms, cell=None, adps=None)` — update atoms while preserving zoom/rotation
-- `clear()` — remove all atoms and bonds
-- `set_bond_width(width)`, `set_background_color(color)`, `setLabelFont(size)`, `reset_view()`
+#### Qt Signals
+
+| Signal | Signature | Emitted when |
+|--------|-----------|--------------|
+| `atomClicked` | `(label: str)` | The user clicks on an atom; `label` is the atom name (e.g. `"C1"`) |
+| `bondClicked` | `(label1: str, label2: str)` | The user clicks on a bond; both atom labels are passed |
+
+#### Data Methods
+
+- **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
+  Load a new set of atoms and reset (or optionally preserve) the view.  
+  - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)  
+  - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering  
+  - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` ADP tensors  
+  - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
+
+- **`grow_molecule(atoms, cell=None, adps=None)`**  
+  Replace the atom set while always preserving the current view.  
+  Equivalent to calling `open_molecule(..., keep_view=True)`.
+
+- **`clear()`**  
+  Remove all atoms and bonds from the display.
+
+#### Display Methods
+
+- **`show_adps(value: bool)`**  
+  Toggle ORTEP-style ADP ellipsoid rendering. When `False`, atoms are drawn as isotropic spheres.
+
+- **`show_labels(value: bool)`**  
+  Show or hide non-hydrogen atom labels.
+
+- **`show_hydrogens(value: bool)`**  
+  Show or hide hydrogen / deuterium atoms and their bonds.
+
+- **`show_round_bonds(value: bool)`**  
+  Switch between 3D-shaded cylinder-style bonds (`True`, default) and flat single-colour bonds (`False`).
+
+- **`set_bond_width(width: int)`**  
+  Set the stroke width for bonds in pixels (valid range: 1–15).
+
+- **`setLabelFont(font_size: int)`**  
+  Set the pixel size used for atom labels.
+
+- **`set_background_color(color: QColor)`**  
+  Change the widget background colour.
+
+- **`reset_view()`**  
+  Reset zoom, pan, and rotation to their defaults.
+
+#### Example — feeding atom data directly
+
+```python
+from fastmolwidget import MoleculeWidget
+from fastmolwidget.sdm import Atomtuple
+
+mol = MoleculeWidget(parent=self)
+
+atoms = [
+    Atomtuple(label="C1", type="C", x=0.0,  y=0.0,  z=0.0,  part=0),
+    Atomtuple(label="O1", type="O", x=1.22, y=0.0,  z=0.0,  part=0),
+    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0,  part=0),
+]
+
+# ADP tensors: {atom_label: (U11, U22, U33, U23, U13, U12)}
+adps = {
+    "C1": (0.02, 0.02, 0.02, 0.0, 0.0, 0.0),
+    "O1": (0.03, 0.03, 0.03, 0.0, 0.0, 0.0),
+}
+
+cell = (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)   # optional
+
+mol.open_molecule(atoms=atoms, cell=cell, adps=adps)
+mol.atomClicked.connect(lambda label: print(f"Selected: {label}"))
+
+layout.addWidget(mol)
+```
 
 ### `MoleculeLoader(widget)`
 
