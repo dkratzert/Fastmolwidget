@@ -111,7 +111,7 @@ if __name__ == '__main__':
         app = QtWidgets.QApplication([])
 
     w = MoleculeViewerWidget()
-    w.load_file('../../tests/test-data/p31c.cif')
-    #w.load_file('../../tests/test-data/p31c-finalcif.res')
+    #w.load_file('../../tests/test-data/p31c.cif')
+    w.load_file('../../tests/test-data/p31c-finalcif.res')
     w.show()
     app.exec()

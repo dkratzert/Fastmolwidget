@@ -161,8 +161,8 @@ class MoleculeLoader:
     def _load_shelx(self, path: Path, *, keep_view: bool = False) -> None:
         """Load a SHELX instruction (.res / .ins) file using the
         :mod:`shelxfile` library."""
-        atoms, cell = self._parse_shelx(path)
-        self._widget.open_molecule(atoms=atoms, cell=cell, adps=None,
+        atoms, cell, adps = self._parse_shelx(path)
+        self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
                                    keep_view=keep_view)
 
     # ------------------------------------------------------------------
@@ -196,11 +196,14 @@ class MoleculeLoader:
     ) -> tuple[
         list[Atomtuple],
         tuple[float, float, float, float, float, float],
+        dict[str, tuple[float, float, float, float, float, float]],
     ]:
         """Parse a SHELX .res / .ins file using the :mod:`shelxfile` library.
 
-        Returns the atom list (in Cartesian coordinates) and the unit-cell
-        parameters.
+        Returns the atom list (in Cartesian coordinates), the unit-cell
+        parameters, and a dictionary of anisotropic displacement parameters.
+
+        Q-peaks (residual electron-density peaks) are excluded.
         """
         shx = Shelxfile()
         shx.read_file(path)
@@ -214,7 +217,12 @@ class MoleculeLoader:
         )
 
         atoms: list[Atomtuple] = []
+        adp_dict: dict[str, tuple[float, float, float, float, float, float]] = {}
         for at in shx.atoms:
+            # Skip Q-peaks (residual electron-density peaks, not real atoms).
+            if at.qpeak:
+                continue
+
             x, y, z = at.cart_coords
             atoms.append(Atomtuple(
                 label=at.name,
@@ -225,7 +233,12 @@ class MoleculeLoader:
                 part=at.part.n,
             ))
 
-        return atoms, cell_params
+            # Collect anisotropic displacement parameters for non-isotropic atoms.
+            if not at.is_isotropic:
+                u11, u22, u33, u23, u13, u12 = at.uvals
+                adp_dict[at.name] = (u11, u22, u33, u23, u13, u12)
+
+        return atoms, cell_params, adp_dict
 
     @staticmethod
     def _parse_xyz(path: Path) -> list[Atomtuple]:

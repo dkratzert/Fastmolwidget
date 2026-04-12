@@ -67,18 +67,53 @@ def test_load_shelx_res(loader, widget):
 
 
 def test_parse_shelx_cell(loader):
-    atoms, cell = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
+    atoms, cell, adps = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
     assert len(cell) == 6
     assert cell[0] == pytest.approx(6.0)
     assert cell[3] == pytest.approx(90.0)
 
 
 def test_parse_shelx_types(loader):
-    atoms, _ = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
+    atoms, _, _ = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
     types = [a.type for a in atoms]
     assert 'C' in types
     assert 'O' in types
     assert 'H' in types
+
+
+def test_load_shelx_res_disordered(loader, widget):
+    """Test loading a .res file with disorder (multiple PART instructions)."""
+    loader.load_file(data / 'p31c-finalcif.res')
+    # Should only include PART 0 and PART 1 atoms, not PART 2
+    assert len(widget.atoms) > 0
+    # Verify no duplicate labels (would happen if both PART 1 and PART 2 were included)
+    labels = [a.name for a in widget.atoms]
+    assert len(labels) == len(set(labels)), "Duplicate atom labels found - disorder parts not filtered"
+    # Should have around 50-60 atoms (PART 0 and PART 1 only, no PART 2)
+    assert len(widget.atoms) < 100
+
+
+def test_parse_shelx_excludes_q_peaks():
+    """Test that Q-peaks (residual electron density) are not included as atoms."""
+    atoms, _, _ = MoleculeLoader._parse_shelx(data / 'p31c-finalcif.res')
+    q_labels = [a.label for a in atoms if a.label.startswith('Q')]
+    assert len(q_labels) == 0, f"Q-peaks should be excluded, found: {q_labels}"
+
+
+def test_parse_shelx_returns_adps():
+    """Test that anisotropic displacement parameters are extracted from .res files."""
+    atoms, cell, adps = MoleculeLoader._parse_shelx(data / 'p31c-finalcif.res')
+    # Should have ADPs for anisotropic atoms (non-hydrogen, non-isotropic)
+    assert len(adps) > 0, "Should have ADPs for anisotropic atoms"
+    # CL1 should have ADPs
+    assert 'CL1' in adps, "CL1 should have ADP values"
+    u11, u22, u33, u23, u13, u12 = adps['CL1']
+    assert u11 == pytest.approx(0.01547)
+    assert u22 == pytest.approx(0.01791)
+    assert u33 == pytest.approx(0.02428)
+    # Hydrogen atoms should NOT have ADPs (they are isotropic/riding)
+    h_in_adps = [k for k in adps if k.startswith('H')]
+    assert len(h_in_adps) == 0, f"Hydrogen atoms should not have ADPs, found: {h_in_adps}"
 
 
 # ------------------------------------------------------------------
