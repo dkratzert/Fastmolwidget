@@ -120,6 +120,13 @@ class MoleculeWidget(QtWidgets.QWidget):
         # Cumulative rotation matrix to preserve orientation during grow
         self.cumulative_R = np.eye(3, dtype=np.float32)
 
+        # Difference density mesh: arrays of shape (N, 2, 3) with segment endpoints in Å
+        self._density_pos: np.ndarray | None = None  # positive contour (green)
+        self._density_neg: np.ndarray | None = None  # negative contour (red)
+        self._density_pos_base: np.ndarray | None = None  # unrotated originals
+        self._density_neg_base: np.ndarray | None = None
+        self._show_density: bool = True
+
         # Color caches
         self.bond_color = QColor('#555555')
         self.fallback_pen_color = QColor(QtCore.Qt.GlobalColor.black)
@@ -239,6 +246,71 @@ class MoleculeWidget(QtWidgets.QWidget):
         else:
             self.bond_drawer = self._draw_bond_rounded
         self.update()
+
+    # ------------------------------------------------------------------
+    # Density mesh API
+    # ------------------------------------------------------------------
+
+    def set_density_mesh(
+        self,
+        pos_segments: np.ndarray,
+        neg_segments: np.ndarray,
+    ) -> None:
+        """Load the wireframe isosurface mesh of the residual electron density.
+
+        Both arrays must have shape ``(N, 2, 3)`` with the two 3-D endpoints
+        (in Cartesian Å) of each segment stored along axis 1.  Either ``N``
+        may be zero (empty isosurface at the chosen level).
+
+        If the molecule has already been rotated the mesh is immediately
+        transformed into the current view orientation so that it overlays the
+        structure correctly.
+
+        :param pos_segments: Segments of the *positive* (Fo > Fc) isosurface,
+            drawn in green.
+        :param neg_segments: Segments of the *negative* (Fo < Fc) isosurface,
+            drawn in red.
+        """
+        self._density_pos_base = pos_segments.copy() if len(pos_segments) else np.empty((0, 2, 3), dtype=np.float32)
+        self._density_neg_base = neg_segments.copy() if len(neg_segments) else np.empty((0, 2, 3), dtype=np.float32)
+
+        # Apply current cumulative rotation so the map aligns with the molecule
+        self._density_pos = self._apply_rotation_to_segments(self._density_pos_base, self.cumulative_R)
+        self._density_neg = self._apply_rotation_to_segments(self._density_neg_base, self.cumulative_R)
+        self.update()
+
+    def clear_density_mesh(self) -> None:
+        """Remove the density wireframe from the display."""
+        self._density_pos = None
+        self._density_neg = None
+        self._density_pos_base = None
+        self._density_neg_base = None
+        self.update()
+
+    def show_density(self, value: bool) -> None:
+        """Toggle visibility of the difference-density wireframe mesh.
+
+        :param value: ``True`` to show, ``False`` to hide.
+        """
+        self._show_density = value
+        self.update()
+
+    @staticmethod
+    def _apply_rotation_to_segments(
+        segments: np.ndarray,
+        R: np.ndarray,
+    ) -> np.ndarray:
+        """Rotate *segments* (shape ``(N, 2, 3)``) by the 3×3 matrix *R*.
+
+        Returns a new array of the same shape.  The rotation is applied about
+        the origin (the molecule-center offset is handled separately in
+        :meth:`rotate_molecule`).
+        """
+        if len(segments) == 0:
+            return segments.copy()
+        flat = segments.reshape(-1, 3)
+        rotated = flat @ R.T
+        return rotated.reshape(segments.shape).astype(np.float32)
 
     def open_molecule(self,
                       atoms: list[Atomtuple],
@@ -659,6 +731,16 @@ class MoleculeWidget(QtWidgets.QWidget):
                     at.u_eigvecs = self._eigenvectors_array[i]
                     at.u_inv = self._u_inv_array[i]
 
+        # Rotate density mesh segments in-place (around molecule_center)
+        if self._density_pos is not None and len(self._density_pos):
+            flat = self._density_pos.reshape(-1, 3)
+            flat = np.dot(flat - self.molecule_center, R.T) + self.molecule_center
+            self._density_pos = flat.reshape(self._density_pos.shape).astype(np.float32)
+        if self._density_neg is not None and len(self._density_neg):
+            flat = self._density_neg.reshape(-1, 3)
+            flat = np.dot(flat - self.molecule_center, R.T) + self.molecule_center
+            self._density_neg = flat.reshape(self._density_neg.shape).astype(np.float32)
+
         self.update()
 
     def get_spherical_radius(self, atom: Atom) -> float:
@@ -704,6 +786,10 @@ class MoleculeWidget(QtWidgets.QWidget):
             atom.screeny = c[1] * self.scale + self.cy_global
 
         self.calculate_z_order()
+
+        # Draw density wireframe mesh behind atoms
+        if self._show_density:
+            self._draw_density_mesh()
 
         for item in self.objects:
             if not self.show_hydrogens_flag:
@@ -1064,6 +1150,43 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._painter.setPen(QPen(QColor(100, 50, 5), 2, Qt.PenStyle.SolidLine))
         r_pix = self.get_spherical_radius(atom) * self.scale
         self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
+
+    def _draw_density_mesh(self) -> None:
+        """Draw the positive (green) and negative (red) difference-density wireframe.
+
+        Each segment array has shape ``(N, 2, 3)``.  The z coordinate of each
+        midpoint is used for depth cueing: segments deeper in the scene are
+        drawn thinner and more transparent, giving the impression of a 3-D mesh.
+        Segments that project to less than 2 pixels are skipped.
+        """
+        if self._density_pos is None and self._density_neg is None:
+            return
+
+        # Wire width (cosmetic – 1 px regardless of zoom)
+        pen_pos = QPen(QColor(0, 180, 0), 1, Qt.PenStyle.SolidLine)
+        pen_neg = QPen(QColor(220, 0, 0), 1, Qt.PenStyle.SolidLine)
+        pen_pos.setCosmetic(True)
+        pen_neg.setCosmetic(True)
+
+        def _draw_segs(segs: np.ndarray, pen: QPen) -> None:
+            if segs is None or len(segs) == 0:
+                return
+            self._painter.setPen(pen)
+            scale = self.scale
+            cx = self.cx_global
+            cy = self.cy_global
+            for seg in segs:
+                x1 = seg[0, 0] * scale + cx
+                y1 = seg[0, 1] * scale + cy
+                x2 = seg[1, 0] * scale + cx
+                y2 = seg[1, 1] * scale + cy
+                # Skip segments that are too short to see (< 2 px projected length)
+                if (x2 - x1) ** 2 + (y2 - y1) ** 2 < 4.0:
+                    continue
+                self._painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+
+        _draw_segs(self._density_pos, pen_pos)
+        _draw_segs(self._density_neg, pen_neg)
 
     def get_conntable_from_atoms(self, extra_param: float = 1.2) -> tuple:
         """Build a connectivity table from atomic coordinates and covalent radii."""

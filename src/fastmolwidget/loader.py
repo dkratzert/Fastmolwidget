@@ -13,6 +13,7 @@ Example usage::
     widget = MoleculeWidget()
     loader = MoleculeLoader(widget)
     loader.load_file("structure.cif")
+    loader.load_diff_map(level_sigma=3.0)
 """
 
 from __future__ import annotations
@@ -327,3 +328,64 @@ class MoleculeLoader:
                 f"parsed from {path}"
             )
         return atoms
+
+    # ------------------------------------------------------------------
+    # Difference electron density map
+    # ------------------------------------------------------------------
+
+    def load_diff_map(
+        self,
+        hkl_path: str | Path | None = None,
+        level_sigma: float = 3.0,
+    ) -> None:
+        """Compute and display the residual (Fo − Fc) electron density map.
+
+        The difference Fourier map is computed from the most recently loaded
+        CIF file using :func:`~fastmolwidget.diff_map.compute_diff_map`.
+        Crystal symmetry is fully taken into account: the calculated structure
+        factors Fc use the space-group operators from the CIF, so the resulting
+        map covers the complete unit cell and is consistent with any grown
+        (SDM-expanded) structure currently displayed.
+
+        The positive residual density (green) indicates positions where the
+        observed electron density exceeds the model; the negative residual
+        (red) indicates where the model has over-predicted the density.
+
+        :param hkl_path: Path to a SHELX4 HKL file.  When ``None`` (default)
+            the method first tries a file with the same stem as the CIF
+            (e.g. ``myfile.hkl``), then falls back to the ``_shelx_hkl_file``
+            data embedded in the CIF itself.
+        :param level_sigma: Contour level as a multiple of the map r.m.s.
+            deviation (σ).  Default 3.0.  Lower values (e.g. 2.5) show weaker
+            features; higher values (e.g. 5.0) show only the strongest peaks.
+        :raises ValueError: If no CIF file has been loaded yet, or if no HKL
+            data can be located.
+        :raises ImportError: If :mod:`skimage` is not available.
+        """
+        if self._last_path is None or self._last_path.suffix.lower() not in {'.cif'}:
+            raise ValueError(
+                "A CIF file must be loaded before calling load_diff_map()."
+            )
+
+        from fastmolwidget.diff_map import compute_diff_map, get_mesh_segments
+
+        # Auto-detect HKL file alongside the CIF when not provided explicitly
+        resolved_hkl: Path | None = None
+        if hkl_path is not None:
+            resolved_hkl = Path(hkl_path)
+        else:
+            cif_stem = self._last_path.stem
+            cif_dir = self._last_path.parent
+            for candidate in (
+                cif_dir / f"{cif_stem}.hkl",
+                cif_dir / f"{cif_stem}-finalcif.hkl",
+            ):
+                if candidate.exists():
+                    resolved_hkl = candidate
+                    break
+            # If no external HKL found, compute_diff_map will read the
+            # embedded _shelx_hkl_file from the CIF.
+
+        result = compute_diff_map(self._last_path, hkl_path=resolved_hkl)
+        pos_segs, neg_segs = get_mesh_segments(result, level_sigma=level_sigma)
+        self._widget.set_density_mesh(pos_segs, neg_segs)
