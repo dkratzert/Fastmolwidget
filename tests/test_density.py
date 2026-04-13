@@ -12,7 +12,7 @@ from fastmolwidget.density import (
 )
 from fastmolwidget.isosurface import marching_cubes_wireframe
 
-data = Path('tests/test-data')
+test_data_dir = Path('tests/test-data')
 
 
 # ------------------------------------------------------------------
@@ -21,7 +21,7 @@ data = Path('tests/test-data')
 
 class TestReadHklData:
     def test_read_from_file(self):
-        reflections = read_hkl_data(data / 'p31c-finalcif.hkl')
+        reflections = read_hkl_data(test_data_dir / 'p31c-finalcif.hkl')
         assert len(reflections) > 1000
         h, k, l, fo2, sig = reflections[0]
         assert isinstance(h, int)
@@ -62,7 +62,7 @@ class TestMergeReflections:
 
 class TestComputeDifferenceDensity:
     def test_p21c_cif_embedded_hkl(self):
-        arr, cell, sg = compute_difference_density(data / 'p21c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p21c.cif')
         assert arr.ndim == 3
         assert arr.shape[0] > 10
         assert arr.shape[1] > 10
@@ -74,22 +74,22 @@ class TestComputeDifferenceDensity:
 
     def test_p31c_cif_external_hkl(self):
         arr, cell, sg = compute_difference_density(
-            data / 'p31c.cif',
-            hkl_path=data / 'p31c-finalcif.hkl',
+            test_data_dir / 'p31c.cif',
+            hkl_path=test_data_dir / 'p31c-finalcif.hkl',
         )
         assert arr.ndim == 3
         rms = np.sqrt(np.mean(arr ** 2))
         assert rms > 0
 
     def test_p31c_cif_embedded_hkl(self):
-        arr, cell, sg = compute_difference_density(data / 'p31c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p31c.cif')
         assert arr.ndim == 3
         rms = np.sqrt(np.mean(arr ** 2))
         assert rms > 0
 
     def test_returns_unit_cell_and_spacegroup(self):
         import gemmi
-        arr, cell, sg = compute_difference_density(data / 'p21c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p21c.cif')
         assert isinstance(cell, gemmi.UnitCell)
         assert isinstance(sg, gemmi.SpaceGroup)
         assert cell.a > 0
@@ -103,7 +103,7 @@ class TestComputeDifferenceDensity:
 
 class TestMarchingCubesWireframe:
     def test_positive_isosurface(self):
-        arr, cell, sg = compute_difference_density(data / 'p21c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p21c.cif')
         rms = np.sqrt(np.mean(arr ** 2))
         segments = marching_cubes_wireframe(arr, 3.0 * rms, cell)
         assert segments.ndim == 2
@@ -111,7 +111,7 @@ class TestMarchingCubesWireframe:
         assert len(segments) > 0
 
     def test_negative_isosurface(self):
-        arr, cell, sg = compute_difference_density(data / 'p21c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p21c.cif')
         rms = np.sqrt(np.mean(arr ** 2))
         segments = marching_cubes_wireframe(arr, -3.0 * rms, cell)
         assert segments.ndim == 2
@@ -119,13 +119,13 @@ class TestMarchingCubesWireframe:
         assert len(segments) > 0
 
     def test_no_isosurface_at_extreme_level(self):
-        arr, cell, sg = compute_difference_density(data / 'p21c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p21c.cif')
         # Very high level - should produce no segments
         segments = marching_cubes_wireframe(arr, 1000.0, cell)
         assert len(segments) == 0
 
     def test_segments_are_cartesian(self):
-        arr, cell, sg = compute_difference_density(data / 'p21c.cif')
+        arr, cell, sg = compute_difference_density(test_data_dir / 'p21c.cif')
         rms = np.sqrt(np.mean(arr ** 2))
         segments = marching_cubes_wireframe(arr, 3.0 * rms, cell)
         # Segments should be within the unit cell bounds (approximately)

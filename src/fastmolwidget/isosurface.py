@@ -8,6 +8,7 @@ electron-density isosurfaces.
 
 from __future__ import annotations
 
+import gemmi
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -430,7 +431,3 @@ def marching_cubes_wireframe(
     if not segments:
         return np.empty((0, 6), dtype=np.float64)
     return np.array(segments, dtype=np.float64)
-
-
-# We need gemmi for the Fractional type
-import gemmi  # noqa: E402
