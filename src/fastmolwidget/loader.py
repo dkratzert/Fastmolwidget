@@ -20,6 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Generator
 
+import numpy as np
 from shelxfile import Shelxfile
 
 from fastmolwidget.cif.cif_file_io import CifReader, adp
@@ -49,6 +50,9 @@ class MoleculeLoader:
         self._widget = widget
         self._grow_enabled: bool = False
         self._last_path: Path | None = None
+        self._density_enabled: bool = False
+        self._density_sigma: float = 3.0
+        self._hkl_path: Path | None = None
 
     @property
     def widget(self) -> MoleculeWidget:
@@ -97,6 +101,87 @@ class MoleculeLoader:
         if (self._last_path is not None
                 and self._last_path.suffix.lower() in self._GROWABLE_FORMATS):
             self.load_file(self._last_path, keep_view=True)
+
+    def set_density(self, enabled: bool) -> None:
+        """Toggle residual electron-density wireframe display.
+
+        When enabled, the loader computes and draws the Fo−Fc difference
+        density isosurface.  Requires a CIF file with HKL data (either
+        embedded or as a separate ``.hkl`` file).
+
+        :param enabled: ``True`` to show density, ``False`` to hide it.
+        """
+        self._density_enabled = enabled
+        self._widget.show_density(enabled)
+        if enabled and self._last_path is not None:
+            self._load_density()
+
+    def set_density_sigma(self, sigma: float) -> None:
+        """Set the isosurface level in multiples of the RMS density.
+
+        :param sigma: Number of standard deviations for the iso-level
+            (e.g. 3.0 for ±3σ).
+        """
+        self._density_sigma = max(0.5, sigma)
+        if self._density_enabled and self._last_path is not None:
+            self._load_density()
+
+    def set_hkl_path(self, path: str | Path | None) -> None:
+        """Set an explicit path to a ``.hkl`` file.
+
+        When ``None``, the loader tries the embedded ``_shelx_hkl_file`` data
+        from the CIF.
+
+        :param path: Path to a SHELX HKL file, or ``None``.
+        """
+        self._hkl_path = Path(path) if path is not None else None
+
+    def _load_density(self) -> None:
+        """Compute and set the residual density wireframe on the widget."""
+        if self._last_path is None:
+            return
+
+        suffix = self._last_path.suffix.lower()
+        if suffix != '.cif':
+            return
+
+        try:
+            from fastmolwidget.density import compute_difference_density
+            from fastmolwidget.isosurface import marching_cubes_wireframe
+
+            # Determine HKL path: explicit > auto-detect sibling > embedded
+            hkl_path = self._hkl_path
+            if hkl_path is None:
+                # Try to find a sibling .hkl file
+                candidates = list(self._last_path.parent.glob('*.hkl'))
+                stem = self._last_path.stem
+                for c in candidates:
+                    if stem in c.stem:
+                        hkl_path = c
+                        break
+
+            density_arr, cell, spacegroup = compute_difference_density(
+                self._last_path, hkl_path=hkl_path,
+            )
+            rms = float(np.sqrt(np.mean(density_arr ** 2)))
+            if rms < 1e-12:
+                self._widget.set_density_wireframe(
+                    np.empty((0, 6)), np.empty((0, 6)),
+                )
+                return
+
+            pos_level = self._density_sigma * rms
+            neg_level = -self._density_sigma * rms
+
+            pos_segs = marching_cubes_wireframe(density_arr, pos_level, cell)
+            neg_segs = marching_cubes_wireframe(density_arr, neg_level, cell)
+
+            self._widget.set_density_wireframe(pos_segs, neg_segs)
+        except Exception as e:
+            print(f"Failed to compute residual density: {e}")
+            self._widget.set_density_wireframe(
+                np.empty((0, 6)), np.empty((0, 6)),
+            )
 
     # ------------------------------------------------------------------
     # CIF loading

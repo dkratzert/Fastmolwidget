@@ -97,6 +97,11 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.bond_drawer = self._draw_bond_rounded
 
         self.show_hydrogens_flag = True
+        self._show_density = False
+
+        # Density wireframe data (Nx6 arrays of [x1,y1,z1,x2,y2,z2] in Cartesian)
+        self._density_pos_segments: np.ndarray = np.empty((0, 6), dtype=np.float64)
+        self._density_neg_segments: np.ndarray = np.empty((0, 6), dtype=np.float64)
 
         # Track selected atoms and bonds as sets for multi-selection
         self.selected_atoms: set[str] = set()
@@ -230,6 +235,27 @@ class MoleculeWidget(QtWidgets.QWidget):
     def show_adps(self, value: bool):
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
         self._show_adps = value
+        self.update()
+
+    def show_density(self, value: bool):
+        """Toggle the display of the residual electron-density wireframe."""
+        self._show_density = value
+        self.update()
+
+    def set_density_wireframe(
+        self,
+        positive_segments: np.ndarray,
+        negative_segments: np.ndarray,
+    ) -> None:
+        """Set the density isosurface wireframe data.
+
+        :param positive_segments: ``(N, 6)`` array of line segments
+            ``[x1, y1, z1, x2, y2, z2]`` for positive residual density.
+        :param negative_segments: ``(M, 6)`` array of line segments
+            for negative residual density.
+        """
+        self._density_pos_segments = np.asarray(positive_segments, dtype=np.float64)
+        self._density_neg_segments = np.asarray(negative_segments, dtype=np.float64)
         self.update()
 
     def show_round_bonds(self, bond_type: bool = True):
@@ -705,6 +731,10 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         self.calculate_z_order()
 
+        # Draw density wireframe first (behind the molecule)
+        if self._show_density:
+            self._draw_density_wireframe()
+
         for item in self.objects:
             if not self.show_hydrogens_flag:
                 if item.atom1.type_ in hydrogens or (item.is_bond and item.atom2.type_ in hydrogens):
@@ -716,6 +746,47 @@ class MoleculeWidget(QtWidgets.QWidget):
                 if self.labels and item.atom1.type_ not in hydrogens:
                     self.draw_label(item.atom1)
         self._painter.end()
+
+    def _draw_density_wireframe(self) -> None:
+        """Draw the residual electron-density isosurface as a wireframe.
+
+        Positive density is drawn in green, negative density in red.
+        The segments are transformed by the current cumulative rotation so they
+        rotate with the molecule.
+        """
+        if self._painter is None:
+            return
+
+        for segments, color in (
+            (self._density_pos_segments, QColor(0, 180, 0, 160)),
+            (self._density_neg_segments, QColor(220, 0, 0, 160)),
+        ):
+            if len(segments) == 0:
+                continue
+
+            pen = QPen(color, max(1.0, self._factor * 2.0), Qt.PenStyle.SolidLine)
+            self._painter.setPen(pen)
+
+            # Extract start and end points  (N, 3) each
+            pts1 = segments[:, :3].copy()
+            pts2 = segments[:, 3:].copy()
+
+            # Apply cumulative rotation around molecule center
+            center = self.molecule_center
+            pts1 = np.dot(pts1 - center, self.cumulative_R.T) + center
+            pts2 = np.dot(pts2 - center, self.cumulative_R.T) + center
+
+            # Project to screen coordinates
+            sx1 = pts1[:, 0] * self.scale + self.cx_global
+            sy1 = pts1[:, 1] * self.scale + self.cy_global
+            sx2 = pts2[:, 0] * self.scale + self.cx_global
+            sy2 = pts2[:, 1] * self.scale + self.cy_global
+
+            for i in range(len(sx1)):
+                self._painter.drawLine(
+                    int(sx1[i]), int(sy1[i]),
+                    int(sx2[i]), int(sy2[i]),
+                )
 
     def calculate_z_order(self):
         """Sort :attr:`objects` back-to-front by depth for the painter's algorithm."""

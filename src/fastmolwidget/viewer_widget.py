@@ -44,6 +44,14 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_type_checkbox = QtWidgets.QCheckBox("Round Bonds")
         self._hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
         self._grow_checkbox = QtWidgets.QCheckBox("Grow")
+        self._density_checkbox = QtWidgets.QCheckBox("Density (Fo²−Fc²)")
+
+        self._sigma_label = QtWidgets.QLabel("σ:")
+        self._sigma_spinbox = QtWidgets.QDoubleSpinBox()
+        self._sigma_spinbox.setRange(0.5, 10.0)
+        self._sigma_spinbox.setValue(3.0)
+        self._sigma_spinbox.setSingleStep(0.5)
+        self._sigma_spinbox.setDecimals(1)
 
         self._bw_label = QtWidgets.QLabel("Bond Width:")
         self._bond_width_spinbox = QtWidgets.QSpinBox()
@@ -62,6 +70,8 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._grow_checkbox.toggled.connect(self._loader.set_grow)
+        self._density_checkbox.toggled.connect(self._loader.set_density)
+        self._sigma_spinbox.valueChanged.connect(self._loader.set_density_sigma)
 
         # apply initial defaults to the renderer
         self._render_widget.set_bond_width(3)
@@ -75,6 +85,9 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar.addWidget(self._label_checkbox)
         control_bar.addWidget(self._bond_type_checkbox)
         control_bar.addWidget(self._hydrogens_checkbox)
+        control_bar.addWidget(self._density_checkbox)
+        control_bar.addWidget(self._sigma_label)
+        control_bar.addWidget(self._sigma_spinbox)
         control_bar.addWidget(self._bw_label)
         control_bar.addWidget(self._bond_width_spinbox)
         control_bar.addStretch()
