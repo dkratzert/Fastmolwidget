@@ -1,0 +1,69 @@
+# This workflow will install Python dependencies, run tests and lint with a single version of Python
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Tests
+
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    env:
+      DISPLAY: ':99.0'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: [ "3.11", "3.12", "3.13", "3.14" ]
+        os: [ windows-latest ]#, ubuntu-latest ]  # Ubuntu has problems atm
+        include:
+          #- os: ubuntu-latest
+          #  path: ~/.cache/pip
+          #- os: macos-latest
+          #  path: ~/Library/Caches/pip
+          - os: windows-latest
+            path: ~\AppData\Local\pip\Cache
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv and set the python version
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Set up testing
+        run: uv add flake8 pytest
+
+      - name: Lint with flake8
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --ignore=E203,E127,E128,E227,E501,W291,W503,E266 --exclude=.venv,cgi_ui/bottle.py
+          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics  --ignore=E203,E203,E127,E128,E227,E501,W291,W503,E266 --exclude=.venv,cgi_ui/bottle.py
+
+      - name: Test with pytest
+        run:
+          # Not needed with offscreen rendering:
+          #if [ "$RUNNER_OS" == "Linux" ]; then
+          #  # Ubuntu needs this to be able to start pyqt6
+          #  sudo apt-get update
+          #  sudo apt-get -qq install libxcb-xinerama0 pyqt6-dev-tools
+          #  xvfb-run --auto-servernum pytest
+          #else
+            uv run pytest tests
+          #fi
+
