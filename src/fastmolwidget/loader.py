@@ -101,6 +101,9 @@ class MoleculeLoader:
         if (self._last_path is not None
                 and self._last_path.suffix.lower() in self._GROWABLE_FORMATS):
             self.load_file(self._last_path, keep_view=True)
+            # Re-compute density with updated symmetry replication
+            if self._density_enabled:
+                self._load_density()
 
     def set_density(self, enabled: bool) -> None:
         """Toggle residual electron-density wireframe display.
@@ -137,7 +140,12 @@ class MoleculeLoader:
         self._hkl_path = Path(path) if path is not None else None
 
     def _load_density(self) -> None:
-        """Compute and set the residual density wireframe on the widget."""
+        """Compute and set the residual density wireframe on the widget.
+
+        When grow mode is active, the density wireframe is replicated to cover
+        all unit cells that contain atoms of the grown structure, ensuring the
+        density display is consistent with the expanded crystal symmetry.
+        """
         if self._last_path is None:
             return
 
@@ -148,6 +156,7 @@ class MoleculeLoader:
         try:
             from fastmolwidget.density import compute_difference_density
             from fastmolwidget.isosurface import marching_cubes_wireframe
+            import gemmi
 
             # Determine HKL path: explicit > auto-detect sibling > embedded
             hkl_path = self._hkl_path
@@ -176,12 +185,83 @@ class MoleculeLoader:
             pos_segs = marching_cubes_wireframe(density_arr, pos_level, cell)
             neg_segs = marching_cubes_wireframe(density_arr, neg_level, cell)
 
+            # When grow is enabled, replicate density for neighboring unit cells
+            # to match the expanded structure.
+            if self._grow_enabled and len(self._widget.atoms) > 0:
+                pos_segs = self._replicate_density_segments(
+                    pos_segs, cell,
+                )
+                neg_segs = self._replicate_density_segments(
+                    neg_segs, cell,
+                )
+
             self._widget.set_density_wireframe(pos_segs, neg_segs)
         except Exception as e:
             print(f"Failed to compute residual density: {e}")
             self._widget.set_density_wireframe(
                 np.empty((0, 6)), np.empty((0, 6)),
             )
+
+    def _replicate_density_segments(
+        self,
+        segments: np.ndarray,
+        cell: 'gemmi.UnitCell',
+    ) -> np.ndarray:
+        """Replicate density wireframe segments to cover all unit cells
+        that overlap the bounding box of the currently displayed atoms.
+
+        The residual density map has the periodicity of the unit cell. When
+        the structure is grown to show complete molecules across cell
+        boundaries, the density wireframe must be translated by lattice
+        vectors to cover those regions.
+
+        :param segments: ``(N, 6)`` array of line segments in Cartesian.
+        :param cell: The unit cell for fractional ↔ Cartesian conversion.
+        :returns: Expanded ``(M, 6)`` array of segments.
+        """
+        import gemmi
+
+        if len(segments) == 0 or len(self._widget.atoms) == 0:
+            return segments
+
+        # Determine the bounding box of atoms in fractional coordinates
+        min_frac = np.array([1e9, 1e9, 1e9])
+        max_frac = np.array([-1e9, -1e9, -1e9])
+        for atom in self._widget.atoms:
+            pos = gemmi.Position(*atom.coordinate)
+            frac = cell.fractionalize(pos)
+            f = np.array([frac.x, frac.y, frac.z])
+            min_frac = np.minimum(min_frac, f)
+            max_frac = np.maximum(max_frac, f)
+
+        # Determine integer translation range (unit cells to replicate)
+        n_min = np.floor(min_frac).astype(int)
+        n_max = np.floor(max_frac).astype(int)
+
+        # The base segments already cover (0,0,0).  Generate translations.
+        translations = []
+        for na in range(n_min[0], n_max[0] + 1):
+            for nb in range(n_min[1], n_max[1] + 1):
+                for nc in range(n_min[2], n_max[2] + 1):
+                    if na == 0 and nb == 0 and nc == 0:
+                        continue  # Skip identity (already present)
+                    frac_shift = gemmi.Fractional(float(na), float(nb), float(nc))
+                    cart_shift = cell.orthogonalize(frac_shift)
+                    translations.append(
+                        np.array([cart_shift.x, cart_shift.y, cart_shift.z])
+                    )
+
+        if not translations:
+            return segments
+
+        all_segments = [segments]
+        for shift in translations:
+            shifted = segments.copy()
+            shifted[:, :3] += shift
+            shifted[:, 3:] += shift
+            all_segments.append(shifted)
+
+        return np.concatenate(all_segments, axis=0)
 
     # ------------------------------------------------------------------
     # CIF loading
