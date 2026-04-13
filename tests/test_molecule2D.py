@@ -156,15 +156,15 @@ def test_molecule_widget_rotation_matrices():
 
 def test_mouse_events_record_position():
     widget = MoleculeWidget()
+    widget.resize(200, 200)
+    widget.show()
 
-    from qtpy.QtGui import QMouseEvent
-    from qtpy.QtCore import QPointF
+    from qtpy.QtCore import QPointF, QPoint
     from qtpy import QtCore
+    from qtpy.QtTest import QTest
 
-    event = QMouseEvent(QtCore.QEvent.Type.MouseButtonPress, QPointF(10.0, 20.0),
-                        QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.LeftButton,
-                        QtCore.Qt.KeyboardModifier.NoModifier)
-    widget.mousePressEvent(event)
+    QTest.mousePress(widget, QtCore.Qt.MouseButton.LeftButton,
+                     QtCore.Qt.KeyboardModifier.NoModifier, QPoint(10, 20))
 
     assert widget._lastPos == QPointF(10.0, 20.0)
     assert widget._pressPos == QPointF(10.0, 20.0)
