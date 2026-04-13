@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "gemmi>=0.7.5",
-    "numpy>=2.4.4",
+    "numpy>=2.2.0",
     "qtpy>=2.4.3",
     "shelxfile>=22",
 ]

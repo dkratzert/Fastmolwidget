@@ -154,7 +154,7 @@ doc = [
 [package.metadata]
 requires-dist = [
     { name = "gemmi", specifier = ">=0.7.5" },
-    { name = "numpy", specifier = ">=2.4.4" },
+    { name = "numpy", specifier = ">=2.2.0" },
     { name = "pyqt6", marker = "extra == 'pyqt6'", specifier = ">=6.9.0" },
     { name = "pyside6-essentials", marker = "extra == 'pyside6'", specifier = ">=6.11.0" },
     { name = "qtpy", specifier = ">=2.4.3" },
