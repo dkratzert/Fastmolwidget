@@ -8,7 +8,7 @@ all drawn with a pure-Python QPainter backend (no OpenGL required).
 
 ## Screenshot
 
-![Fastmolwidget showing an ORTEP-style crystal structure](https://github.com/user-attachments/assets/7946ef73-7e74-475d-a5c6-2012243b9f77)
+![Fastmolwidget showing an ORTEP-style crystal structure](https://github.com/dkratzert/Fastmolwidget/blob/main/docs/images/screenshot.png?raw=true)
 
 *View of a crystal structure from a CIF file with ADP ellipsoids. The control bar allows toggling display options interactively.*
 
