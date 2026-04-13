@@ -71,6 +71,7 @@ from fastmolwidget import MoleculeWidget, MoleculeLoader
 
 mol = MoleculeWidget(parent=self)
 loader = MoleculeLoader(mol)
+# The loader recognizes the file format from the extension and populates `mol` accordingly
 loader.load_file("structure.cif")
 
 # drop `mol` into any QLayout
