@@ -85,29 +85,20 @@ jobs:
           name: release-dists
           path: dist/
 
-  testpypi-publish:
-    runs-on: ubuntu-latest
+  pypi-publish:
     needs:
       - release-build
-    permissions:
-      # IMPORTANT: this permission is mandatory for trusted publishing
-      id-token: write
-
-    # Dedicated environments with protections for publishing are strongly recommended.
-    # For more information, see: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#deployment-protection-rules
+    name: publish
+    runs-on: ubuntu-latest
     environment:
-      name: testpypi
-      url: https://test.pypi.org/project/fastmolwidget/
-
+      name: publish
+      url: https://pypi.org/p/fastmolwidget
+    permissions:
+      contents: read
+      id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
     steps:
-      - name: Retrieve release distributions
-        uses: actions/download-artifact@v8
-        with:
-          name: release-dists
-          path: dist/
-
-      - name: Publish release distributions to TestPyPI
+      - uses: actions/download-artifact@v8
+      - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/
-          repository-url: https://test.pypi.org/legacy/
+          packages-dir: artifact/
