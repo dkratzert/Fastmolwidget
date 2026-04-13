@@ -58,7 +58,7 @@ def test_embedded_hkl_gives_same_result(result):
 def test_missing_hkl_raises():
     """Raises ValueError when the CIF has no HKL data and no file is given."""
     # Use a CIF without embedded HKL and provide no external path
-    with pytest.raises((ValueError, Exception)):
+    with pytest.raises(ValueError):
         compute_diff_map(data / 'smallcif.cif')
 
 

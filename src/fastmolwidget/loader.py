@@ -351,7 +351,7 @@ class MoleculeLoader:
         observed electron density exceeds the model; the negative residual
         (red) indicates where the model has over-predicted the density.
 
-        :param hkl_path: Path to a SHELX4 HKL file.  When ``None`` (default)
+        :param hkl_path: Path to a SHELX HKL file.  When ``None`` (default)
             the method first tries a file with the same stem as the CIF
             (e.g. ``myfile.hkl``), then falls back to the ``_shelx_hkl_file``
             data embedded in the CIF itself.

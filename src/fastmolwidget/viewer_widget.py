@@ -148,7 +148,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         Must be called after :meth:`load_file` with a CIF file.  The method
         delegates to :meth:`~fastmolwidget.loader.MoleculeLoader.load_diff_map`.
 
-        :param hkl_path: Explicit path to a SHELX4 HKL file, or ``None`` to
+        :param hkl_path: Explicit path to a SHELX HKL file, or ``None`` to
             auto-detect.
         :param level_sigma: Contour level in σ units (defaults to the value
             shown in the σ spinbox).

@@ -2,7 +2,7 @@
 Difference Fourier electron density map computation.
 
 Computes an (Fo − Fc) difference map from a refined crystal structure (CIF)
-and its measured reflections (HKL file, SHELX4 format).  The heavy lifting is
+and its measured reflections (HKL file, SHELX format).  The heavy lifting is
 done entirely by the :mod:`gemmi` library; the result is an isosurface mesh
 ready for display in :class:`~fastmolwidget.molecule2D.MoleculeWidget`.
 
@@ -56,7 +56,7 @@ class DiffMapResult(NamedTuple):
 # ---------------------------------------------------------------------------
 
 def _parse_hkl_shelx(hkl_text: str) -> dict[tuple[int, int, int], tuple[float, float]]:
-    """Parse a SHELX4-format HKL file (h k l Fo² σ [batch]) and return merged
+    """Parse a SHELX HKL file (h k l Fo² σ [batch]) and return merged
     unique reflections as *{(h,k,l): (Fo², σ)}*.
 
     Multiple observations of the same HKL index are averaged (simple mean).
@@ -220,7 +220,7 @@ def compute_diff_map(
     :param cif_path: Path to the CIF file (must contain atom-site data and
         either an embedded ``_shelx_hkl_file`` loop or a reference to an
         external HKL file).
-    :param hkl_path: Optional explicit path to a SHELX4 HKL file.  When
+    :param hkl_path: Optional explicit path to a SHELX HKL file.  When
         ``None`` the method tries to read the reflection data embedded in the
         CIF via ``_shelx_hkl_file``.
     :returns: :class:`DiffMapResult` with the density grid and metadata.
