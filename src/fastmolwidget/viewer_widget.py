@@ -80,7 +80,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._density_level_spin = QtWidgets.QDoubleSpinBox()
         self._density_level_spin.setRange(1.0, 20.0)
         self._density_level_spin.setSingleStep(0.5)
-        self._density_level_spin.setValue(3.0)
+        self._density_level_spin.setValue(2.3)
         self._density_level_spin.setDecimals(1)
         self._density_level_spin.setToolTip(
             "Contour level for the difference map expressed as multiples of σ"
@@ -182,6 +182,7 @@ if __name__ == '__main__':
 
     w = MoleculeViewerWidget()
     #w.load_file('../../tests/test-data/p31c.cif')
-    w.load_file('../../tests/test-data/p31c-finalcif.res')
+    w.load_file('../../tests/test-data/1979688.cif')
+    #w.load_file('../../tests/test-data/p31c-finalcif.res')
     w.show()
     app.exec()
