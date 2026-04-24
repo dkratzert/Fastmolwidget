@@ -1,0 +1,331 @@
+"""Tests for :class:`~fastmolwidget.molecule3D.MoleculeWidget3D` and
+:class:`~fastmolwidget.viewer_widget3D.MoleculeViewer3DWidget`.
+
+OpenGL rendering is skipped on headless CI runners where *PyOpenGL* or a real
+GPU context is unavailable; the widget then shows a text fallback, which is all
+we can reasonably test in that environment.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+from qtpy import QtWidgets
+
+from fastmolwidget.molecule3D import MoleculeWidget3D
+from fastmolwidget.molecule_base import MoleculeWidgetProtocol
+from fastmolwidget.sdm import Atomtuple
+from fastmolwidget.viewer_widget3D import MoleculeViewer3DWidget
+
+app = QtWidgets.QApplication.instance()
+if not app:
+    app = QtWidgets.QApplication([])
+
+data = Path("tests/test-data")
+
+
+# ------------------------------------------------------------------
+# Protocol compliance
+# ------------------------------------------------------------------
+
+def test_widget3d_satisfies_protocol():
+    """MoleculeWidget3D must satisfy MoleculeWidgetProtocol."""
+    widget = MoleculeWidget3D()
+    assert isinstance(widget, MoleculeWidgetProtocol)
+
+
+# ------------------------------------------------------------------
+# Construction
+# ------------------------------------------------------------------
+
+def test_construction_defaults():
+    widget = MoleculeWidget3D()
+    assert widget.atoms_size == 12
+    assert widget.fontsize == 13
+    assert widget.bond_width == 3
+    assert widget.labels is True
+    assert widget._show_adps is True
+    assert widget.show_hydrogens_flag is True
+
+
+def test_viewer3d_construction():
+    w = MoleculeViewer3DWidget()
+    assert w is not None
+    assert w.render_widget is not None
+    assert isinstance(w.render_widget, MoleculeWidget3D)
+
+
+# ------------------------------------------------------------------
+# open_molecule / clear
+# ------------------------------------------------------------------
+
+def test_open_molecule_atoms():
+    widget = MoleculeWidget3D()
+    atoms = [
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    assert len(widget.atoms) == 2
+    assert widget.atoms[0].label == "C1"
+    assert widget.atoms[1].type_ == "O"
+
+
+def test_open_molecule_clear():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+    assert len(widget.atoms) == 1
+
+    widget.clear()
+    assert len(widget.atoms) == 0
+
+
+def test_open_molecule_resets_view():
+    widget = MoleculeWidget3D()
+    widget._zoom = 3.0
+    widget._pan = np.array([1.0, 2.0], dtype=np.float32)
+
+    widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+    assert widget._zoom == 1.0
+    np.testing.assert_array_equal(widget._pan, [0.0, 0.0])
+
+
+def test_open_molecule_keep_view():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+    widget._zoom = 2.5
+
+    widget.open_molecule(
+        [Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0), Atomtuple("N1", "N", 1.5, 0.0, 0.0, 0)],
+        keep_view=True,
+    )
+    assert widget._zoom == pytest.approx(2.5)
+    assert len(widget.atoms) == 2
+
+
+# ------------------------------------------------------------------
+# View control
+# ------------------------------------------------------------------
+
+def test_reset_view():
+    widget = MoleculeWidget3D()
+    widget._zoom = 3.0
+    widget._pan = np.array([5.0, -3.0], dtype=np.float32)
+
+    widget.reset_view()
+    assert widget._zoom == 1.0
+    np.testing.assert_array_equal(widget._pan, [0.0, 0.0])
+    np.testing.assert_array_equal(widget._rot_matrix, np.eye(3, dtype=np.float32))
+
+
+# ------------------------------------------------------------------
+# Display toggles
+# ------------------------------------------------------------------
+
+def test_show_adps_toggle():
+    widget = MoleculeWidget3D()
+    widget.show_adps(False)
+    assert widget._show_adps is False
+    widget.show_adps(True)
+    assert widget._show_adps is True
+
+
+def test_show_labels_toggle():
+    widget = MoleculeWidget3D()
+    widget.show_labels(True)
+    assert widget.labels is True
+    widget.show_labels(False)
+    assert widget.labels is False
+
+
+def test_show_labels_via_set_labels_visible():
+    widget = MoleculeWidget3D()
+    widget.set_labels_visible(False)
+    assert widget.labels is False
+
+
+def test_show_hydrogens_toggle():
+    widget = MoleculeWidget3D()
+    widget.show_hydrogens(False)
+    assert widget.show_hydrogens_flag is False
+    widget.show_hydrogens(True)
+    assert widget.show_hydrogens_flag is True
+
+
+def test_show_round_bonds_toggle():
+    widget = MoleculeWidget3D()
+    widget.show_round_bonds(False)
+    assert widget._round_bonds is False
+    widget.show_round_bonds(True)
+    assert widget._round_bonds is True
+
+
+def test_set_bond_width():
+    widget = MoleculeWidget3D()
+    widget.set_bond_width(7)
+    assert widget.bond_width == 7
+
+
+def test_set_label_font():
+    widget = MoleculeWidget3D()
+    widget.setLabelFont(20)
+    assert widget.fontsize == 20
+    # Must clamp to minimum of 1
+    widget.setLabelFont(-5)
+    assert widget.fontsize == 1
+
+
+def test_set_background_color():
+    from qtpy.QtGui import QColor
+
+    widget = MoleculeWidget3D()
+    widget.set_background_color(QColor(0, 0, 0))
+    r, g, b = widget._bg_rgb
+    assert r == pytest.approx(0.0)
+    assert g == pytest.approx(0.0)
+    assert b == pytest.approx(0.0)
+
+
+# ------------------------------------------------------------------
+# Connectivity
+# ------------------------------------------------------------------
+
+def test_connections_built():
+    """Two bonded atoms should produce one connection."""
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 0),
+    ])
+    assert len(widget.connections) == 1
+
+
+def test_no_connections_far_apart():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 10.0, 0.0, 0.0, 0),
+    ])
+    assert len(widget.connections) == 0
+
+
+# ------------------------------------------------------------------
+# CIF loading (via viewer3D)
+# ------------------------------------------------------------------
+
+def test_viewer3d_load_cif():
+    w = MoleculeViewer3DWidget()
+    w.load_file(data / "1979688_small.cif")
+    assert len(w.render_widget.atoms) == 94
+
+
+def test_viewer3d_load_xyz():
+    w = MoleculeViewer3DWidget()
+    w.load_file(data / "test_molecule.xyz")
+    assert len(w.render_widget.atoms) == 5
+
+
+def test_viewer3d_load_shelx():
+    w = MoleculeViewer3DWidget()
+    w.load_file(data / "test_molecule.res")
+    assert len(w.render_widget.atoms) == 5
+
+
+def test_viewer3d_unsupported_format():
+    w = MoleculeViewer3DWidget()
+    with pytest.raises(ValueError, match="Unsupported file format"):
+        w.load_file(data / "fake.pdb")
+
+
+def test_viewer3d_missing_file():
+    w = MoleculeViewer3DWidget()
+    with pytest.raises(FileNotFoundError):
+        w.load_file("nonexistent.cif")
+
+
+# ------------------------------------------------------------------
+# Rendering sanity (no crash)
+# ------------------------------------------------------------------
+
+def test_widget3d_grab_does_not_crash():
+    """widget.grab() must not raise even when OpenGL is unavailable."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.show()
+    atoms = [
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    pixmap = widget.grab()
+    assert not pixmap.isNull()
+
+
+def test_viewer3d_renders_without_crash():
+    w = MoleculeViewer3DWidget()
+    w.load_file(data / "1979688_small.cif")
+    w.resize(800, 600)
+    w.show()
+    pixmap = w.grab()
+    assert not pixmap.isNull()
+
+
+# ------------------------------------------------------------------
+# Matrix helpers (unit tests; no GL context required)
+# ------------------------------------------------------------------
+
+def test_mv_matrix_shape():
+    widget = MoleculeWidget3D()
+    mv = widget._compute_mv_matrix()
+    assert mv.shape == (4, 4)
+    assert mv.dtype == np.float32
+
+
+def test_proj_matrix_shape():
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    proj = widget._compute_proj_matrix()
+    assert proj.shape == (4, 4)
+    # Perspective: bottom-right element is 0; row 3 is (0, 0, -1, 0)
+    assert proj[3, 2] == pytest.approx(-1.0)
+    assert proj[3, 3] == pytest.approx(0.0)
+
+
+def test_molecule_bounds():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("C1", "C", -1.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C",  1.0, 0.0, 0.0, 0),
+    ])
+    np.testing.assert_allclose(widget._molecule_center, [0.0, 0.0, 0.0], atol=0.01)
+    assert widget._molecule_radius >= 1.0
+
+
+# ------------------------------------------------------------------
+# ADP with a real CIF (no GL required for the tensor maths)
+# ------------------------------------------------------------------
+
+def test_adp_tensors_computed():
+    """ADP atoms from a CIF must have valid u_cart tensors attached."""
+    from fastmolwidget.cif.cif_file_io import CifReader
+    from fastmolwidget.tools import to_float
+
+    cif = CifReader(data / "1979688_small.cif")
+    adp_dict = {
+        dp.label: (
+            to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+            to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
+        )
+        for dp in cif.displacement_parameters()
+    }
+    widget = MoleculeWidget3D()
+    widget.open_molecule(list(cif.atoms_orth), cif.cell[:6], adp_dict)
+
+    aniso_atoms = [a for a in widget.atoms if a.u_cart is not None and a.adp_valid]
+    assert len(aniso_atoms) > 0
+    for atom in aniso_atoms[:5]:
+        assert atom.adp_A_matrix is not None
+        assert atom.adp_A_matrix.shape == (3, 3)
+        assert atom.adp_billboard_r > 0.0

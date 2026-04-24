@@ -33,6 +33,9 @@ pyside6 = [
 pyqt6 = [
     "pyqt6>=6.9.0",
 ]
+gl3d = [
+    "PyOpenGL>=3.1.7",
+]
 
 [project.urls]
 Homepage = "https://github.com/dkratzert/Fastmolwidget"
