@@ -225,6 +225,20 @@ def test_compile_program_disables_validate(monkeypatch):
     assert calls[0][1].get("validate") is False
 
 
+def test_atom_shader_uses_brighter_low_shadow_lighting():
+    assert "Orthographic projection: all rays are parallel to -Z." in molecule3d._SPHERE_FRAG
+    assert "vec2 local_xy = v_corner * v_radius * 1.05" in molecule3d._SPHERE_FRAG
+    assert "base_color = clamp(v_color * 1.08, 0.0, 1.0)" in molecule3d._SPHERE_FRAG
+    assert "vec3(0.16) * spec" in molecule3d._SPHERE_FRAG
+
+
+def test_ellipsoid_shader_matches_brighter_atom_lighting_profile():
+    assert "Orthographic projection: solve the local +Z intersection." in molecule3d._ELLIPSOID_FRAG
+    assert "vec3 q0 = vec3(local_xy, 0.0)" in molecule3d._ELLIPSOID_FRAG
+    assert "base_color = clamp(v_color * 1.08, 0.0, 1.0)" in molecule3d._ELLIPSOID_FRAG
+    assert "vec3(0.14) * spec" in molecule3d._ELLIPSOID_FRAG
+
+
 def test_bond_geometry_uses_single_uniform_color():
     widget = MoleculeWidget3D()
     widget.open_molecule([
@@ -376,9 +390,42 @@ def test_proj_matrix_shape():
     widget.resize(800, 600)
     proj = widget._compute_proj_matrix()
     assert proj.shape == (4, 4)
-    # Perspective: bottom-right element is 0; row 3 is (0, 0, -1, 0)
-    assert proj[3, 2] == pytest.approx(-1.0)
-    assert proj[3, 3] == pytest.approx(0.0)
+    # Orthographic projection keeps w unchanged.
+    assert proj[3, 2] == pytest.approx(0.0)
+    assert proj[3, 3] == pytest.approx(1.0)
+
+
+def test_screen_to_ray_viewspace_is_orthographic():
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+
+    center_origin, center_dir = widget._screen_to_ray_viewspace(400.0, 300.0)
+    left_origin, left_dir = widget._screen_to_ray_viewspace(200.0, 300.0)
+
+    np.testing.assert_allclose(center_dir, [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(left_dir, [0.0, 0.0, -1.0], atol=1e-6)
+    np.testing.assert_allclose(center_origin, [0.0, 0.0, 0.0], atol=1e-6)
+    assert left_origin[0] < center_origin[0]
+
+
+def test_ray_sphere_hit_viewspace_uses_ray_origin_for_ortho():
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+
+    mv = widget._compute_mv_matrix()
+    center_origin, center_dir = widget._screen_to_ray_viewspace(400.0, 300.0)
+    edge_origin, edge_dir = widget._screen_to_ray_viewspace(0.0, 300.0)
+
+    hit_center = widget._ray_sphere_hit_viewspace(
+        center_origin, center_dir, widget.atoms[0].center, widget.atoms[0].display_radius, mv
+    )
+    hit_edge = widget._ray_sphere_hit_viewspace(
+        edge_origin, edge_dir, widget.atoms[0].center, widget.atoms[0].display_radius, mv
+    )
+
+    assert hit_center is not None
+    assert hit_edge is None
 
 
 def test_molecule_bounds():

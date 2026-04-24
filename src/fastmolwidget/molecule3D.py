@@ -153,7 +153,11 @@ def _normalize_rgb_color(
             raise ValueError("Integer RGB bond colors must be in the range 0..255.")
         rgb = tuple(component / 255.0 for component in rgb)
 
-    return tuple(min(1.0, max(0.0, component)) for component in rgb)
+    return (
+        min(1.0, max(0.0, rgb[0])),
+        min(1.0, max(0.0, rgb[1])),
+        min(1.0, max(0.0, rgb[2])),
+    )
 
 
 def _make_cylinder(
@@ -313,30 +317,25 @@ varying vec2  v_corner;
 uniform mat4 u_proj;
 
 void main() {
-    // Fragment position on the billboard plane in eye space
-    vec3 frag_eye = vec3(v_center_eye.xy + v_corner * v_radius * 1.05,
-                         v_center_eye.z);
-    vec3 ray_dir  = normalize(frag_eye);
+    // Orthographic projection: all rays are parallel to -Z.
+    vec2 local_xy = v_corner * v_radius * 1.05;
+    float xy2 = dot(local_xy, local_xy);
+    float r2 = v_radius * v_radius;
+    if (xy2 > r2) discard;
 
-    // Ray-sphere intersection:  | t*d - C |^2 = r^2
-    // => t^2 - 2t(d.C) + (C.C - r^2) = 0
-    float b    = dot(ray_dir, v_center_eye);
-    float c    = dot(v_center_eye, v_center_eye) - v_radius * v_radius;
-    float disc = b * b - c;
-    if (disc < 0.0) discard;
+    float z_hit = sqrt(r2 - xy2);
+    vec3 local_hit = vec3(local_xy, z_hit);
+    vec3 hit    = v_center_eye + local_hit;
+    vec3 normal = normalize(local_hit);
 
-    float t = b - sqrt(disc);
-    if (t < 0.0) discard;
+    // Bright, low-shadow lighting for crisp atom colours
+    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
+    float diff      = max(dot(normal, light), 0.0);
+    float soft_diff = 0.25 + 0.75 * diff;
+    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-    vec3 hit    = t * ray_dir;
-    vec3 normal = normalize(hit - v_center_eye);
-
-    // Phong lighting (fixed light in eye space)
-    vec3  light  = normalize(vec3(1.0, 1.5, 2.0));
-    float diff   = max(dot(normal, light), 0.0);
-    float spec   = pow(max(dot(reflect(-light, normal), normalize(-hit)), 0.0), 48.0);
-
-    vec3 color = v_color * (0.2 + 0.7 * diff) + vec3(0.45) * spec;
+    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 
     // Write corrected depth so atoms occlude bonds and each other properly
@@ -388,32 +387,33 @@ uniform mat4 u_proj;
 uniform mat3 u_ellipsoid_A;   // A = inv(scale^2 * U_cart)
 
 void main() {
-    vec3 frag_eye = vec3(v_center_eye.xy + v_corner * v_radius * 1.05,
-                         v_center_eye.z);
-    vec3 d = normalize(frag_eye);
-    vec3 C = v_center_eye;
+    vec2 local_xy = v_corner * v_radius * 1.05;
+    vec3 q0 = vec3(local_xy, 0.0);
+    vec3 ez = vec3(0.0, 0.0, 1.0);
+    vec3 Aq0 = u_ellipsoid_A * q0;
+    vec3 Aez = u_ellipsoid_A * ez;
 
-    // Ray-ellipsoid: (t*d - C)^T A (t*d - C) = 1
-    // => a_c * t^2  -  2 * b_c * t  +  (C^T A C - 1) = 0
-    float a_c  = dot(d,  u_ellipsoid_A * d);
-    float b_c  = dot(C,  u_ellipsoid_A * d);
-    float cc   = dot(C,  u_ellipsoid_A * C) - 1.0;
-    float disc = b_c * b_c - a_c * cc;
+    // Orthographic projection: solve the local +Z intersection.
+    float a_c  = dot(ez, Aez);
+    float b_c  = 2.0 * dot(q0, Aez);
+    float cc   = dot(q0, Aq0) - 1.0;
+    float disc = b_c * b_c - 4.0 * a_c * cc;
 
     if (disc < 0.0 || a_c < 1e-10) discard;
 
-    float t = (b_c - sqrt(disc)) / a_c;
-    if (t < 0.0) discard;
-
-    vec3 hit    = t * d;
+    float z_hit = (-b_c + sqrt(disc)) / (2.0 * a_c);
+    vec3 local_hit = q0 + vec3(0.0, 0.0, z_hit);
+    vec3 hit    = v_center_eye + local_hit;
     // Outward normal = gradient of the ellipsoid equation = 2 A (P - C)
-    vec3 normal = normalize(u_ellipsoid_A * (hit - C));
+    vec3 normal = normalize(u_ellipsoid_A * local_hit);
 
-    vec3  light = normalize(vec3(1.0, 1.5, 2.0));
-    float diff  = max(dot(normal, light), 0.0);
-    float spec  = pow(max(dot(reflect(-light, normal), normalize(-hit)), 0.0), 48.0);
+    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
+    float diff      = max(dot(normal, light), 0.0);
+    float soft_diff = 0.25 + 0.75 * diff;
+    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-    vec3 color = v_color * (0.2 + 0.7 * diff) + vec3(0.35) * spec;
+    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 
     vec4 clip_pos = u_proj * vec4(hit, 1.0);
@@ -497,8 +497,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
 
-    # Field-of-view used by both _compute_proj_matrix and _screen_to_ray_viewspace
-    _FOV_DEGREES: float = 45.0
+    # Vertical half-extent multiplier used for orthographic framing.
+    _ORTHO_VIEW_MARGIN: float = 1.6
 
     # ------------------------------------------------------------------
     # Construction
@@ -1066,10 +1066,14 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 pos4 = np.array([*atom.center, 1.0], dtype=np.float32)
                 eye = mv @ pos4
                 clip = proj @ eye
-                if abs(clip[3]) < 1e-8 or clip[3] < 0:
+                if abs(clip[3]) < 1e-8:
                     continue
                 ndc = clip[:3] / clip[3]
-                if not (-1.0 <= ndc[0] <= 1.0 and -1.0 <= ndc[1] <= 1.0):
+                if not (
+                    -1.0 <= ndc[0] <= 1.0
+                    and -1.0 <= ndc[1] <= 1.0
+                    and -1.0 <= ndc[2] <= 1.0
+                ):
                     continue
 
                 sx = int((ndc[0] + 1.0) * 0.5 * w)
@@ -1084,7 +1088,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def _compute_mv_matrix(self) -> np.ndarray:
         """Build the Model-View matrix from current rotation / zoom / pan."""
-        dist = self._molecule_radius * 3.0 / max(self._zoom, 0.001)
+        dist = max(self._molecule_radius * 3.0, 3.0)
 
         # Step 1 – translate molecule centre to world origin
         T_centre = np.eye(4, dtype=np.float32)
@@ -1107,19 +1111,28 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         return (T_cam @ T_pan @ R @ T_centre).astype(np.float32)
 
-    def _compute_proj_matrix(self) -> np.ndarray:
-        """Build a perspective projection matrix (45° FoV)."""
+    def _ortho_half_extents(self) -> tuple[float, float]:
+        """Return orthographic half-width/half-height in view-space units."""
         w = max(1, self.width())
         h = max(1, self.height())
         aspect = w / h
+        half_h = max(
+            self._molecule_radius * self._ORTHO_VIEW_MARGIN / max(self._zoom, 0.001),
+            0.5,
+        )
+        half_w = half_h * aspect
+        return half_w, half_h
+
+    def _compute_proj_matrix(self) -> np.ndarray:
+        """Build an orthographic projection matrix."""
+        half_w, half_h = self._ortho_half_extents()
         near, far = 0.01, 10000.0
-        f = 1.0 / float(np.tan(np.radians(self._FOV_DEGREES) / 2.0))
         return np.array(
             [
-                [f / aspect, 0.0, 0.0,                        0.0],
-                [0.0,        f,   0.0,                        0.0],
-                [0.0,        0.0, (far + near) / (near - far), (2 * far * near) / (near - far)],
-                [0.0,        0.0, -1.0,                       0.0],
+                [1.0 / half_w, 0.0,          0.0,                        0.0],
+                [0.0,          1.0 / half_h, 0.0,                        0.0],
+                [0.0,          0.0,          2.0 / (near - far),         (far + near) / (near - far)],
+                [0.0,          0.0,          0.0,                        1.0],
             ],
             dtype=np.float32,
         )
@@ -1491,7 +1504,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         proj = self._compute_proj_matrix()
         sx, sy = float(pos.x()), float(pos.y())
 
-        ray_dir = self._screen_to_ray_viewspace(sx, sy)
+        ray_origin, ray_dir = self._screen_to_ray_viewspace(sx, sy)
 
         best_atom: _Atom3D | None = None
         best_bond: tuple[str, str] | None = None
@@ -1500,7 +1513,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
                 continue
-            t = self._ray_sphere_hit_viewspace(ray_dir, atom.center, atom.display_radius, mv)
+            t = self._ray_sphere_hit_viewspace(
+                ray_origin, ray_dir, atom.center, atom.display_radius, mv
+            )
             if t is not None and t < best_t:
                 best_t = t
                 best_atom = atom
@@ -1558,18 +1573,20 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     # Hit testing
     # ------------------------------------------------------------------
 
-    def _screen_to_ray_viewspace(self, sx: float, sy: float) -> np.ndarray:
-        """Return a ray direction in view/eye space for screen position *(sx, sy)*."""
+    def _screen_to_ray_viewspace(self, sx: float, sy: float) -> tuple[np.ndarray, np.ndarray]:
+        """Return orthographic ray origin and direction for screen position *(sx, sy)*."""
         w = max(1, self.width())
         h = max(1, self.height())
-        aspect = w / h
-        f = 1.0 / float(np.tan(np.radians(self._FOV_DEGREES) / 2.0))
-        nx = (2.0 * sx / w - 1.0) / (f / aspect)
-        ny = -(2.0 * sy / h - 1.0) / f
-        return np.array([nx, ny, -1.0], dtype=np.float32)
+        half_w, half_h = self._ortho_half_extents()
+        nx = 2.0 * sx / w - 1.0
+        ny = 1.0 - 2.0 * sy / h
+        origin = np.array([nx * half_w, ny * half_h, 0.0], dtype=np.float32)
+        direction = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        return origin, direction
 
     def _ray_sphere_hit_viewspace(
         self,
+        ray_origin: np.ndarray,
         ray_dir: np.ndarray,
         world_center: np.ndarray,
         radius: float,
@@ -1579,12 +1596,18 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         c4 = np.array([*world_center, 1.0], dtype=np.float32)
         c_eye = (mv @ c4)[:3]
 
+        oc = ray_origin - c_eye
         d = ray_dir
-        b = float(np.dot(d, c_eye))
-        disc = b * b - (float(np.dot(c_eye, c_eye)) - radius * radius)
+        a = float(np.dot(d, d))
+        b = 2.0 * float(np.dot(oc, d))
+        c = float(np.dot(oc, oc) - radius * radius)
+        disc = b * b - 4.0 * a * c
         if disc < 0.0:
             return None
-        t = b - sqrt(disc)
+        sqrt_disc = sqrt(disc)
+        t0 = (-b - sqrt_disc) / (2.0 * a)
+        t1 = (-b + sqrt_disc) / (2.0 * a)
+        t = t0 if t0 >= 0.0 else t1
         return t if t >= 0.0 else None
 
     def _ray_bond_screen(
@@ -1604,7 +1627,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         def _project(pos: np.ndarray) -> np.ndarray | None:
             p4 = np.array([*pos, 1.0], dtype=np.float32)
             clip = proj @ (mv @ p4)
-            if abs(clip[3]) < 1e-8 or clip[3] < 0:
+            if abs(clip[3]) < 1e-8:
                 return None
             ndc = clip[:3] / clip[3]
             if ndc[2] < -1.0 or ndc[2] > 1.0:
