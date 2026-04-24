@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 import fastmolwidget.molecule3D as molecule3d
 from fastmolwidget.molecule3D import MoleculeWidget3D
@@ -49,6 +49,7 @@ def test_construction_defaults():
     assert widget.labels is True
     assert widget._show_adps is True
     assert widget.show_hydrogens_flag is True
+    np.testing.assert_allclose(widget._bond_rgb, molecule3d._DEFAULT_BOND_COLOR, atol=1e-6)
 
 
 def test_viewer3d_construction():
@@ -179,14 +180,30 @@ def test_set_label_font():
 
 
 def test_set_background_color():
-    from qtpy.QtGui import QColor
-
     widget = MoleculeWidget3D()
-    widget.set_background_color(QColor(0, 0, 0))
+    widget.set_background_color(QtGui.QColor(0, 0, 0))
     r, g, b = widget._bg_rgb
     assert r == pytest.approx(0.0)
     assert g == pytest.approx(0.0)
     assert b == pytest.approx(0.0)
+
+
+def test_set_bond_color_with_qcolor():
+    widget = MoleculeWidget3D()
+    widget.set_bond_color(QtGui.QColor("#6b5d4f"))
+    np.testing.assert_allclose(widget._bond_rgb, molecule3d._hex_to_rgb_float("#6b5d4f"), atol=1e-6)
+
+
+def test_set_bond_color_with_integer_tuple():
+    widget = MoleculeWidget3D()
+    widget.set_bond_color((120, 110, 100))
+    np.testing.assert_allclose(widget._bond_rgb, (120 / 255.0, 110 / 255.0, 100 / 255.0), atol=1e-6)
+
+
+def test_viewer3d_set_bond_color_proxy():
+    viewer = MoleculeViewer3DWidget()
+    viewer.set_bond_color("#5f5348")
+    np.testing.assert_allclose(viewer.render_widget._bond_rgb, molecule3d._hex_to_rgb_float("#5f5348"), atol=1e-6)
 
 
 def test_compile_program_disables_validate(monkeypatch):
@@ -206,6 +223,55 @@ def test_compile_program_disables_validate(monkeypatch):
     assert prog == 456
     assert calls
     assert calls[0][1].get("validate") is False
+
+
+def test_bond_geometry_uses_single_uniform_color():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
+    ])
+
+    verts = widget._cylinder_verts.reshape(-1, 9)
+    colors = verts[:, 6:9]
+    unique_colors = np.unique(np.round(colors, 6), axis=0)
+    expected_color = np.array(molecule3d._DEFAULT_BOND_COLOR)
+
+    assert widget._cylinder_count > 0
+    assert unique_colors.shape == (1, 3)
+    np.testing.assert_allclose(unique_colors[0], expected_color, atol=1e-6)
+
+
+def test_bond_geometry_uses_configured_bond_color():
+    widget = MoleculeWidget3D()
+    widget.set_bond_color("#66584a")
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
+    ])
+
+    verts = widget._cylinder_verts.reshape(-1, 9)
+    unique_colors = np.unique(np.round(verts[:, 6:9], 6), axis=0)
+
+    assert unique_colors.shape == (1, 3)
+    np.testing.assert_allclose(unique_colors[0], molecule3d._hex_to_rgb_float("#66584a"), atol=1e-6)
+
+
+def test_selected_bond_uses_single_selection_color():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
+    ])
+    widget.selected_bonds = {("C1", "O1")}
+    widget._build_geometry()
+
+    verts = widget._cylinder_verts.reshape(-1, 9)
+    colors = verts[:, 6:9]
+    unique_colors = np.unique(np.round(colors, 6), axis=0)
+
+    assert unique_colors.shape == (1, 3)
+    np.testing.assert_allclose(unique_colors[0], molecule3d._SEL_COLOR, atol=1e-6)
 
 
 # ------------------------------------------------------------------

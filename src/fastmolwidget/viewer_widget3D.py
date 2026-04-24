@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule3D import MoleculeWidget3D
@@ -37,6 +37,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
       cylinders.
     * **Show Hydrogens** – toggle hydrogen visibility.
     * **Bond Width** – spinbox controlling cylinder radius.
+    * **Bond Color** – button opening a color picker for all non-selected bonds.
 
     The loader (:class:`~fastmolwidget.loader.MoleculeLoader`) is identical to
     the 2-D widget so all supported file formats (CIF, SHELX .res/.ins, XYZ)
@@ -64,6 +65,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_width_spinbox = QtWidgets.QSpinBox()
         self._bond_width_spinbox.setRange(1, 15)
         self._bond_width_spinbox.setValue(3)
+        self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
 
         # Initial checked state matches the renderer defaults
         self._adp_checkbox.setChecked(True)
@@ -76,6 +78,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_type_checkbox.toggled.connect(self._render_widget.show_round_bonds)
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
+        self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._grow_checkbox.toggled.connect(self._loader.set_grow)
 
         # Apply initial defaults to the renderer
@@ -92,6 +95,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar.addWidget(self._hydrogens_checkbox)
         control_bar.addWidget(self._bw_label)
         control_bar.addWidget(self._bond_width_spinbox)
+        control_bar.addWidget(self._bond_color_button)
         control_bar.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
@@ -118,6 +122,20 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         """
         self._loader.load_file(filename)
 
+    def set_bond_color(
+        self,
+        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+    ) -> None:
+        """Set the default colour used for non-selected 3-D bonds."""
+        self._render_widget.set_bond_color(color)
+
+    def _choose_bond_color(self) -> None:
+        """Open a colour picker for the bond colour."""
+        current = QtGui.QColor.fromRgbF(*self._render_widget._bond_rgb)
+        color = QtWidgets.QColorDialog.getColor(current, self, "Choose Bond Color")
+        if color.isValid():
+            self._render_widget.set_bond_color(color)
+
 
 if __name__ == "__main__":
 
@@ -125,7 +143,6 @@ if __name__ == "__main__":
     if not app:
         app = QtWidgets.QApplication([])
 
-    from pathlib import Path as _Path
 
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup

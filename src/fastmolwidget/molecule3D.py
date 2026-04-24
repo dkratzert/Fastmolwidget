@@ -132,12 +132,35 @@ def _hex_to_rgb_float(hex_color: str) -> tuple[float, float, float]:
     return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
 
 
+def _normalize_rgb_color(
+    color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+) -> tuple[float, float, float]:
+    """Normalise a QColor/hex/RGB triple to float RGB in ``[0, 1]``."""
+    if isinstance(color, QtGui.QColor):
+        return (color.redF(), color.greenF(), color.blueF())
+
+    if isinstance(color, str):
+        return _hex_to_rgb_float(color)
+
+    if len(color) != 3:
+        raise ValueError("Bond color must have exactly three RGB components.")
+
+    rgb = tuple(float(component) for component in color)
+    if any(component < 0.0 for component in rgb):
+        raise ValueError("Bond color components must be non-negative.")
+    if any(component > 1.0 for component in rgb):
+        if any(component > 255.0 for component in rgb):
+            raise ValueError("Integer RGB bond colors must be in the range 0..255.")
+        rgb = tuple(component / 255.0 for component in rgb)
+
+    return tuple(min(1.0, max(0.0, component)) for component in rgb)
+
+
 def _make_cylinder(
     p1: np.ndarray,
     p2: np.ndarray,
     radius: float,
-    col1: tuple[float, float, float],
-    col2: tuple[float, float, float],
+    color: tuple[float, float, float],
     n_seg: int = 8,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """Generate a cylinder mesh between *p1* and *p2*.
@@ -146,7 +169,7 @@ def _make_cylinder(
     endpoints are too close together.
 
     Vertex layout: ``[x, y, z, nx, ny, nz, r, g, b]`` (9 floats, 36 bytes).
-    The bottom ring (at *p1*) uses *col1*; the top ring (at *p2*) uses *col2*.
+    The full cylinder uses one uniform colour.
     No end caps are generated because atom spheres close the bond ends visually.
     """
     axis = p2 - p1
@@ -173,17 +196,17 @@ def _make_cylinder(
 
     verts = np.zeros((2 * n_seg, 9), dtype=np.float32)
 
-    # Bottom ring (p1) with col1
+    # Bottom ring (p1)
     for i in range(n_seg):
         verts[i, :3] = p1 + radius * normals[i]
         verts[i, 3:6] = normals[i]
-        verts[i, 6:9] = col1
+        verts[i, 6:9] = color
 
-    # Top ring (p2) with col2
+    # Top ring (p2)
     for i in range(n_seg):
         verts[n_seg + i, :3] = p2 + radius * normals[i]
         verts[n_seg + i, 3:6] = normals[i]
-        verts[n_seg + i, 6:9] = col2
+        verts[n_seg + i, 6:9] = color
 
     # Triangle indices for the side surface (two tris per quad strip segment)
     idx_list = []
@@ -443,6 +466,9 @@ void main() {
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
 
+# Default bond colour (grey-brown)
+_DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#7A6E61")
+
 # ORTEP 50 % probability scale factor
 _ADP_SCALE: float = 1.5382
 
@@ -512,6 +538,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.cumulative_R: np.ndarray = np.eye(3, dtype=np.float32)
 
         self._bg_rgb: tuple[float, float, float] = (1.0, 1.0, 1.0)
+        self._bond_rgb: tuple[float, float, float] = _DEFAULT_BOND_COLOR
 
         # ---- OpenGL failure state -----------------------------------------
         _no_pyopengl_msg = (
@@ -842,11 +869,13 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
             bond_key: tuple[str, str] = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
             if bond_key in self.selected_bonds:
-                col1 = col2 = _SEL_COLOR
+                bond_color = _SEL_COLOR
             else:
-                col1, col2 = at1.color_f, at2.color_f
+                bond_color = self._bond_rgb
 
-            verts, bond_idx = _make_cylinder(at1.center, at2.center, cyl_r, col1, col2, n_seg)
+            verts, bond_idx = _make_cylinder(
+                at1.center, at2.center, cyl_r, bond_color, n_seg
+            )
             if verts is None:
                 continue
 
@@ -1286,6 +1315,16 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         pal = self.palette()
         pal.setColor(QtGui.QPalette.ColorRole.Window, color)
         self.setPalette(pal)
+        self.update()
+
+    def set_bond_color(
+        self,
+        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+    ) -> None:
+        """Set the default colour used for all non-selected bonds."""
+        self._bond_rgb = _normalize_rgb_color(color)
+        if self.atoms:
+            self._build_geometry()
         self.update()
 
     def sizeHint(self) -> QtCore.QSize:
