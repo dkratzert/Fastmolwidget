@@ -110,6 +110,10 @@ def configure_opengl_format() -> None:
     """
     try:
         fmt = QtGui.QSurfaceFormat()
+        # GLSL 1.20 shaders require a compatibility context on macOS.
+        fmt.setRenderableType(QtGui.QSurfaceFormat.RenderableType.OpenGL)
+        fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+        fmt.setVersion(2, 1)
         fmt.setDepthBufferSize(24)
         fmt.setSwapBehavior(QtGui.QSurfaceFormat.SwapBehavior.DoubleBuffer)
         fmt.setSamples(4)
@@ -573,6 +577,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """Request depth buffer, double-buffering and 4× MSAA."""
         try:
             fmt = QtGui.QSurfaceFormat()
+            fmt.setRenderableType(QtGui.QSurfaceFormat.RenderableType.OpenGL)
+            fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+            fmt.setVersion(2, 1)
             fmt.setDepthBufferSize(24)
             fmt.setSwapBehavior(QtGui.QSurfaceFormat.SwapBehavior.DoubleBuffer)
             fmt.setSamples(4)
@@ -651,10 +658,15 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         :meth:`initializeGL` can catch and set the failure flag.
         """
         try:
-            prog = _glshaders.compileProgram(
-                _glshaders.compileShader(vert_src, gl.GL_VERTEX_SHADER),
-                _glshaders.compileShader(frag_src, gl.GL_FRAGMENT_SHADER),
-            )
+            vert = _glshaders.compileShader(vert_src, gl.GL_VERTEX_SHADER)
+            frag = _glshaders.compileShader(frag_src, gl.GL_FRAGMENT_SHADER)
+            # compileProgram validates by default; in QOpenGLWidget.initializeGL the
+            # draw FBO may not be fully ready yet, which can trigger false negatives.
+            try:
+                prog = _glshaders.compileProgram(vert, frag, validate=False)
+            except TypeError:
+                # Older PyOpenGL without validate kwarg: keep previous behavior.
+                prog = _glshaders.compileProgram(vert, frag)
             return int(prog)
         except Exception as exc:
             raise RuntimeError(f"Failed to compile '{name}' shaders: {exc}") from exc

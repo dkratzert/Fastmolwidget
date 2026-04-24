@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from qtpy import QtWidgets
 
+import fastmolwidget.molecule3D as molecule3d
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
 from fastmolwidget.sdm import Atomtuple
@@ -186,6 +187,25 @@ def test_set_background_color():
     assert r == pytest.approx(0.0)
     assert g == pytest.approx(0.0)
     assert b == pytest.approx(0.0)
+
+
+def test_compile_program_disables_validate(monkeypatch):
+    """Shader linking should skip eager program validation in initializeGL."""
+    widget = MoleculeWidget3D()
+    calls = []
+
+    monkeypatch.setattr(molecule3d._glshaders, "compileShader", lambda src, typ: 123)
+
+    def _fake_compile_program(*shaders, **kwargs):
+        calls.append((shaders, kwargs))
+        return 456
+
+    monkeypatch.setattr(molecule3d._glshaders, "compileProgram", _fake_compile_program)
+    prog = widget._compile_program("void main(){}", "void main(){}", "test")
+
+    assert prog == 456
+    assert calls
+    assert calls[0][1].get("validate") is False
 
 
 # ------------------------------------------------------------------
