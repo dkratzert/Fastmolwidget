@@ -125,7 +125,10 @@ if __name__ == "__main__":
     if not app:
         app = QtWidgets.QApplication([])
 
+    from pathlib import Path as _Path
+
     w = MoleculeViewer3DWidget()
-    w.load_file("../../tests/test-data/p31c.cif")
+    # Path is relative to the repository root; adjust as needed for your setup
+    w.load_file(_Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
     w.show()
     app.exec()

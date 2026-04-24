@@ -467,6 +467,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
 
+    # Field-of-view used by both _compute_proj_matrix and _screen_to_ray_viewspace
+    _FOV_DEGREES: float = 45.0
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -1068,9 +1071,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         w = max(1, self.width())
         h = max(1, self.height())
         aspect = w / h
-        fovy = 45.0
         near, far = 0.01, 10000.0
-        f = 1.0 / float(np.tan(np.radians(fovy) / 2.0))
+        f = 1.0 / float(np.tan(np.radians(self._FOV_DEGREES) / 2.0))
         return np.array(
             [
                 [f / aspect, 0.0, 0.0,                        0.0],
@@ -1510,8 +1512,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         w = max(1, self.width())
         h = max(1, self.height())
         aspect = w / h
-        fovy = 45.0
-        f = 1.0 / float(np.tan(np.radians(fovy) / 2.0))
+        f = 1.0 / float(np.tan(np.radians(self._FOV_DEGREES) / 2.0))
         nx = (2.0 * sx / w - 1.0) / (f / aspect)
         ny = -(2.0 * sy / h - 1.0) / f
         return np.array([nx, ny, -1.0], dtype=np.float32)

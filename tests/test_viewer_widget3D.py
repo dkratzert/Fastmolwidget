@@ -234,6 +234,8 @@ def test_viewer3d_load_shelx():
 
 
 def test_viewer3d_unsupported_format():
+    # MoleculeLoader checks the extension before the file existence, so a
+    # ValueError is raised even though fake.pdb does not exist on disk.
     w = MoleculeViewer3DWidget()
     with pytest.raises(ValueError, match="Unsupported file format"):
         w.load_file(data / "fake.pdb")
