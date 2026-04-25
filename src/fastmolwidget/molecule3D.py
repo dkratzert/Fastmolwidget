@@ -245,6 +245,7 @@ class _Atom3D:
         label: str,
         type_: str,
         part: int,
+        u_eq: float = 0.05,
     ) -> None:
         self.center = np.array([x, y, z], dtype=np.float32)
         self.label = label
@@ -258,7 +259,7 @@ class _Atom3D:
         self.display_radius: float = 0.25
 
         self.u_cart: np.ndarray | None = None
-        self.u_iso: float | None = None
+        self.u_iso: float | None = u_eq * 10 if not type_ in ('H', 'D') else self.display_radius
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
         self.u_eigvecs: np.ndarray | None = None
@@ -855,7 +856,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 if atom.label in self.selected_atoms
                 else atom.color_f
             )
-            r = atom.display_radius
+            r = atom.u_iso or atom.display_radius
             for j in range(4):
                 vi = i * 4 + j
                 verts[vi, 0:3] = c
@@ -1208,7 +1209,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             internal_name = base_name if count == 0 else f"{base_name}>>{count}"
             name_counts[base_name] = count + 1
 
-            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part)
+            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part, at.u_eq)
 
             if self._adp_map and self._cell and base_name in self._adp_map:
                 try:
