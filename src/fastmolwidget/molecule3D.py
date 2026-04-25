@@ -233,7 +233,7 @@ class _Atom3D:
     __slots__ = [
         "center", "label", "type_", "part",
         "color_f", "display_radius",
-        "u_cart", "u_iso", "adp_valid", "u_eigvals",
+        "u_cart", "u_iso", "adp_valid", "u_eigvals", "u_eigvecs",
         "adp_billboard_r", "adp_A_matrix",
     ]
 
@@ -261,6 +261,7 @@ class _Atom3D:
         self.u_iso: float | None = None
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
+        self.u_eigvecs: np.ndarray | None = None
 
         # Set by _build_geometry when ADP data is present
         self.adp_billboard_r: float = 0.0
@@ -383,29 +384,39 @@ varying vec3  v_color;
 varying float v_radius;
 varying vec2  v_corner;
 
+uniform mat4 u_mv;
 uniform mat4 u_proj;
 uniform mat3 u_ellipsoid_A;   // A = inv(scale^2 * U_cart)
+uniform mat3 u_world_evecs;
 
 void main() {
     vec2 local_xy = v_corner * v_radius * 1.05;
     vec3 q0 = vec3(local_xy, 0.0);
     vec3 ez = vec3(0.0, 0.0, 1.0);
-    vec3 Aq0 = u_ellipsoid_A * q0;
-    vec3 Aez = u_ellipsoid_A * ez;
+    
+    mat3 inv_mv = transpose(mat3(u_mv));
+    vec3 ray_o = inv_mv * q0;
+    vec3 ray_d = inv_mv * ez;
+
+    vec3 Aq0 = u_ellipsoid_A * ray_o;
+    vec3 Aez = u_ellipsoid_A * ray_d;
 
     // Orthographic projection: solve the local +Z intersection.
-    float a_c  = dot(ez, Aez);
-    float b_c  = 2.0 * dot(q0, Aez);
-    float cc   = dot(q0, Aq0) - 1.0;
+    float a_c  = dot(ray_d, Aez);
+    float b_c  = 2.0 * dot(ray_o, Aez);
+    float cc   = dot(ray_o, Aq0) - 1.0;
     float disc = b_c * b_c - 4.0 * a_c * cc;
 
     if (disc < 0.0 || a_c < 1e-10) discard;
 
-    float z_hit = (-b_c + sqrt(disc)) / (2.0 * a_c);
-    vec3 local_hit = q0 + vec3(0.0, 0.0, z_hit);
+    float t_hit = (-b_c + sqrt(disc)) / (2.0 * a_c);
+    vec3 hit_world = ray_o + t_hit * ray_d;
+    vec3 local_hit = q0 + vec3(0.0, 0.0, t_hit);
     vec3 hit    = v_center_eye + local_hit;
+    
     // Outward normal = gradient of the ellipsoid equation = 2 A (P - C)
-    vec3 normal = normalize(u_ellipsoid_A * local_hit);
+    vec3 normal_world = normalize(u_ellipsoid_A * hit_world);
+    vec3 normal = normalize(mat3(u_mv) * normal_world);
 
     vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
     float diff      = max(dot(normal, light), 0.0);
@@ -414,6 +425,15 @@ void main() {
 
     vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
     vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
+
+    float p0 = dot(hit_world, u_world_evecs[0]);
+    float p1 = dot(hit_world, u_world_evecs[1]);
+    float p2 = dot(hit_world, u_world_evecs[2]);
+    float lw = v_radius * 0.04;
+    if (abs(p0) < lw || abs(p1) < lw || abs(p2) < lw) {
+        color *= 0.15;
+    }
+
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 
     vec4 clip_pos = u_proj * vec4(hit, 1.0);
@@ -994,6 +1014,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 # OpenGL is column-major; numpy is row-major → transpose
                 gl.glUniformMatrix3fv(loc, 1, False, A.astype(np.float32).T.copy())
 
+        evecs = atom.u_eigvecs
+        if evecs is not None:
+            loc = gl.glGetUniformLocation(prog, b"u_world_evecs")
+            if loc >= 0:
+                gl.glUniformMatrix3fv(loc, 1, False, evecs.astype(np.float32).T.copy())
+
         # Draw shared unit quad
         stride = 2 * 4  # 2 floats × 4 bytes
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._unit_quad_vbo)
@@ -1193,12 +1219,13 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                         symm = np.array(symm, dtype=float)
                     a3d.u_cart = self._uij_to_cart(uvals, symm)
                     a3d.u_iso = float(np.trace(a3d.u_cart) / 3.0)
-                    evals, _ = np.linalg.eigh(a3d.u_cart)
+                    evals, evecs = np.linalg.eigh(a3d.u_cart)
                     if np.any(evals <= 0):
                         a3d.adp_valid = False
                     else:
                         a3d.adp_valid = True
                         a3d.u_eigvals = evals
+                        a3d.u_eigvecs = evecs
                         # Billboard radius for the ellipsoid impostor quad
                         a3d.adp_billboard_r = float(
                             _ADP_SCALE * np.sqrt(np.max(evals)) * 1.2
