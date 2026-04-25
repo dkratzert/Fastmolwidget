@@ -1117,7 +1117,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         h = max(1, self.height())
         aspect = w / h
         half_h = max(
-            self._molecule_radius * self._ORTHO_VIEW_MARGIN / max(self._zoom, 0.001),
+            self._molecule_radius * self._ORTHO_VIEW_MARGIN / max(self._zoom*2, 0.01),
             0.5,
         )
         half_w = half_h * aspect
