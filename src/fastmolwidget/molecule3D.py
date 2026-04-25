@@ -1540,24 +1540,22 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
                 continue
-            t = self._ray_sphere_hit_viewspace(
-                ray_origin, ray_dir, atom.center, atom.display_radius, mv
-            )
+            t = self._ray_sphere_hit_viewspace(ray_origin, ray_dir, atom.center, atom.display_radius, mv)
             if t is not None and t < best_t:
                 best_t = t
                 best_atom = atom
                 best_bond = None
-
-        for n1, n2 in self.connections:
-            at1, at2 = self.atoms[n1], self.atoms[n2]
-            if not self.show_hydrogens_flag:
-                if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
-                    continue
-            t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
-            if t is not None and t < best_t:
-                best_t = t
-                best_bond = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
-                best_atom = None
+        if not best_atom:
+            for n1, n2 in self.connections:
+                at1, at2 = self.atoms[n1], self.atoms[n2]
+                if not self.show_hydrogens_flag:
+                    if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                        continue
+                t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
+                if t is not None and t < best_t:
+                    best_t = t
+                    best_bond = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
+                    best_atom = None
 
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         changed = False
