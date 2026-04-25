@@ -540,14 +540,14 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # ---- Public display state (mirrors MoleculeWidget) ----------------
         self.fontsize: int = 13
         self.bond_width: int = 3
-        self.atoms_size: int = 12   # kept for API compatibility
+        self.atoms_size: int = 12  # kept for API compatibility
         self.labels: bool = True
         self.show_hydrogens_flag: bool = True
         self.selected_atoms: set[str] = set()
         self.selected_bonds: set[tuple[str, str]] = set()
 
         self._show_adps: bool = True
-        self._round_bonds: bool = True   # True → 8-segment cyl, False → 4-segment
+        self._round_bonds: bool = True  # True → 8-segment cyl, False → 4-segment
 
         # ---- 3-D view state -----------------------------------------------
         self._rot_matrix: np.ndarray = np.eye(3, dtype=np.float32)
@@ -580,7 +580,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._sphere_ibo: int = 0
         self._cylinder_vbo: int = 0
         self._cylinder_ibo: int = 0
-        self._unit_quad_vbo: int = 0   # shared 2-D corner quad for ellipsoids
+        self._unit_quad_vbo: int = 0  # shared 2-D corner quad for ellipsoids
         self._unit_quad_ibo: int = 0
 
         # ---- CPU-side geometry buffers ------------------------------------
@@ -750,6 +750,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         mv = self._compute_mv_matrix()
         proj = self._compute_proj_matrix()
+        # Labels overlay
+        if self.labels:
+            self._draw_labels_overlay(mv, proj)
 
         # Bonds first (behind atom spheres)
         if self._cylinder_count > 0:
@@ -764,10 +767,6 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             for atom in self._adp_draw_list:
                 if atom.adp_A_matrix is not None:
                     self._render_one_ellipsoid(atom, mv, proj)
-
-        # Labels overlay
-        if self.labels:
-            self._draw_labels_overlay(mv, proj)
 
     # ------------------------------------------------------------------
     # paintEvent – routes to OpenGL path or pure-QPainter fallback
@@ -973,7 +972,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._sphere_ibo)
 
         _bind_attrib(prog, b"a_center", 3, stride, 0)
-        _bind_attrib(prog, b"a_color",  3, stride, 12)
+        _bind_attrib(prog, b"a_color", 3, stride, 12)
         _bind_attrib(prog, b"a_radius", 1, stride, 24)
         _bind_attrib(prog, b"a_corner", 2, stride, 28)
 
@@ -1057,8 +1056,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._cylinder_ibo)
 
         _bind_attrib(prog, b"a_position", 3, stride, 0)
-        _bind_attrib(prog, b"a_normal",   3, stride, 12)
-        _bind_attrib(prog, b"a_color",    3, stride, 24)
+        _bind_attrib(prog, b"a_normal", 3, stride, 12)
+        _bind_attrib(prog, b"a_color", 3, stride, 24)
 
         gl.glDrawElements(
             gl.GL_TRIANGLES, self._cylinder_count, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0)
@@ -1143,7 +1142,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         h = max(1, self.height())
         aspect = w / h
         half_h = max(
-            self._molecule_radius * self._ORTHO_VIEW_MARGIN / max(self._zoom*2, 0.01),
+            self._molecule_radius * self._ORTHO_VIEW_MARGIN / max(self._zoom * 2, 0.01),
             0.5,
         )
         half_w = half_h * aspect
@@ -1155,10 +1154,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         near, far = 0.01, 10000.0
         return np.array(
             [
-                [1.0 / half_w, 0.0,          0.0,                        0.0],
-                [0.0,          1.0 / half_h, 0.0,                        0.0],
-                [0.0,          0.0,          2.0 / (near - far),         (far + near) / (near - far)],
-                [0.0,          0.0,          0.0,                        1.0],
+                [1.0 / half_w, 0.0, 0.0, 0.0],
+                [0.0, 1.0 / half_h, 0.0, 0.0],
+                [0.0, 0.0, 2.0 / (near - far), (far + near) / (near - far)],
+                [0.0, 0.0, 0.0, 1.0],
             ],
             dtype=np.float32,
         )
@@ -1230,7 +1229,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                         a3d.adp_billboard_r = float(
                             _ADP_SCALE * np.sqrt(np.max(evals)) * 1.2
                         )
-                        A = np.linalg.inv(_ADP_SCALE**2 * a3d.u_cart)
+                        A = np.linalg.inv(_ADP_SCALE ** 2 * a3d.u_cart)
                         a3d.adp_A_matrix = A.astype(np.float32)
                 except Exception:
                     a3d.u_cart = None
