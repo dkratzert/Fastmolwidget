@@ -133,7 +133,7 @@ def _hex_to_rgb_float(hex_color: str) -> tuple[float, float, float]:
 
 
 def _normalize_rgb_color(
-    color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
 ) -> tuple[float, float, float]:
     """Normalise a QColor/hex/RGB triple to float RGB in ``[0, 1]``."""
     if isinstance(color, QtGui.QColor):
@@ -161,11 +161,11 @@ def _normalize_rgb_color(
 
 
 def _make_cylinder(
-    p1: np.ndarray,
-    p2: np.ndarray,
-    radius: float,
-    color: tuple[float, float, float],
-    n_seg: int = 8,
+        p1: np.ndarray,
+        p2: np.ndarray,
+        radius: float,
+        color: tuple[float, float, float],
+        n_seg: int = 8,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """Generate a cylinder mesh between *p1* and *p2*.
 
@@ -238,14 +238,14 @@ class _Atom3D:
     ]
 
     def __init__(
-        self,
-        x: float,
-        y: float,
-        z: float,
-        label: str,
-        type_: str,
-        part: int,
-        u_eq: float = 0.05,
+            self,
+            x: float,
+            y: float,
+            z: float,
+            label: str,
+            type_: str,
+            part: int,
+            u_eq: float = 0.05,
     ) -> None:
         self.center = np.array([x, y, z], dtype=np.float32)
         self.label = label
@@ -540,6 +540,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         # ---- Public display state (mirrors MoleculeWidget) ----------------
         self.fontsize: int = 13
+        self.label_color = QtGui.QColor(100, 50, 5)
         self.bond_width: int = 3
         self.atoms_size: int = 12  # kept for API compatibility
         self.labels: bool = True
@@ -804,8 +805,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         painter.fillRect(self.rect(), QtGui.QColor(240, 240, 240))
         painter.setPen(QtGui.QColor(80, 80, 80))
         msg = (
-            "3D OpenGL rendering unavailable.\n"
-            + self._gl_fail_reason
+                "3D OpenGL rendering unavailable.\n"
+                + self._gl_fail_reason
         )
         painter.drawText(
             self.rect(), Qt.AlignmentFlag.AlignCenter, msg
@@ -986,9 +987,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glUseProgram(0)
 
-    def _render_one_ellipsoid(
-        self, atom: _Atom3D, mv: np.ndarray, proj: np.ndarray
-    ) -> None:
+    def _render_one_ellipsoid(self, atom: _Atom3D, mv: np.ndarray, proj: np.ndarray) -> None:
         prog = self._ellipsoid_prog
         gl.glUseProgram(prog)
 
@@ -1083,7 +1082,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             font = QtGui.QFont()
             font.setPixelSize(max(1, self.fontsize))
             painter.setFont(font)
-            painter.setPen(QtGui.QColor(100, 50, 5))
+            painter.setPen(self.label_color)
 
             for atom in self.atoms:
                 if atom.type_ in hydrogens:
@@ -1096,9 +1095,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     continue
                 ndc = clip[:3] / clip[3]
                 if not (
-                    -1.0 <= ndc[0] <= 1.0
-                    and -1.0 <= ndc[1] <= 1.0
-                    and -1.0 <= ndc[2] <= 1.0
+                        -1.0 <= ndc[0] <= 1.0
+                        and -1.0 <= ndc[1] <= 1.0
+                        and -1.0 <= ndc[2] <= 1.0
                 ):
                     continue
 
@@ -1168,30 +1167,30 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     # ------------------------------------------------------------------
 
     def open_molecule(
-        self,
-        atoms: list[Atomtuple],
-        cell: tuple[float, float, float, float, float, float] | None = None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
-        keep_view: bool = False,
+            self,
+            atoms: list[Atomtuple],
+            cell: tuple[float, float, float, float, float, float] | None = None,
+            adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
+            keep_view: bool = False,
     ) -> None:
         """Load a new molecule and (unless *keep_view*) reset the view."""
         self._load_molecule(atoms, cell, adps, keep_view=keep_view)
 
     def grow_molecule(
-        self,
-        atoms: list[Atomtuple],
-        cell: tuple[float, float, float, float, float, float] | None = None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
+            self,
+            atoms: list[Atomtuple],
+            cell: tuple[float, float, float, float, float, float] | None = None,
+            adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
     ) -> None:
         """Update the displayed molecule while preserving the current view."""
         self._load_molecule(atoms, cell, adps, keep_view=True)
 
     def _load_molecule(
-        self,
-        atoms: list[Atomtuple],
-        cell: tuple[float, float, float, float, float, float] | None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None,
-        keep_view: bool,
+            self,
+            atoms: list[Atomtuple],
+            cell: tuple[float, float, float, float, float, float] | None,
+            adps: dict[str, tuple[float, float, float, float, float, float]] | None,
+            keep_view: bool,
     ) -> None:
         self._cell = cell
         self._adp_map = adps if adps is not None else {}
@@ -1316,8 +1315,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     b * sin(radians(gamma)),
                     c
                     * (
-                        cos(radians(alpha))
-                        - cos(radians(beta)) * cos(radians(gamma))
+                            cos(radians(alpha))
+                            - cos(radians(beta)) * cos(radians(gamma))
                     )
                     / sin(radians(gamma)),
                 ],
@@ -1327,9 +1326,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         )
 
     def _uij_to_cart(
-        self,
-        uvals: tuple[float, float, float, float, float, float],
-        symm_matrix: Optional[np.ndarray],
+            self,
+            uvals: tuple[float, float, float, float, float, float],
+            symm_matrix: Optional[np.ndarray],
     ) -> np.ndarray:
         """Convert fractional *Uij* to a Cartesian ADP tensor."""
         U11, U22, U33, U23, U13, U12 = uvals
@@ -1357,11 +1356,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.setPalette(pal)
         self.update()
 
-    def set_bond_color(
-        self,
-        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
-    ) -> None:
-        """Set the default colour used for all non-selected bonds."""
+    def set_bond_color(self, color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int] ) -> None:
+        """Set the default color used for all non-selected bonds."""
         self._bond_rgb = _normalize_rgb_color(color)
         if self.atoms:
             self._build_geometry()
@@ -1493,18 +1489,18 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         elif event.buttons() == Qt.MouseButton.MiddleButton:
             # Pan
-            pan_scale = self._molecule_radius * 0.008
-            self._pan[0] -= dx * pan_scale
-            self._pan[1] += dy * pan_scale
+            pan_scale = self._molecule_radius * 0.005
+            self._pan[0] += dx * pan_scale
+            self._pan[1] -= dy * pan_scale
 
         self._lastPos = pos
         self.update()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         if (
-            event.button() == Qt.MouseButton.LeftButton
-            and not self._mouse_moved
-            and self._pressPos is not None
+                event.button() == Qt.MouseButton.LeftButton
+                and not self._mouse_moved
+                and self._pressPos is not None
         ):
             self._handle_click(event)
         super().mouseReleaseEvent(event)
@@ -1610,12 +1606,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         return origin, direction
 
     def _ray_sphere_hit_viewspace(
-        self,
-        ray_origin: np.ndarray,
-        ray_dir: np.ndarray,
-        world_center: np.ndarray,
-        radius: float,
-        mv: np.ndarray,
+            self,
+            ray_origin: np.ndarray,
+            ray_dir: np.ndarray,
+            world_center: np.ndarray,
+            radius: float,
+            mv: np.ndarray,
     ) -> float | None:
         """Ray–sphere intersection in view space.  Returns parametric *t* or ``None``."""
         c4 = np.array([*world_center, 1.0], dtype=np.float32)
@@ -1636,13 +1632,13 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         return t if t >= 0.0 else None
 
     def _ray_bond_screen(
-        self,
-        sx: float,
-        sy: float,
-        p1: np.ndarray,
-        p2: np.ndarray,
-        mv: np.ndarray,
-        proj: np.ndarray,
+            self,
+            sx: float,
+            sy: float,
+            p1: np.ndarray,
+            p2: np.ndarray,
+            mv: np.ndarray,
+            proj: np.ndarray,
     ) -> float | None:
         """Return average NDC depth of bond *p1–p2* if the screen click *(sx,sy)*
         is within 6 pixels of its projected line segment, else ``None``."""
@@ -1707,7 +1703,7 @@ def _set_float(prog: int, name: bytes, value: float) -> None:
 
 
 def _bind_attrib(
-    prog: int, name: bytes, size: int, stride: int, offset: int
+        prog: int, name: bytes, size: int, stride: int, offset: int
 ) -> None:
     loc = gl.glGetAttribLocation(prog, name)
     if loc >= 0:
