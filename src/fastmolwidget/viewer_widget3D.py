@@ -21,6 +21,7 @@ TODO:
 * Mouse selection should be possible on the entire visible surface of the ellipsoid or sphere.
 * Find out why rotation of 1000+ atom structures is rather slow.
 * Make colors a bit brighter.
+* Bond in front of ellipsoid is not selectable.
 
 """
 

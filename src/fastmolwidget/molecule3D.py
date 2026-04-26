@@ -1536,7 +1536,23 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
                 continue
-            t = self._ray_sphere_hit_viewspace(ray_origin, ray_dir, atom.center, atom.display_radius, mv)
+            # Hit test against the *rendered* surface so the entire visible
+            # ellipsoid / sphere is selectable.
+            if (
+                    self._show_adps
+                    and atom.u_cart is not None
+                    and atom.adp_valid
+                    and atom.adp_A_matrix is not None
+            ):
+                t = self._ray_ellipsoid_hit_viewspace(
+                    ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
+                )
+            else:
+                radius = float(atom.u_iso or atom.display_radius)
+                t = self._ray_sphere_hit_viewspace(
+                    ray_origin, ray_dir, atom.center, radius, mv
+                )
+            # Nearest-t wins → front-most surface is selected (z-ordering).
             if t is not None and t < best_t:
                 best_t = t
                 best_atom = atom
@@ -1630,6 +1646,59 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         t1 = (-b + sqrt_disc) / (2.0 * a)
         t = t0 if t0 >= 0.0 else t1
         return t if t >= 0.0 else None
+
+    def _ray_ellipsoid_hit_viewspace(
+            self,
+            ray_origin: np.ndarray,
+            ray_dir: np.ndarray,
+            world_center: np.ndarray,
+            a_matrix: np.ndarray,
+            mv: np.ndarray,
+    ) -> float | None:
+        """Ray–ellipsoid intersection in view space.
+
+        The ellipsoid is defined in world space by
+        ``(P - C)^T · A · (P - C) = 1`` where ``A = a_matrix`` is the same
+        matrix uploaded to the ellipsoid fragment shader (i.e.
+        ``inv(_ADP_SCALE² · U_cart)``).  Picking against this matrix
+        guarantees that the clickable region equals the visible silhouette.
+
+        Returns parametric *t* of the front-face hit (smallest non-negative
+        root) or ``None`` if the ray misses the ellipsoid.
+        """
+        # World→eye is mv.  For a point P_world, P_eye = R · P_world + T,
+        # so (P_world - C) = R^T · (P_eye - C_eye).  The ellipsoid form
+        # transforms to view space as q^T · M · q = 1 with M = R · A · R^T,
+        # where q = P_eye - C_eye and R = mv[:3, :3].
+        c4 = np.array([*world_center, 1.0], dtype=np.float32)
+        c_eye = (mv @ c4)[:3]
+
+        R = mv[:3, :3].astype(np.float64)
+        A = np.asarray(a_matrix, dtype=np.float64)
+        M = R @ A @ R.T
+
+        oc = (ray_origin - c_eye).astype(np.float64)
+        d = ray_dir.astype(np.float64)
+
+        Md = M @ d
+        Moc = M @ oc
+
+        a_c = float(np.dot(d, Md))
+        b_c = 2.0 * float(np.dot(oc, Md))
+        c_c = float(np.dot(oc, Moc)) - 1.0
+
+        if abs(a_c) < 1e-20:
+            return None
+
+        disc = b_c * b_c - 4.0 * a_c * c_c
+        if disc < 0.0:
+            return None
+
+        sqrt_disc = sqrt(disc)
+        t0 = (-b_c - sqrt_disc) / (2.0 * a_c)
+        t1 = (-b_c + sqrt_disc) / (2.0 * a_c)
+        t = t0 if t0 >= 0.0 else t1
+        return float(t) if t >= 0.0 else None
 
     def _ray_bond_screen(
             self,
