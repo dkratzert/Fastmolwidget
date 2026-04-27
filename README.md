@@ -59,6 +59,33 @@ pip install PyOpenGL
 
 Without PyOpenGL the 3D widget still loads and displays a helpful message — the host application never crashes.
 
+### Optional C++ Acceleration (`sdm_cpp`)
+
+The symmetry-growing step (Shortest-Distance-Matrix, SDM) has an optional
+C++ extension (`sdm_cpp`) that uses **pybind11** and **OpenMP** for a significant
+speed-up on large structures.  The pure-Python fallback is always active when
+the extension is not installed.
+
+**macOS**
+```bash
+brew install libomp          # needed for OpenMP; skip if you don't want parallelism
+pip install pybind11
+pip install -e . --no-build-isolation
+```
+
+**Linux / Windows**
+```bash
+pip install pybind11
+pip install -e . --no-build-isolation
+```
+
+If `libomp` is not found on macOS the module still builds and works, just
+single-threaded.  You can verify whether OpenMP was compiled in:
+```python
+import sdm_cpp
+print(sdm_cpp.has_openmp)   # True / False
+```
+
 **Requirements**: Python >= 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
 
 ## Quick Start

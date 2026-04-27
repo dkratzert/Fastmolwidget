@@ -8,7 +8,7 @@
 # Daniel Kratzert
 # ----------------------------------------------------------------------------
 #
-
+from __future__ import annotations
 
 import time
 from collections import namedtuple
@@ -85,7 +85,7 @@ class SDMItem:
     def __lt__(self, a2) -> bool:
         return True if self.dist < a2.dist else False
 
-    def __eq__(self, other: 'SDMItem') -> bool:
+    def __eq__(self, other: SDMItem) -> bool:
         if other.a1 == self.a2 and other.a2 == self.a1:
             return True
         return False
