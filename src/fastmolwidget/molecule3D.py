@@ -540,6 +540,145 @@ void main() {
 }
 """
 
+# ── Batched ellipsoid impostor ────────────────────────────────────────────────
+# All per-atom data (center, A-matrix, eigenvectors, …) are packed as vertex
+# attributes so that every ellipsoid can be drawn with a single glDrawElements
+# call instead of one call per atom.
+#
+# Vertex layout (28 floats = 112 bytes, stride):
+#   offset  0 ( 0 B) – a_corner   vec2
+#   offset  2 ( 8 B) – a_center   vec3
+#   offset  5 (20 B) – a_color    vec3
+#   offset  8 (32 B) – a_radius   float
+#   offset  9 (36 B) – a_selected float
+#   offset 10 (40 B) – a_A_col0   vec3  (column 0 of the A-matrix)
+#   offset 13 (52 B) – a_A_col1   vec3
+#   offset 16 (64 B) – a_A_col2   vec3
+#   offset 19 (76 B) – a_evec0    vec3  (column 0 of the eigenvector matrix)
+#   offset 22 (88 B) – a_evec1    vec3
+#   offset 25 (100 B)– a_evec2    vec3
+_ELLIPSOID_BATCH_VERT = """\
+#version 120
+attribute vec2  a_corner;
+attribute vec3  a_center;
+attribute vec3  a_color;
+attribute float a_radius;
+attribute float a_selected;
+attribute vec3  a_A_col0;
+attribute vec3  a_A_col1;
+attribute vec3  a_A_col2;
+attribute vec3  a_evec0;
+attribute vec3  a_evec1;
+attribute vec3  a_evec2;
+
+uniform mat4 u_mv;
+uniform mat4 u_proj;
+
+varying vec3  v_center_eye;
+varying vec3  v_color;
+varying float v_radius;
+varying vec2  v_corner;
+varying float v_selected;
+varying vec3  v_A_col0;
+varying vec3  v_A_col1;
+varying vec3  v_A_col2;
+varying vec3  v_evec0;
+varying vec3  v_evec1;
+varying vec3  v_evec2;
+
+void main() {
+    v_color    = a_color;
+    v_radius   = a_radius;
+    v_corner   = a_corner;
+    v_selected = a_selected;
+    v_A_col0   = a_A_col0;
+    v_A_col1   = a_A_col1;
+    v_A_col2   = a_A_col2;
+    v_evec0    = a_evec0;
+    v_evec1    = a_evec1;
+    v_evec2    = a_evec2;
+
+    vec4 c_eye   = u_mv * vec4(a_center, 1.0);
+    v_center_eye = c_eye.xyz;
+
+    vec4 pos = c_eye;
+    pos.xy  += a_corner * a_radius * 1.05;
+    gl_Position = u_proj * pos;
+}
+"""
+
+_ELLIPSOID_BATCH_FRAG = """\
+#version 120
+varying vec3  v_center_eye;
+varying vec3  v_color;
+varying float v_radius;
+varying vec2  v_corner;
+varying float v_selected;
+varying vec3  v_A_col0;
+varying vec3  v_A_col1;
+varying vec3  v_A_col2;
+varying vec3  v_evec0;
+varying vec3  v_evec1;
+varying vec3  v_evec2;
+
+uniform mat4 u_mv;
+uniform mat4 u_proj;
+
+void main() {
+    mat3 A     = mat3(v_A_col0, v_A_col1, v_A_col2);
+    mat3 evecs = mat3(v_evec0,  v_evec1,  v_evec2);
+
+    vec2 local_xy = v_corner * v_radius * 1.05;
+    vec3 q0 = vec3(local_xy, 0.0);
+    vec3 ez = vec3(0.0, 0.0, 1.0);
+
+    mat3 inv_mv = transpose(mat3(u_mv));
+    vec3 ray_o  = inv_mv * q0;
+    vec3 ray_d  = inv_mv * ez;
+
+    vec3 Aq0 = A * ray_o;
+    vec3 Aez = A * ray_d;
+
+    float a_c  = dot(ray_d, Aez);
+    float b_c  = 2.0 * dot(ray_o, Aez);
+    float cc   = dot(ray_o, Aq0) - 1.0;
+    float disc = b_c * b_c - 4.0 * a_c * cc;
+
+    if (disc < 0.0 || a_c < 1e-10) discard;
+
+    float t_hit    = (-b_c + sqrt(disc)) / (2.0 * a_c);
+    vec3 hit_world = ray_o + t_hit * ray_d;
+    vec3 local_hit = q0 + vec3(0.0, 0.0, t_hit);
+    vec3 hit       = v_center_eye + local_hit;
+
+    vec3 normal_world = normalize(A * hit_world);
+    vec3 normal       = normalize(mat3(u_mv) * normal_world);
+
+    vec3  light     = v_selected > 0.5
+                        ? normalize(vec3(2.0, 1.5, 2.0))
+                        : normalize(vec3(1.0, 1.5, 2.0));
+    float diff_min  = v_selected > 0.5 ? 1.6 : 0.0;
+    float diff      = max(dot(normal, light), diff_min);
+    float soft_diff = 0.25 + 0.75 * diff;
+    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+
+    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
+
+    float lw = v_radius * 0.04;
+    if (abs(dot(hit_world, evecs[0])) < lw ||
+        abs(dot(hit_world, evecs[1])) < lw ||
+        abs(dot(hit_world, evecs[2])) < lw) {
+        color *= 0.15;
+    }
+
+    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+
+    vec4 clip_pos = u_proj * vec4(hit, 1.0);
+    gl_FragDepth  = (clip_pos.z / clip_pos.w + 1.0) * 0.5;
+}
+"""
+
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
 
@@ -634,13 +773,16 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         # ---- GL object handles (allocated in initializeGL) ----------------
         self._sphere_prog: int = 0
-        self._ellipsoid_prog: int = 0
+        self._ellipsoid_prog: int = 0          # kept but no longer used for rendering
+        self._ellipsoid_batch_prog: int = 0    # new: draws all ellipsoids in one call
         self._cylinder_prog: int = 0
         self._sphere_vbo: int = 0
         self._sphere_ibo: int = 0
         self._cylinder_vbo: int = 0
         self._cylinder_ibo: int = 0
-        self._unit_quad_vbo: int = 0  # shared 2-D corner quad for ellipsoids
+        self._ellipsoid_batch_vbo: int = 0
+        self._ellipsoid_batch_ibo: int = 0
+        self._unit_quad_vbo: int = 0  # kept for backward compat, not used in main path
         self._unit_quad_ibo: int = 0
 
         # ---- CPU-side geometry buffers ------------------------------------
@@ -650,8 +792,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._cylinder_verts: np.ndarray = np.empty(0, dtype=np.float32)
         self._cylinder_idx: np.ndarray = np.empty(0, dtype=np.uint32)
         self._cylinder_count: int = 0
+        self._ellipsoid_verts: np.ndarray = np.empty(0, dtype=np.float32)
+        self._ellipsoid_idx: np.ndarray = np.empty(0, dtype=np.uint32)
+        self._ellipsoid_count: int = 0
 
-        # ADP atoms for per-atom ellipsoid draw calls
+        # ADP atoms for batched ellipsoid draw call
         self._adp_draw_list: list[_Atom3D] = []
 
         self._geometry_dirty: bool = False
@@ -727,36 +872,21 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._sphere_prog = self._compile_program(
             _SPHERE_VERT, _SPHERE_FRAG, "sphere"
         )
-        self._ellipsoid_prog = self._compile_program(
-            _ELLIPSOID_VERT, _ELLIPSOID_FRAG, "ellipsoid"
+        self._ellipsoid_batch_prog = self._compile_program(
+            _ELLIPSOID_BATCH_VERT, _ELLIPSOID_BATCH_FRAG, "ellipsoid_batch"
         )
         self._cylinder_prog = self._compile_program(
             _CYLINDER_VERT, _CYLINDER_FRAG, "cylinder"
         )
 
-        # Allocate VBOs / IBOs
+        # Allocate VBOs / IBOs (sphere, cylinder, ellipsoid batch; unit quad no longer used)
         buffers = gl.glGenBuffers(6)
         (
             self._sphere_vbo, self._sphere_ibo,
             self._cylinder_vbo, self._cylinder_ibo,
-            self._unit_quad_vbo, self._unit_quad_ibo,
+            self._ellipsoid_batch_vbo, self._ellipsoid_batch_ibo,
         ) = buffers
 
-        # Upload the shared unit quad used for all ellipsoid draw calls
-        corners = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]], dtype=np.float32)
-        quad_idx = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
-
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._unit_quad_vbo)
-        gl.glBufferData(
-            gl.GL_ARRAY_BUFFER, corners.nbytes, corners, gl.GL_STATIC_DRAW
-        )
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._unit_quad_ibo)
-        gl.glBufferData(
-            gl.GL_ELEMENT_ARRAY_BUFFER, quad_idx.nbytes, quad_idx, gl.GL_STATIC_DRAW
-        )
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
 
     def _compile_program(self, vert_src: str, frag_src: str, name: str) -> int:
         """Compile and link a GLSL 1.20 shader program.
@@ -838,11 +968,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             if self._sphere_count > 0:
                 self._render_spheres(mv, proj)
 
-            # ADP ellipsoids (one draw call each)
-            if self._show_adps and self._adp_draw_list:
-                for atom in self._adp_draw_list:
-                    if atom.adp_A_matrix is not None:
-                        self._render_one_ellipsoid(atom, mv, proj)
+            # ADP ellipsoids – all in a single batched draw call
+            if self._show_adps and self._ellipsoid_count > 0:
+                self._render_ellipsoids_batched(mv, proj)
         finally:
             if painter is not None:
                 painter.endNativePainting()
@@ -900,6 +1028,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def _build_geometry(self) -> None:
         """(Re)build all CPU-side geometry from :attr:`atoms`."""
         self._build_sphere_geometry()
+        self._build_ellipsoid_geometry_batched()
         self._build_cylinder_geometry()
         self._geometry_dirty = True
 
@@ -995,6 +1124,96 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             self._cylinder_idx = np.empty(0, dtype=np.uint32)
             self._cylinder_count = 0
 
+    def _build_ellipsoid_geometry_batched(self) -> None:
+        """Pack all ADP ellipsoids into a single VBO for one-call rendering.
+
+        Vertex layout: 28 floats per vertex, 4 vertices per atom.
+        See ``_ELLIPSOID_BATCH_VERT`` for the attribute offsets.
+        Must be called **after** :meth:`_build_sphere_geometry` which populates
+        :attr:`_adp_draw_list`.
+        """
+        atoms = [
+            a for a in self._adp_draw_list
+            if a.adp_A_matrix is not None and a.u_eigvecs is not None
+        ]
+        n = len(atoms)
+        if n == 0:
+            self._ellipsoid_verts = np.empty(0, dtype=np.float32)
+            self._ellipsoid_idx = np.empty(0, dtype=np.uint32)
+            self._ellipsoid_count = 0
+            return
+
+        # ── per-atom data (vectorised) ──────────────────────────────────────
+        _corners = np.array(
+            [[-1.0, -1.0], [-1.0, 1.0], [1.0, -1.0], [1.0, 1.0]],
+            dtype=np.float32,
+        )
+        # Repeat corner pattern for n atoms: shape (n*4, 2)
+        corners_tiled = np.tile(_corners, (n, 1))
+
+        # Per-atom arrays – each repeated 4× to fill all 4 quad vertices
+        centers = np.repeat(
+            np.array([a.center for a in atoms], dtype=np.float32), 4, axis=0
+        )
+        colors = np.repeat(
+            np.array(
+                [_SEL_COLOR if a.label in self.selected_atoms else a.color_f
+                 for a in atoms],
+                dtype=np.float32,
+            ),
+            4, axis=0,
+        )
+        radii = np.repeat(
+            np.array([a.adp_billboard_r for a in atoms], dtype=np.float32), 4
+        )
+        sel_flags = np.repeat(
+            np.array(
+                [1.0 if a.label in self.selected_atoms else 0.0 for a in atoms],
+                dtype=np.float32,
+            ),
+            4,
+        )
+        # Columns of the A-matrix and eigenvector matrix
+        # mat3(col0, col1, col2) in GLSL uses column-major order → A[:, j]
+        A_col0 = np.repeat(
+            np.array([a.adp_A_matrix[:, 0] for a in atoms], dtype=np.float32), 4, axis=0
+        )
+        A_col1 = np.repeat(
+            np.array([a.adp_A_matrix[:, 1] for a in atoms], dtype=np.float32), 4, axis=0
+        )
+        A_col2 = np.repeat(
+            np.array([a.adp_A_matrix[:, 2] for a in atoms], dtype=np.float32), 4, axis=0
+        )
+        evec0 = np.repeat(
+            np.array([a.u_eigvecs[:, 0] for a in atoms], dtype=np.float32), 4, axis=0
+        )
+        evec1 = np.repeat(
+            np.array([a.u_eigvecs[:, 1] for a in atoms], dtype=np.float32), 4, axis=0
+        )
+        evec2 = np.repeat(
+            np.array([a.u_eigvecs[:, 2] for a in atoms], dtype=np.float32), 4, axis=0
+        )
+
+        # Assemble interleaved VBO: (n*4, 28) → ravel
+        verts = np.hstack([
+            corners_tiled,   # 2
+            centers,         # 3
+            colors,          # 3
+            radii[:, None],  # 1
+            sel_flags[:, None],  # 1
+            A_col0, A_col1, A_col2,  # 9
+            evec0, evec1, evec2,     # 9
+        ])  # → (n*4, 28)
+
+        # Indices: 6 per atom quad
+        quad_tpl = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
+        offsets = np.arange(n, dtype=np.uint32) * 4
+        idx = (quad_tpl[None, :] + offsets[:, None]).ravel()
+
+        self._ellipsoid_verts = verts.astype(np.float32).ravel()
+        self._ellipsoid_idx = idx
+        self._ellipsoid_count = int(len(idx))
+
     def _upload_geometry(self) -> None:
         """Upload CPU geometry arrays to GPU VBOs."""
         if not self._gl_initialized or self._gl_failed:
@@ -1034,6 +1253,25 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 gl.GL_ELEMENT_ARRAY_BUFFER,
                 self._cylinder_idx.nbytes,
                 self._cylinder_idx,
+                gl.GL_DYNAMIC_DRAW,
+            )
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+
+        if self._ellipsoid_verts.size > 0:
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._ellipsoid_batch_vbo)
+            gl.glBufferData(
+                gl.GL_ARRAY_BUFFER,
+                self._ellipsoid_verts.nbytes,
+                self._ellipsoid_verts,
+                gl.GL_DYNAMIC_DRAW,
+            )
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._ellipsoid_batch_ibo)
+            gl.glBufferData(
+                gl.GL_ELEMENT_ARRAY_BUFFER,
+                self._ellipsoid_idx.nbytes,
+                self._ellipsoid_idx,
                 gl.GL_DYNAMIC_DRAW,
             )
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
@@ -1150,6 +1388,43 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         )
 
         _unbind_attrib(prog, [b"a_position", b"a_normal", b"a_color", b"a_selected"])
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+        gl.glUseProgram(0)
+
+    def _render_ellipsoids_batched(self, mv: np.ndarray, proj: np.ndarray) -> None:
+        """Render all ADP ellipsoids with a **single** glDrawElements call."""
+        prog = self._ellipsoid_batch_prog
+        gl.glUseProgram(prog)
+
+        _set_mat4(prog, b"u_mv", mv)
+        _set_mat4(prog, b"u_proj", proj)
+
+        stride = 28 * 4  # 28 floats × 4 bytes
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._ellipsoid_batch_vbo)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._ellipsoid_batch_ibo)
+
+        _bind_attrib(prog, b"a_corner",   2, stride, 0)
+        _bind_attrib(prog, b"a_center",   3, stride, 8)
+        _bind_attrib(prog, b"a_color",    3, stride, 20)
+        _bind_attrib(prog, b"a_radius",   1, stride, 32)
+        _bind_attrib(prog, b"a_selected", 1, stride, 36)
+        _bind_attrib(prog, b"a_A_col0",   3, stride, 40)
+        _bind_attrib(prog, b"a_A_col1",   3, stride, 52)
+        _bind_attrib(prog, b"a_A_col2",   3, stride, 64)
+        _bind_attrib(prog, b"a_evec0",    3, stride, 76)
+        _bind_attrib(prog, b"a_evec1",    3, stride, 88)
+        _bind_attrib(prog, b"a_evec2",    3, stride, 100)
+
+        gl.glDrawElements(
+            gl.GL_TRIANGLES, self._ellipsoid_count, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0)
+        )
+
+        _unbind_attrib(prog, [
+            b"a_corner", b"a_center", b"a_color", b"a_radius", b"a_selected",
+            b"a_A_col0", b"a_A_col1", b"a_A_col2",
+            b"a_evec0", b"a_evec1", b"a_evec2",
+        ])
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glUseProgram(0)
@@ -1932,21 +2207,42 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 # Private GL helpers (module-level to keep the class body shorter)
 # ---------------------------------------------------------------------------
 
+# Cache for glGetUniformLocation / glGetAttribLocation – keyed by (prog, name).
+# Avoids repeated driver round-trips on every frame.
+_UNIFORM_LOC_CACHE: dict[tuple[int, bytes], int] = {}
+_ATTRIB_LOC_CACHE: dict[tuple[int, bytes], int] = {}
+
+
 def _set_mat4(prog: int, name: bytes, mat: np.ndarray) -> None:
-    loc = gl.glGetUniformLocation(prog, name)
+    key = (prog, name)
+    try:
+        loc = _UNIFORM_LOC_CACHE[key]
+    except KeyError:
+        loc = gl.glGetUniformLocation(prog, name)
+        _UNIFORM_LOC_CACHE[key] = loc
     if loc >= 0:
         gl.glUniformMatrix4fv(loc, 1, False, mat.T.astype(np.float32).copy())
 
 
 def _set_vec3(prog: int, name: bytes, v: np.ndarray) -> None:
-    loc = gl.glGetUniformLocation(prog, name)
+    key = (prog, name)
+    try:
+        loc = _UNIFORM_LOC_CACHE[key]
+    except KeyError:
+        loc = gl.glGetUniformLocation(prog, name)
+        _UNIFORM_LOC_CACHE[key] = loc
     if loc >= 0:
         v = np.asarray(v, dtype=np.float32).ravel()
         gl.glUniform3f(loc, float(v[0]), float(v[1]), float(v[2]))
 
 
 def _set_float(prog: int, name: bytes, value: float) -> None:
-    loc = gl.glGetUniformLocation(prog, name)
+    key = (prog, name)
+    try:
+        loc = _UNIFORM_LOC_CACHE[key]
+    except KeyError:
+        loc = gl.glGetUniformLocation(prog, name)
+        _UNIFORM_LOC_CACHE[key] = loc
     if loc >= 0:
         gl.glUniform1f(loc, float(value))
 
@@ -1954,7 +2250,12 @@ def _set_float(prog: int, name: bytes, value: float) -> None:
 def _bind_attrib(
         prog: int, name: bytes, size: int, stride: int, offset: int
 ) -> None:
-    loc = gl.glGetAttribLocation(prog, name)
+    key = (prog, name)
+    try:
+        loc = _ATTRIB_LOC_CACHE[key]
+    except KeyError:
+        loc = gl.glGetAttribLocation(prog, name)
+        _ATTRIB_LOC_CACHE[key] = loc
     if loc >= 0:
         gl.glEnableVertexAttribArray(loc)
         gl.glVertexAttribPointer(loc, size, gl.GL_FLOAT, False, stride, ctypes.c_void_p(offset))
@@ -1962,6 +2263,11 @@ def _bind_attrib(
 
 def _unbind_attrib(prog: int, names: list[bytes]) -> None:
     for name in names:
-        loc = gl.glGetAttribLocation(prog, name)
+        key = (prog, name)
+        try:
+            loc = _ATTRIB_LOC_CACHE[key]
+        except KeyError:
+            loc = gl.glGetAttribLocation(prog, name)
+            _ATTRIB_LOC_CACHE[key] = loc
         if loc >= 0:
             gl.glDisableVertexAttribArray(loc)
