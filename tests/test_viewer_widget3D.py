@@ -470,7 +470,7 @@ def test_adp_tensors_computed():
 # Bond hit-testing (depth ordering fix)
 # ------------------------------------------------------------------
 
-def test_ray_bond_screen_returns_viewspace_t():
+def test_ray_bond_returns_viewspace_t():
     """_ray_bond_screen must return a viewspace t comparable to atom t values.
 
     Specifically, a bond whose midpoint is closer to the camera (smaller
@@ -508,14 +508,13 @@ def test_ray_bond_screen_returns_viewspace_t():
     )
 
 
-def test_bond_selectable_in_front_of_atom():
-    """Clicking on a bond that is in front of an atom must select the bond.
+def test_bond_selected_when_in_front_of_atom():
+    """Clicking on a bond in front of an atom selects the bond, not the atom.
 
-    The old code tested bonds only when no atom was hit; this test ensures that
-    a bond closer to the camera wins over an atom behind it.
+    The old code tested bonds only when no atom was hit; this test verifies
+    that a bond closer to the camera wins over an atom behind it by comparing
+    the viewspace t values returned by each hit-tester directly.
     """
-    from qtpy import QtCore, QtGui
-
     widget = MoleculeWidget3D()
     widget.resize(800, 600)
     widget.show_adps(False)  # use sphere hit-testing, simpler geometry
@@ -538,7 +537,6 @@ def test_bond_selectable_in_front_of_atom():
 
     # Project the far atom to find its screen position, then click there.
     # That pixel should be covered by the near bond, so the bond wins.
-    import numpy as np
     pos4 = np.array([0.0, 0.0, -5.0, 1.0], dtype=np.float32)
     clip = proj @ (mv @ pos4)
     ndc  = clip[:3] / clip[3]
@@ -546,8 +544,7 @@ def test_bond_selectable_in_front_of_atom():
     sx = (ndc[0] + 1.0) * 0.5 * w
     sy = (1.0 - ndc[1]) * 0.5 * h
 
-    # Simulate a click via _handle_click using a fake QMouseEvent.
-    # We test the lower-level selection logic directly.
+    # Test the hit-testing methods directly (no QMouseEvent required).
     ray_origin, ray_dir = widget._screen_to_ray_viewspace(sx, sy)
 
     # Compute t for the far atom sphere.

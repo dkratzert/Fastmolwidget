@@ -493,6 +493,9 @@ _DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#7A6E61")
 # ORTEP 50 % probability scale factor
 _ADP_SCALE: float = 1.5382
 
+# Screen-space tolerance in pixels for bond hit-testing.
+_BOND_HIT_TOLERANCE_PX: float = 6.0
+
 
 # ---------------------------------------------------------------------------
 # Main widget
@@ -1755,7 +1758,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if ab_len2 < 1e-6:
             # Both endpoints project to essentially the same pixel.
             dist = float(np.linalg.norm(p - sp1))
-            if dist <= 6.0:
+            if dist <= _BOND_HIT_TOLERANCE_PX:
                 return float(-(z1 + z2) / 2.0)
             return None
 
@@ -1763,7 +1766,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         proj_pt = sp1 + t * ab
         dist = float(np.linalg.norm(p - proj_pt))
 
-        if dist <= 6.0:
+        if dist <= _BOND_HIT_TOLERANCE_PX:
             # Interpolate viewspace z and negate to get t (positive, smaller = closer).
             z_closest = z1 + t * (z2 - z1)
             return float(-z_closest)
