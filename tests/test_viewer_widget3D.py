@@ -508,6 +508,55 @@ def test_ray_bond_returns_viewspace_t():
     )
 
 
+def test_ray_bond_returns_interpolated_t_for_slanted_bond():
+    """_ray_bond_screen interpolates viewspace t at the click point.
+
+    A slanted bond whose endpoints are at very different z-values must return
+    a t value that is interpolated at the projection of the click point onto
+    the screen-space line segment — not the average of the endpoint depths.
+    """
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+
+    # Bond runs from (−1, 0, 0) to (1, 0, −4) — large z difference.
+    widget.open_molecule([
+        Atomtuple("C1", "C", -1.0, 0.0,  0.0, 0),
+        Atomtuple("C2", "C",  1.0, 0.0, -4.0, 0),
+    ])
+
+    mv   = widget._compute_mv_matrix()
+    proj = widget._compute_proj_matrix()
+
+    # Project both endpoints to screen.
+    def project(pos):
+        p4 = np.array([*pos, 1.0], dtype=np.float32)
+        eye  = mv @ p4
+        clip = proj @ eye
+        ndc  = clip[:3] / clip[3]
+        w, h = widget.width(), widget.height()
+        return np.array(
+            [(ndc[0] + 1.0) * 0.5 * w, (1.0 - ndc[1]) * 0.5 * h],
+            dtype=np.float32,
+        ), float(eye[2])
+
+    sp1, z1 = project(widget.atoms[0].center)
+    sp2, z2 = project(widget.atoms[1].center)
+
+    # Click one-quarter of the way along the screen segment.
+    click = sp1 + 0.25 * (sp2 - sp1)
+    sx, sy = float(click[0]), float(click[1])
+
+    t_result = widget._ray_bond_screen(sx, sy, widget.atoms[0].center, widget.atoms[1].center, mv, proj)
+    assert t_result is not None, "Bond should register a hit at the one-quarter point"
+
+    # The expected viewspace t at parametric 0.25 along the segment.
+    z_expected = z1 + 0.25 * (z2 - z1)
+    t_expected = -z_expected
+    assert abs(t_result - t_expected) < 0.5, (
+        f"Interpolated t={t_result:.3f} should be near expected t={t_expected:.3f}"
+    )
+
+
 def test_bond_selected_when_in_front_of_atom():
     """Clicking on a bond in front of an atom selects the bond, not the atom.
 

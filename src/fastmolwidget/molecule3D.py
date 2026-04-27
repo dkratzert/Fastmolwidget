@@ -1759,7 +1759,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             # Both endpoints project to essentially the same pixel.
             dist = float(np.linalg.norm(p - sp1))
             if dist <= _BOND_HIT_TOLERANCE_PX:
-                return float(-(z1 + z2) / 2.0)
+                # Use the same interpolation formula as the normal path (t=0.5).
+                z_closest = z1 + 0.5 * (z2 - z1)
+                return float(-z_closest)
             return None
 
         t = float(max(0.0, min(1.0, np.dot(p - sp1, ab) / ab_len2)))
