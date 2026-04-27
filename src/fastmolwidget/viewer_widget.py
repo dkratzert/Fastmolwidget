@@ -29,7 +29,6 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
     * **Grow** – expand the asymmetric unit to complete molecules.
     * **Show ADP** – toggle ADP ellipsoid / sphere display.
     * **Show Labels** – toggle atom-name labels.
-    * **Round Bonds** – switch between 3D-shaded and flat bond rendering.
     * **Show Hydrogens** – toggle hydrogen visibility.
     * **Bond Width** – spinbox controlling bond width.
     * **Bond Color** – button opening a color picker for all non-selected bonds.
@@ -50,7 +49,6 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         # ── control bar ──────────────────────────────────────────────────────
         self._adp_checkbox = QtWidgets.QCheckBox("Show ADP")
         self._label_checkbox = QtWidgets.QCheckBox("Show Labels")
-        self._bond_type_checkbox = QtWidgets.QCheckBox("Round Bonds")
         self._hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
         self._grow_checkbox = QtWidgets.QCheckBox("Grow")
 
@@ -62,13 +60,11 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
 
         # default state
         self._adp_checkbox.setChecked(True)
-        self._bond_type_checkbox.setChecked(True)
         self._hydrogens_checkbox.setChecked(True)
 
         # wire controls to renderer
         self._adp_checkbox.toggled.connect(self._render_widget.show_adps)
         self._label_checkbox.toggled.connect(self._render_widget.show_labels)
-        self._bond_type_checkbox.toggled.connect(self._render_widget.show_round_bonds)
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
@@ -77,14 +73,12 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         # apply initial defaults to the renderer
         self._render_widget.set_bond_width(3)
         self._render_widget.show_labels(False)
-        self._render_widget.show_round_bonds(True)
 
         # ── layout ───────────────────────────────────────────────────────────
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._grow_checkbox)
         control_bar.addWidget(self._adp_checkbox)
         control_bar.addWidget(self._label_checkbox)
-        control_bar.addWidget(self._bond_type_checkbox)
         control_bar.addWidget(self._hydrogens_checkbox)
         control_bar.addWidget(self._bw_label)
         control_bar.addWidget(self._bond_width_spinbox)

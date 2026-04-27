@@ -81,9 +81,6 @@ class MoleculeWidgetProtocol(Protocol):
         """Toggle atom-label display."""
         ...
 
-    def show_round_bonds(self, bond_type: bool) -> None:
-        """Switch between 3D-shaded and flat bond rendering."""
-        ...
 
     def show_hydrogens(self, value: bool) -> None:
         """Toggle hydrogen atom visibility."""

@@ -219,7 +219,6 @@ If *PyOpenGL* is not installed, or if OpenGL context creation fails at runtime, 
 - **`show_adps(value: bool)`** — toggle ADP ellipsoid rendering; falls back to isotropic spheres when `False`
 - **`show_labels(value: bool)`** — show / hide atom labels
 - **`show_hydrogens(value: bool)`** — show / hide hydrogen atoms and bonds
-- **`show_round_bonds(value: bool)`** — switch between 8-segment (`True`) and 4-segment (`False`) cylinder bonds
 - **`set_bond_width(width: int)`** — set cylinder radius scale (1–15)
 - **`setLabelFont(font_size: int)`** — set label font pixel size
 - **`set_background_color(color: QColor)`** — change background colour
@@ -300,8 +299,6 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 - **`show_hydrogens(value: bool)`**  
   Show or hide hydrogen / deuterium atoms and their bonds.
 
-- **`show_round_bonds(value: bool)`**  
-  Switch between 3D-shaded cylinder-style bonds (`True`, default) and flat single-colour bonds (`False`).
 
 - **`set_bond_width(width: int)`**  
   Set the stroke width for bonds in pixels (valid range: 1–15).
@@ -359,7 +356,7 @@ def load_into(widget: MoleculeWidgetProtocol, atoms, cell, adps) -> None:
     widget.show_labels(True)
 ```
 
-Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_round_bonds`, `show_hydrogens`, `set_bond_width`, `set_background_color`, `setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
+Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_background_color`, `setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
 
 ### `MoleculeLoader(widget)`
 

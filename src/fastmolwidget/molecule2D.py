@@ -94,7 +94,6 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.bond_width = 3
         self.labels = True
         self._show_adps = True
-        self.bond_drawer = self._draw_bond_rounded
 
         self.show_hydrogens_flag = True
 
@@ -281,14 +280,6 @@ class MoleculeWidget(QtWidgets.QWidget):
     def show_adps(self, value: bool):
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
         self._show_adps = value
-        self.update()
-
-    def show_round_bonds(self, bond_type: bool = True):
-        """Switch between flat and 3D-shaded (rounded) bond rendering."""
-        if not bond_type:
-            self.bond_drawer = self._draw_bond
-        else:
-            self.bond_drawer = self._draw_bond_rounded
         self.update()
 
     def open_molecule(self,
@@ -761,7 +752,7 @@ class MoleculeWidget(QtWidgets.QWidget):
                 if item.atom1.type_ in hydrogens or (item.is_bond and item.atom2.type_ in hydrogens):
                     continue
             if item.is_bond:
-                self.bond_drawer(item.atom1, item.atom2)
+                self._draw_bond_rounded(item.atom1, item.atom2)
             else:
                 self.draw_atom(item.atom1)
                 if self.labels and item.atom1.type_ not in hydrogens:
@@ -866,24 +857,6 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         pen = QPen(self.bond_brush, dynamic_width, Qt.PenStyle.SolidLine)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)  # Creates perfect elliptical intersection blend
-        self._painter.setPen(pen)
-        self._painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-    def _draw_bond(self, at1: Atom, at2: Atom) -> None:
-        """Draw a flat single-colour bond between two atoms."""
-        line_data = self._get_bond_line(at1, at2)
-        if not line_data:
-            return
-
-        x1, y1, x2, y2, dynamic_width = line_data
-
-        # Check Selection
-        bond_key = tuple(sorted((at1.name, at2.name)))
-        if bond_key in self.selected_bonds:
-            self._draw_bond_selection(x1, y1, x2, y2, dynamic_width)
-
-        pen = QPen(self.bond_color, dynamic_width, Qt.PenStyle.SolidLine)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self._painter.setPen(pen)
         self._painter.drawLine(int(x1), int(y1), int(x2), int(y2))
 

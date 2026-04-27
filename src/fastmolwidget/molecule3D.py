@@ -608,7 +608,6 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.selected_bonds: set[tuple[str, str]] = set()
 
         self._show_adps: bool = True
-        self._round_bonds: bool = True  # True → 8-segment cyl, False → 4-segment
 
         # ---- 3-D view state -----------------------------------------------
         self._rot_matrix: np.ndarray = np.eye(3, dtype=np.float32)
@@ -953,7 +952,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def _build_cylinder_geometry(self) -> None:
         """Build tessellated cylinder meshes for all bonds."""
-        n_seg = 8 if self._round_bonds else 4
+        n_seg = 8  # always use 8-segment cylinders
         # base cylinder radius, scaled by bond_width
         cyl_r = 0.016 * max(0, self.bond_width)
 
@@ -1501,13 +1500,6 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def show_adps(self, value: bool) -> None:
         """Toggle ADP ellipsoid / isotropic sphere display."""
         self._show_adps = value
-        if self.atoms:
-            self._build_geometry()
-        self.update()
-
-    def show_round_bonds(self, bond_type: bool = True) -> None:
-        """Switch between 3-D (more segments) and angular (fewer segments) bonds."""
-        self._round_bonds = bond_type
         if self.atoms:
             self._build_geometry()
         self.update()

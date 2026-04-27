@@ -37,7 +37,6 @@ def test_molecule_widget_creation():
     assert widget.bond_width == 3
     assert widget.labels is True
     assert widget._show_adps is True
-    assert widget.bond_drawer == widget._draw_bond_rounded
 
 
 def test_adp_intersection_line_width_scales_with_zoom():
@@ -105,11 +104,6 @@ def test_molecule_widget_toggles():
     widget.show_adps(False)
     assert widget._show_adps is False
 
-    # Test bond type toggle
-    widget.show_round_bonds(False)
-    assert widget.bond_drawer == widget._draw_bond
-    widget.show_round_bonds(True)
-    assert widget.bond_drawer == widget._draw_bond_rounded
 
     # Test label font setting
     widget.setLabelFont(20)
@@ -244,7 +238,6 @@ def test_set_bond_color_visible_in_rounded_mode():
     widget = MoleculeWidget()
     widget.resize(400, 300)
     widget.show()
-    widget.show_round_bonds(True)
     widget.open_molecule(atoms)
 
     # Flush pending paint events so the widget has actually drawn

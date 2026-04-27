@@ -40,8 +40,6 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
     * **Grow** – expand the asymmetric unit to complete molecules.
     * **Show ADP** – toggle ADP ellipsoid / sphere display.
     * **Show Labels** – toggle atom-name labels.
-    * **Round Bonds** – switch between round (8-segment) and angular (4-segment)
-      cylinders.
     * **Show Hydrogens** – toggle hydrogen visibility.
     * **Bond Width** – spinbox controlling cylinder radius.
     * **Bond Color** – button opening a color picker for all non-selected bonds.
@@ -67,7 +65,6 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._grow_checkbox = QtWidgets.QCheckBox("Grow")
         self._adp_checkbox = QtWidgets.QCheckBox("Show ADP")
         self._label_checkbox = QtWidgets.QCheckBox("Show Labels")
-        self._bond_type_checkbox = QtWidgets.QCheckBox("Round Bonds")
         self._hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
 
         self._bw_label = QtWidgets.QLabel("Bond Width:")
@@ -79,13 +76,11 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
 
         # Initial checked state matches the renderer defaults
         self._adp_checkbox.setChecked(True)
-        self._bond_type_checkbox.setChecked(True)
         self._hydrogens_checkbox.setChecked(True)
 
         # Wire controls to renderer
         self._adp_checkbox.toggled.connect(self._render_widget.show_adps)
         self._label_checkbox.toggled.connect(self._render_widget.show_labels)
-        self._bond_type_checkbox.toggled.connect(self._render_widget.show_round_bonds)
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
@@ -95,14 +90,12 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         # Apply initial defaults to the renderer
         self._render_widget.set_bond_width(3)
         self._render_widget.show_labels(False)
-        self._render_widget.show_round_bonds(True)
 
         # ── layout ───────────────────────────────────────────────────────────
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._grow_checkbox)
         control_bar.addWidget(self._adp_checkbox)
         control_bar.addWidget(self._label_checkbox)
-        control_bar.addWidget(self._bond_type_checkbox)
         control_bar.addWidget(self._hydrogens_checkbox)
         control_bar.addWidget(self._bw_label)
         control_bar.addWidget(self._bond_width_spinbox)

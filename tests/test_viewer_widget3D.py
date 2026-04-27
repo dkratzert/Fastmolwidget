@@ -202,14 +202,6 @@ def test_show_hydrogens_toggle():
     assert widget.show_hydrogens_flag is True
 
 
-def test_show_round_bonds_toggle():
-    widget = MoleculeWidget3D()
-    widget.show_round_bonds(False)
-    assert widget._round_bonds is False
-    widget.show_round_bonds(True)
-    assert widget._round_bonds is True
-
-
 def test_set_bond_width():
     widget = MoleculeWidget3D()
     widget.set_bond_width(7)
