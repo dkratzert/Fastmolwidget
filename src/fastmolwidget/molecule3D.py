@@ -166,14 +166,16 @@ def _make_cylinder(
         radius: float,
         color: tuple[float, float, float],
         n_seg: int = 8,
+        selected: bool = False,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """Generate a cylinder mesh between *p1* and *p2*.
 
     Returns ``(vertices, indices)`` arrays, or ``(None, None)`` if the
     endpoints are too close together.
 
-    Vertex layout: ``[x, y, z, nx, ny, nz, r, g, b]`` (9 floats, 36 bytes).
-    The full cylinder uses one uniform colour.
+    Vertex layout: ``[x, y, z, nx, ny, nz, r, g, b, selected]`` (10 floats,
+    40 bytes).  ``selected`` is 1.0 for selected bonds (rendered flat, no
+    shading) and 0.0 otherwise.  The full cylinder uses one uniform colour.
     No end caps are generated because atom spheres close the bond ends visually.
     """
     axis = p2 - p1
@@ -198,19 +200,22 @@ def _make_cylinder(
     # Outward normals for each segment
     normals = cos_a[:, None] * v[None, :] + sin_a[:, None] * w[None, :]  # (n_seg, 3)
 
-    verts = np.zeros((2 * n_seg, 9), dtype=np.float32)
+    verts = np.zeros((2 * n_seg, 10), dtype=np.float32)
+    sel_flag = 1.0 if selected else 0.0
 
     # Bottom ring (p1)
     for i in range(n_seg):
         verts[i, :3] = p1 + radius * normals[i]
         verts[i, 3:6] = normals[i]
         verts[i, 6:9] = color
+        verts[i, 9] = sel_flag
 
     # Top ring (p2)
     for i in range(n_seg):
         verts[n_seg + i, :3] = p2 + radius * normals[i]
         verts[n_seg + i, 3:6] = normals[i]
         verts[n_seg + i, 6:9] = color
+        verts[n_seg + i, 9] = sel_flag
 
     # Triangle indices for the side surface (two tris per quad strip segment)
     idx_list = []
@@ -245,7 +250,7 @@ class _Atom3D:
             label: str,
             type_: str,
             part: int,
-            u_eq: float = 0.05,
+            u_eq: float = 0.04,
     ) -> None:
         self.center = np.array([x, y, z], dtype=np.float32)
         self.label = label
@@ -256,7 +261,7 @@ class _Atom3D:
         self.color_f: tuple[float, float, float] = _hex_to_rgb_float(hex_color)
 
         # World-space visual radius for sphere rendering (Å)
-        self.display_radius: float = 0.25
+        self.display_radius: float = 0.1
 
         self.u_cart: np.ndarray | None = None
         self.u_iso: float | None = u_eq * 10 if not type_ in ('H', 'D') else self.display_radius
@@ -284,6 +289,7 @@ attribute vec3 a_center;
 attribute vec3 a_color;
 attribute float a_radius;
 attribute vec2 a_corner;
+attribute float a_selected;
 
 uniform mat4 u_mv;
 uniform mat4 u_proj;
@@ -292,11 +298,13 @@ varying vec3 v_center_eye;
 varying vec3 v_color;
 varying float v_radius;
 varying vec2 v_corner;
+varying float v_selected;
 
 void main() {
-    v_color  = a_color;
-    v_radius = a_radius;
-    v_corner = a_corner;
+    v_color    = a_color;
+    v_radius   = a_radius;
+    v_corner   = a_corner;
+    v_selected = a_selected;
 
     vec4 c_eye    = u_mv * vec4(a_center, 1.0);
     v_center_eye  = c_eye.xyz;
@@ -315,6 +323,7 @@ varying vec3  v_center_eye;
 varying vec3  v_color;
 varying float v_radius;
 varying vec2  v_corner;
+varying float v_selected;
 
 uniform mat4 u_proj;
 
@@ -330,14 +339,26 @@ void main() {
     vec3 hit    = v_center_eye + local_hit;
     vec3 normal = normalize(local_hit);
 
-    // Bright, low-shadow lighting for crisp atom colours
-    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
-    float diff      = max(dot(normal, light), 0.0);
-    float soft_diff = 0.25 + 0.75 * diff;
-    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+    vec3 color;
+    if (v_selected > 0.5) {
+        // Bright, low-shadow lighting for crisp atom colours
+        vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
+        float diff      = max(dot(normal, light), 0.0);
+        float soft_diff = 0.25 + 0.75 * diff;
+        float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
+        vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+        color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
+    } else {
+        // Bright, low-shadow lighting for crisp atom colours
+        vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
+        float diff      = max(dot(normal, light), 0.0);
+        float soft_diff = 0.25 + 0.75 * diff;
+        float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+
+        vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+        color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
+    }
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 
     // Write corrected depth so atoms occlude bonds and each other properly
@@ -389,6 +410,7 @@ uniform mat4 u_mv;
 uniform mat4 u_proj;
 uniform mat3 u_ellipsoid_A;   // A = inv(scale^2 * U_cart)
 uniform mat3 u_world_evecs;
+uniform float u_selected;     // 1.0 → render flat, no shading
 
 void main() {
     vec2 local_xy = v_corner * v_radius * 1.05;
@@ -414,25 +436,47 @@ void main() {
     vec3 hit_world = ray_o + t_hit * ray_d;
     vec3 local_hit = q0 + vec3(0.0, 0.0, t_hit);
     vec3 hit    = v_center_eye + local_hit;
-    
-    // Outward normal = gradient of the ellipsoid equation = 2 A (P - C)
-    vec3 normal_world = normalize(u_ellipsoid_A * hit_world);
-    vec3 normal = normalize(mat3(u_mv) * normal_world);
 
-    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
-    float diff      = max(dot(normal, light), 0.0);
-    float soft_diff = 0.25 + 0.75 * diff;
-    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+    vec3 color;
+    if (u_selected > 0.5) {
+        vec3 normal_world = normalize(u_ellipsoid_A * hit_world);
+        vec3 normal = normalize(mat3(u_mv) * normal_world);
 
-    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
+        vec3  light     = normalize(vec3(2.0, 1.5, 2.0));
+        float diff      = max(dot(normal, light), 1.6);
+        float soft_diff = 0.25 + 0.75 * diff;
+        float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-    float p0 = dot(hit_world, u_world_evecs[0]);
-    float p1 = dot(hit_world, u_world_evecs[1]);
-    float p2 = dot(hit_world, u_world_evecs[2]);
-    float lw = v_radius * 0.04;
-    if (abs(p0) < lw || abs(p1) < lw || abs(p2) < lw) {
-        color *= 0.15;
+        vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+        color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
+
+        float p0 = dot(hit_world, u_world_evecs[0]);
+        float p1 = dot(hit_world, u_world_evecs[1]);
+        float p2 = dot(hit_world, u_world_evecs[2]);
+        float lw = v_radius * 0.04;
+        if (abs(p0) < lw || abs(p1) < lw || abs(p2) < lw) {
+            color *= 0.15;
+        }
+    } else {
+        // Outward normal = gradient of the ellipsoid equation = 2 A (P - C)
+        vec3 normal_world = normalize(u_ellipsoid_A * hit_world);
+        vec3 normal = normalize(mat3(u_mv) * normal_world);
+
+        vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
+        float diff      = max(dot(normal, light), 0.0);
+        float soft_diff = 0.25 + 0.75 * diff;
+        float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+
+        vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+        color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
+
+        float p0 = dot(hit_world, u_world_evecs[0]);
+        float p1 = dot(hit_world, u_world_evecs[1]);
+        float p2 = dot(hit_world, u_world_evecs[2]);
+        float lw = v_radius * 0.04;
+        if (abs(p0) < lw || abs(p1) < lw || abs(p2) < lw) {
+            color *= 0.15;
+        }
     }
 
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
@@ -448,6 +492,7 @@ _CYLINDER_VERT = """\
 attribute vec3 a_position;
 attribute vec3 a_normal;
 attribute vec3 a_color;
+attribute float a_selected;
 
 uniform mat4 u_mv;
 uniform mat4 u_proj;
@@ -456,9 +501,11 @@ uniform mat3 u_normal_mat;   // inverse-transpose of MV upper 3x3
 varying vec3 v_normal_eye;
 varying vec3 v_pos_eye;
 varying vec3 v_color;
+varying float v_selected;
 
 void main() {
     v_color      = a_color;
+    v_selected   = a_selected;
     vec4 pos_e   = u_mv * vec4(a_position, 1.0);
     v_pos_eye    = pos_e.xyz;
     v_normal_eye = normalize(u_normal_mat * a_normal);
@@ -471,15 +518,22 @@ _CYLINDER_FRAG = """\
 varying vec3 v_normal_eye;
 varying vec3 v_pos_eye;
 varying vec3 v_color;
+varying float v_selected;
 
 void main() {
-    vec3  normal = normalize(v_normal_eye);
-    vec3  light  = normalize(vec3(1.0, 1.5, 2.0));
-    float diff   = max(dot(normal, light), 0.0);
-    float spec   = pow(max(dot(reflect(-light, normal),
-                               normalize(-v_pos_eye)), 0.0), 32.0);
+    vec3 color;
+    if (v_selected > 0.5) {
+        // Selected bonds render perfectly flat — no diffuse/specular shading
+        color = v_color;
+    } else {
+        vec3  normal = normalize(v_normal_eye);
+        vec3  light  = normalize(vec3(1.0, 1.5, 2.0));
+        float diff   = max(dot(normal, light), 0.0);
+        float spec   = pow(max(dot(reflect(-light, normal),
+                                   normalize(-v_pos_eye)), 0.0), 32.0);
 
-    vec3 color = v_color * (0.2 + 0.7 * diff) + vec3(0.35) * spec;
+        color = v_color * (0.2 + 0.7 * diff) + vec3(0.35) * spec;
+    }
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
 """
@@ -848,18 +902,16 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             self._sphere_count = 0
             return
 
-        # Vertex layout: [cx, cy, cz, r, g, b, radius, corner_x, corner_y]
-        # 9 floats per vertex, 4 vertices per atom, 6 indices per atom
-        verts = np.zeros((n * 4, 9), dtype=np.float32)
+        # Vertex layout: [cx, cy, cz, r, g, b, radius, corner_x, corner_y, selected]
+        # 10 floats per vertex, 4 vertices per atom, 6 indices per atom
+        verts = np.zeros((n * 4, 10), dtype=np.float32)
         idx = np.zeros(n * 6, dtype=np.uint32)
 
         for i, atom in enumerate(sphere_atoms):
             c = atom.center
-            col = (
-                _SEL_COLOR
-                if atom.label in self.selected_atoms
-                else atom.color_f
-            )
+            is_selected = atom.label in self.selected_atoms
+            col = _SEL_COLOR if is_selected else atom.color_f
+            sel_flag = 1.0 if is_selected else 0.0
             r = atom.u_iso or atom.display_radius
             for j in range(4):
                 vi = i * 4 + j
@@ -867,6 +919,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 verts[vi, 3:6] = col
                 verts[vi, 6] = r
                 verts[vi, 7:9] = corners[j]
+                verts[vi, 9] = sel_flag
             idx[i * 6: i * 6 + 6] = quad_idx_tpl + i * 4
 
         self._sphere_verts = verts.ravel()
@@ -892,13 +945,15 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     continue
 
             bond_key: tuple[str, str] = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
-            if bond_key in self.selected_bonds:
+            is_selected = bond_key in self.selected_bonds
+            if is_selected:
                 bond_color = _SEL_COLOR
             else:
                 bond_color = self._bond_rgb
 
             verts, bond_idx = _make_cylinder(
-                at1.center, at2.center, cyl_r, bond_color, n_seg
+                at1.center, at2.center, cyl_r, bond_color, n_seg,
+                selected=is_selected,
             )
             if verts is None:
                 continue
@@ -972,7 +1027,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         _set_mat4(prog, b"u_mv", mv)
         _set_mat4(prog, b"u_proj", proj)
 
-        stride = 9 * 4  # 9 floats × 4 bytes
+        stride = 10 * 4  # 10 floats × 4 bytes
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._sphere_vbo)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._sphere_ibo)
 
@@ -980,12 +1035,13 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         _bind_attrib(prog, b"a_color", 3, stride, 12)
         _bind_attrib(prog, b"a_radius", 1, stride, 24)
         _bind_attrib(prog, b"a_corner", 2, stride, 28)
+        _bind_attrib(prog, b"a_selected", 1, stride, 36)
 
         gl.glDrawElements(
             gl.GL_TRIANGLES, self._sphere_count, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0)
         )
 
-        _unbind_attrib(prog, [b"a_center", b"a_color", b"a_radius", b"a_corner"])
+        _unbind_attrib(prog, [b"a_center", b"a_color", b"a_radius", b"a_corner", b"a_selected"])
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glUseProgram(0)
@@ -999,15 +1055,17 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         # Per-atom uniforms
         _set_vec3(prog, b"u_center", atom.center)
+        is_selected = atom.label in self.selected_atoms
         _set_vec3(
             prog,
             b"u_color",
             np.array(
-                _SEL_COLOR if atom.label in self.selected_atoms else atom.color_f,
+                _SEL_COLOR if is_selected else atom.color_f,
                 dtype=np.float32,
             ),
         )
         _set_float(prog, b"u_radius", atom.adp_billboard_r)
+        _set_float(prog, b"u_selected", 1.0 if is_selected else 0.0)
 
         A = atom.adp_A_matrix
         if A is not None:
@@ -1054,19 +1112,20 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if loc_nm >= 0:
             gl.glUniformMatrix3fv(loc_nm, 1, False, nm.T.copy())
 
-        stride = 9 * 4  # 9 floats × 4 bytes
+        stride = 10 * 4  # 10 floats × 4 bytes
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._cylinder_vbo)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._cylinder_ibo)
 
         _bind_attrib(prog, b"a_position", 3, stride, 0)
         _bind_attrib(prog, b"a_normal", 3, stride, 12)
         _bind_attrib(prog, b"a_color", 3, stride, 24)
+        _bind_attrib(prog, b"a_selected", 1, stride, 36)
 
         gl.glDrawElements(
             gl.GL_TRIANGLES, self._cylinder_count, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0)
         )
 
-        _unbind_attrib(prog, [b"a_position", b"a_normal", b"a_color"])
+        _unbind_attrib(prog, [b"a_position", b"a_normal", b"a_color", b"a_selected"])
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glUseProgram(0)

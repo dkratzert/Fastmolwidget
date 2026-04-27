@@ -246,7 +246,7 @@ def test_bond_geometry_uses_single_uniform_color():
         Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
     ])
 
-    verts = widget._cylinder_verts.reshape(-1, 9)
+    verts = widget._cylinder_verts.reshape(-1, 10)
     colors = verts[:, 6:9]
     unique_colors = np.unique(np.round(colors, 6), axis=0)
     expected_color = np.array(molecule3d._DEFAULT_BOND_COLOR)
@@ -264,7 +264,7 @@ def test_bond_geometry_uses_configured_bond_color():
         Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
     ])
 
-    verts = widget._cylinder_verts.reshape(-1, 9)
+    verts = widget._cylinder_verts.reshape(-1, 10)
     unique_colors = np.unique(np.round(verts[:, 6:9], 6), axis=0)
 
     assert unique_colors.shape == (1, 3)
@@ -280,12 +280,14 @@ def test_selected_bond_uses_single_selection_color():
     widget.selected_bonds = {("C1", "O1")}
     widget._build_geometry()
 
-    verts = widget._cylinder_verts.reshape(-1, 9)
+    verts = widget._cylinder_verts.reshape(-1, 10)
     colors = verts[:, 6:9]
     unique_colors = np.unique(np.round(colors, 6), axis=0)
 
     assert unique_colors.shape == (1, 3)
     np.testing.assert_allclose(unique_colors[0], molecule3d._SEL_COLOR, atol=1e-6)
+    # Selected bonds carry a selected-flag of 1.0 in the last vertex column
+    np.testing.assert_allclose(verts[:, 9], 1.0)
 
 
 # ------------------------------------------------------------------
