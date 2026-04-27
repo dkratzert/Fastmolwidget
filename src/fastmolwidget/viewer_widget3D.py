@@ -72,7 +72,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
 
         self._bw_label = QtWidgets.QLabel("Bond Width:")
         self._bond_width_spinbox = QtWidgets.QSpinBox()
-        self._bond_width_spinbox.setRange(1, 15)
+        self._bond_width_spinbox.setRange(0, 15)
         self._bond_width_spinbox.setValue(3)
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
         self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
@@ -162,4 +162,5 @@ if __name__ == "__main__":
     w.load_file('../../tests/test-data/p21c.cif')
     #w.load_file('../../tests/test-data/1548072_many_atoms.cif')
     w.show()
+    w.showMaximized()
     app.exec()

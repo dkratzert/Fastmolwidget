@@ -544,7 +544,7 @@ void main() {
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
 
 # Default bond colour (grey-brown)
-_DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#7A6E61")
+_DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#d1812a")
 
 # ORTEP 50 % probability scale factor
 _ADP_SCALE: float = 1.5382
@@ -955,7 +955,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """Build tessellated cylinder meshes for all bonds."""
         n_seg = 8 if self._round_bonds else 4
         # base cylinder radius, scaled by bond_width
-        cyl_r = 0.022 * max(1, self.bond_width)
+        cyl_r = 0.016 * max(0, self.bond_width)
 
         all_verts: list[np.ndarray] = []
         all_idx: list[np.ndarray] = []
