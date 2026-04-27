@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from collections import namedtuple
 from math import sqrt, cos, radians, sin, floor
+from operator import attrgetter
 from typing import TYPE_CHECKING
 
 try:
@@ -248,7 +249,7 @@ class SDM:
         self.sdmtime = t2 - t1
         print(f'Time for sdm {"(C++)" if HAS_CPP else "(Python fallback)"}:', round(self.sdmtime, 4), 's')
 
-        self.sdm_list.sort()
+        self.sdm_list.sort(key=attrgetter('dist'))
         self.calc_molindex(self.atoms)
         need_symm = self.collect_needed_symmetry()
         if DEBUG:
