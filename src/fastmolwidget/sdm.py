@@ -321,29 +321,52 @@ class SDM:
         return need_symm
 
     def calc_molindex(self, all_atoms):
-        # Start for George's "bring atoms together algorithm":
-        someleft = 1
-        nextmol = 1
+        """Assign a molecule index to every atom using Union-Find (path-halving +
+        union-by-rank).  Replaces the original O(K·|sdm_list|) repeated-scan loop
+        with an essentially linear O(N + M·α(N)) algorithm.
+
+        The last element of each atom list is set to its molecule index (1-based),
+        matching the contract expected by collect_needed_symmetry() and packer().
+        """
+        n = len(all_atoms)
         for at in all_atoms:
-            at.append(-1)
-        all_atoms[0][-1] = 1
-        while nextmol:
-            someleft = 1
-            nextmol = 0
-            while someleft:
-                someleft = 0
-                for sdm_item in self.sdm_list:
-                    if sdm_item.covalent and sdm_item.atom1[-1] * sdm_item.atom2[-1] < 0:
-                        sdm_item.atom1[-1] = self.maxmol  # last item is the molindex
-                        sdm_item.atom2[-1] = self.maxmol
-                        someleft += 1
-            for ni, at in enumerate(all_atoms):
-                if at[-1] < 0:
-                    nextmol = ni
-                    break
-            if nextmol:
-                self.maxmol += 1
-                all_atoms[nextmol][-1] = self.maxmol
+            at.append(-1)      # reserve the molindex slot (keeps original API)
+
+        # ── Union-Find with path-halving and union-by-rank ────────────────────
+        parent = list(range(n))
+        rank   = [0] * n
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]   # path halving (no recursion)
+                x = parent[x]
+            return x
+
+        def union(x: int, y: int) -> None:
+            rx, ry = find(x), find(y)
+            if rx == ry:
+                return
+            if rank[rx] < rank[ry]:
+                rx, ry = ry, rx
+            parent[ry] = rx
+            if rank[rx] == rank[ry]:
+                rank[rx] += 1
+
+        for sdm_item in self.sdm_list:
+            if sdm_item.covalent:
+                union(sdm_item.a1, sdm_item.a2)
+
+        # ── assign sequential 1-based molecule indices ────────────────────────
+        root_to_mol: dict[int, int] = {}
+        mol_counter = 0
+        for i in range(n):
+            root = find(i)
+            if root not in root_to_mol:
+                mol_counter += 1
+                root_to_mol[root] = mol_counter
+            all_atoms[i][-1] = root_to_mol[root]
+
+        self.maxmol = mol_counter
 
     def vector_length(self, x: float, y: float, z: float) -> float:
         """
@@ -352,7 +375,7 @@ class SDM:
         A = 2.0 * (x * y * self.aga + x * z * self.bbe + y * z * self.cal)
         return sqrt(x ** 2 * self.asq + y ** 2 * self.bsq + z ** 2 * self.csq + A)
 
-    def packer(self, sdm: 'SDM', need_symm: list, with_qpeaks=False) -> list[Atomtuple]:
+    def packer(self, sdm: SDM, need_symm: list, with_qpeaks=False) -> list[Atomtuple]:
         """
         Packs atoms of the asymmetric unit to real molecules.
         """
@@ -421,6 +444,7 @@ if __name__ == "__main__":
     from fastmolwidget.viewer_widget import MoleculeViewerWidget
 
     app = QtWidgets.QApplication(sys.argv)
-    viewer = MoleculeViewerWidget(Path('tests/test-data/4060314.cif'))
+    viewer = MoleculeViewerWidget()
+    viewer.load_file(Path('../../tests/test-data/4060314.cif'))
     viewer.show()
     sys.exit(app.exec())
