@@ -178,6 +178,7 @@ Both viewers expose the same control bar:
 | Control | Default | Description |
 |---------|---------|-------------|
 | Grow | ✗ | Expand the asymmetric unit to complete molecules |
+| Pack Unit Cell | ✗ | Generate all symmetry-equivalent positions within one unit cell (mutually exclusive with Grow) |
 | Show ADP | ✓ | Toggle ORTEP ellipsoid / isotropic sphere rendering |
 | Show Labels | ✗ | Toggle non-hydrogen atom labels |
 | Round Bonds | ✓ | Switch between round cylinder and flat bond drawing |

@@ -368,6 +368,101 @@ class SDM:
 
         self.maxmol = mol_counter
 
+    def pack_unit_cell(
+        self,
+        symmop_indices: list[int] | None = None,
+        *,
+        cart_tolerance: float = 0.2,
+    ) -> list[Atomtuple]:
+        """Pack all symmetry-equivalent positions into one unit cell.
+
+        For every atom in the asymmetric unit every selected symmetry
+        operation is applied and the result is folded back into [0, 1)
+        fractional coordinates.  Positions that are already occupied within
+        *cart_tolerance* Ångström (with periodic boundary conditions) are
+        discarded as duplicates.  The threshold matches the one used by the
+        molecule-grow :meth:`packer`.
+
+        This call can be made on a fresh :class:`SDM` object before
+        :meth:`calc_sdm` — it does **not** require the SDM to have been run.
+
+        :param symmop_indices: 0-based indices into the internal
+            :class:`SymmCards` list (identity is always index 0).  ``None``
+            applies all operations including the inversion centre when the
+            structure is centrosymmetric.
+        :param cart_tolerance: Cartesian distance threshold (Å) for duplicate
+            detection with periodic boundary conditions.  Default 0.2 Å
+            matches the grow packer.
+        :returns: List of :class:`Atomtuple` in Cartesian Ångström coordinates.
+        """
+        selected: list[int] = (
+            list(range(len(self.symmcards)))
+            if symmop_indices is None
+            else list(symmop_indices)
+        )
+
+        symm_m: list = []
+        symm_t: list = []
+        for s in self.symmcards:
+            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_t.append(tuple(s.trans))
+
+        cell = self.cell[:6]
+
+        # packed entries: [label, type, fx, fy, fz, part, cx, cy, cz, matrix]
+        # cx/cy/cz are Cartesian Å (for fast distance checks)
+        packed: list[list] = []
+
+        for at in self.atoms:
+            x1, y1, z1 = at[2], at[3], at[4]
+            part = at[5]
+            label = at[0]
+            elem = at[1]
+
+            for idx in selected:
+                m = symm_m[idx]
+                t = symm_t[idx]
+
+                # Apply symmetry operation (column-major, matching packer())
+                px = x1 * m[0][0] + y1 * m[1][0] + z1 * m[2][0] + t[0]
+                py = x1 * m[0][1] + y1 * m[1][1] + z1 * m[2][1] + t[1]
+                pz = x1 * m[0][2] + y1 * m[1][2] + z1 * m[2][2] + t[2]
+
+                # Fold into [0, 1)
+                px %= 1.0
+                py %= 1.0
+                pz %= 1.0
+
+                # Duplicate check using Cartesian distances with PBCs.
+                # Fractional difference folded to [−0.5, 0.5] → then
+                # converted to Å via vector_length() — same as packer().
+                is_dup = False
+                for ex in packed:
+                    # Atoms in different (non-zero) disorder parts cannot
+                    # be duplicates of each other.
+                    if ex[5] != 0 and part != 0 and ex[5] != part:
+                        continue
+                    ddx = px - ex[2]; ddx -= round(ddx)
+                    ddy = py - ex[3]; ddy -= round(ddy)
+                    ddz = pz - ex[4]; ddz -= round(ddz)
+                    if self.vector_length(ddx, ddy, ddz) < cart_tolerance:
+                        is_dup = True
+                        break
+
+                if not is_dup:
+                    cx, cy, cz = frac_to_cart([px, py, pz], cell)
+                    packed.append([label, elem, px, py, pz, part, cx, cy, cz, m])
+
+        cart_atoms: list[Atomtuple] = []
+        for at in packed:
+            cart_atoms.append(
+                Atomtuple(
+                    label=at[0], type=at[1], x=at[6], y=at[7], z=at[8],
+                    part=at[5], symm_matrix=at[9],
+                )
+            )
+        return cart_atoms
+
     def vector_length(self, x: float, y: float, z: float) -> float:
         """
         Calculates the vector length given in fractional coordinates.
