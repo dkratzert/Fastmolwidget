@@ -29,9 +29,9 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
     * **Grow** – expand the asymmetric unit to complete molecules.
     * **Show ADP** – toggle ADP ellipsoid / sphere display.
     * **Show Labels** – toggle atom-name labels.
-    * **Show Hydrogens** – toggle hydrogen visibility.
-    * **Bond Width** – spinbox controlling bond width.
-    * **Bond Color** – button opening a color picker for all non-selected bonds.
+    * **Hide Hydrogens** – toggle hydrogen visibility.
+    * **Bond Width** – spinbox controlling bond width (second row).
+    * **Bond Color** – button opening a color picker for all non-selected bonds (second row).
 
     The interface is intentionally minimal: call :meth:`load_file` to display a
     structure.
@@ -49,7 +49,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         # ── control bar ──────────────────────────────────────────────────────
         self._adp_checkbox = QtWidgets.QCheckBox("Show ADP")
         self._label_checkbox = QtWidgets.QCheckBox("Show Labels")
-        self._hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
+        self._hydrogens_checkbox = QtWidgets.QCheckBox("Hide Hydrogens")
         self._grow_checkbox = QtWidgets.QCheckBox("Grow")
 
         self._bw_label = QtWidgets.QLabel("Bond Width:")
@@ -59,13 +59,16 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
 
         # default state
+        # "Hide Hydrogens" unchecked → hydrogens are visible by default
         self._adp_checkbox.setChecked(True)
-        self._hydrogens_checkbox.setChecked(True)
+        self._hydrogens_checkbox.setChecked(False)
 
         # wire controls to renderer
         self._adp_checkbox.toggled.connect(self._render_widget.show_adps)
         self._label_checkbox.toggled.connect(self._render_widget.show_labels)
-        self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
+        self._hydrogens_checkbox.toggled.connect(
+            lambda checked: self._render_widget.show_hydrogens(not checked)
+        )
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._grow_checkbox.toggled.connect(self._loader.set_grow)
@@ -75,19 +78,25 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._render_widget.show_labels(False)
 
         # ── layout ───────────────────────────────────────────────────────────
+        # Row 1: structure toggles
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._grow_checkbox)
         control_bar.addWidget(self._adp_checkbox)
         control_bar.addWidget(self._label_checkbox)
         control_bar.addWidget(self._hydrogens_checkbox)
-        control_bar.addWidget(self._bw_label)
-        control_bar.addWidget(self._bond_width_spinbox)
-        control_bar.addWidget(self._bond_color_button)
         control_bar.addStretch()
+
+        # Row 2: bond controls
+        control_bar2 = QtWidgets.QHBoxLayout()
+        control_bar2.addWidget(self._bw_label)
+        control_bar2.addWidget(self._bond_width_spinbox)
+        control_bar2.addWidget(self._bond_color_button)
+        control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
         vl.addWidget(self._render_widget)
         vl.addLayout(control_bar)
+        vl.addLayout(control_bar2)
 
     # ------------------------------------------------------------------
     # Public API
@@ -132,6 +141,9 @@ if __name__ == '__main__':
 
     w = MoleculeViewerWidget()
     #w.load_file('../../tests/test-data/p31c.cif')
-    w.load_file('../../tests/test-data/p31c-finalcif.res')
+    #w.load_file('../../tests/test-data/p31c-finalcif.res')
+    #w.load_file('../../tests/test-data/1548072_many_atoms.cif')
+    w.load_file('../../tests/test-data/p21c.cif')
     w.show()
+    w.showMaximized()
     app.exec()

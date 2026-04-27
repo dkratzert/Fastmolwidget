@@ -17,7 +17,7 @@ from __future__ import annotations
 """
 TODO:
 
-* Find out why rotation of 1000+ atom structures is rather slow.
+* 
 
 
 """
@@ -65,7 +65,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._grow_checkbox = QtWidgets.QCheckBox("Grow")
         self._adp_checkbox = QtWidgets.QCheckBox("Show ADP")
         self._label_checkbox = QtWidgets.QCheckBox("Show Labels")
-        self._hydrogens_checkbox = QtWidgets.QCheckBox("Show Hydrogens")
+        self._hydrogens_checkbox = QtWidgets.QCheckBox("Hide Hydrogens")
 
         self._bw_label = QtWidgets.QLabel("Bond Width:")
         self._bond_width_spinbox = QtWidgets.QSpinBox()
@@ -75,13 +75,16 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
 
         # Initial checked state matches the renderer defaults
+        # "Hide Hydrogens" unchecked → hydrogens are visible by default
         self._adp_checkbox.setChecked(True)
-        self._hydrogens_checkbox.setChecked(True)
+        self._hydrogens_checkbox.setChecked(False)
 
         # Wire controls to renderer
         self._adp_checkbox.toggled.connect(self._render_widget.show_adps)
         self._label_checkbox.toggled.connect(self._render_widget.show_labels)
-        self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
+        self._hydrogens_checkbox.toggled.connect(
+            lambda checked: self._render_widget.show_hydrogens(not checked)
+        )
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._reset_center_button.clicked.connect(self._render_widget.reset_rotation_center)
@@ -92,20 +95,26 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._render_widget.show_labels(False)
 
         # ── layout ───────────────────────────────────────────────────────────
+        # Row 1: structure toggles
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._grow_checkbox)
         control_bar.addWidget(self._adp_checkbox)
         control_bar.addWidget(self._label_checkbox)
         control_bar.addWidget(self._hydrogens_checkbox)
-        control_bar.addWidget(self._bw_label)
-        control_bar.addWidget(self._bond_width_spinbox)
-        control_bar.addWidget(self._bond_color_button)
-        control_bar.addWidget(self._reset_center_button)
         control_bar.addStretch()
+
+        # Row 2: bond / view controls
+        control_bar2 = QtWidgets.QHBoxLayout()
+        control_bar2.addWidget(self._bw_label)
+        control_bar2.addWidget(self._bond_width_spinbox)
+        control_bar2.addWidget(self._bond_color_button)
+        control_bar2.addWidget(self._reset_center_button)
+        control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
         vl.addWidget(self._render_widget)
         vl.addLayout(control_bar)
+        vl.addLayout(control_bar2)
 
     # ------------------------------------------------------------------
     # Public API
@@ -152,9 +161,9 @@ if __name__ == "__main__":
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup
     #w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
-    #w.load_file('../../tests/test-data/p21c.cif')
+    w.load_file('../../tests/test-data/p21c.cif')
     #w.load_file('../../tests/test-data/1000007.cif')
-    w.load_file('../../tests/test-data/1548072_many_atoms.cif')
+    #w.load_file('../../tests/test-data/1548072_many_atoms.cif')
     w.show()
     w.showMaximized()
     app.exec()
