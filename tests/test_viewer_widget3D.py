@@ -122,6 +122,52 @@ def test_reset_view():
     np.testing.assert_array_equal(widget._rot_matrix, np.eye(3, dtype=np.float32))
 
 
+def test_reset_rotation_center_restores_geometric_center():
+    """reset_rotation_center() must snap the pivot back to the atom-bbox
+    midpoint, clear the pan offset, and leave zoom + rotation untouched
+    (it is the targeted inverse of a middle-click recentring)."""
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 2.0, 0.0, 0.0, 0),
+    ])
+    geometric_center = widget._molecule_center.copy()
+    rot_before = widget._rot_matrix.copy()
+
+    # Simulate a middle-click recentre on one atom and a custom zoom.
+    widget._molecule_center = widget.atoms[1].center.astype(np.float32).copy()
+    widget._pan = np.array([4.0, -7.0], dtype=np.float32)
+    widget._zoom = 2.5
+
+    widget.reset_rotation_center()
+
+    np.testing.assert_allclose(widget._molecule_center, geometric_center, atol=1e-6)
+    np.testing.assert_array_equal(widget._pan, [0.0, 0.0])
+    assert widget._zoom == 2.5
+    np.testing.assert_array_equal(widget._rot_matrix, rot_before)
+
+
+def test_reset_rotation_center_button_in_viewer():
+    """The MoleculeViewer3DWidget control bar exposes a button that calls
+    MoleculeWidget3D.reset_rotation_center()."""
+    viewer = MoleculeViewer3DWidget()
+    widget = viewer.render_widget
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 2.0, 0.0, 0.0, 0),
+    ])
+    geometric_center = widget._molecule_center.copy()
+
+    # Move the pivot off-centre, then click the button.
+    widget._molecule_center = widget.atoms[1].center.astype(np.float32).copy()
+    widget._pan = np.array([1.0, 1.0], dtype=np.float32)
+
+    viewer._reset_center_button.click()
+
+    np.testing.assert_allclose(widget._molecule_center, geometric_center, atol=1e-6)
+    np.testing.assert_array_equal(widget._pan, [0.0, 0.0])
+
+
 # ------------------------------------------------------------------
 # Display toggles
 # ------------------------------------------------------------------
@@ -374,6 +420,84 @@ def test_viewer3d_renders_without_crash():
     w.show()
     pixmap = w.grab()
     assert not pixmap.isNull()
+
+
+def test_label_overlay_does_not_blacken_background():
+    """Regression: enabling labels must not flip the GL background to black.
+
+    Root cause of the original bug: ``QOpenGLWidget`` renders into a private
+    FBO that Qt's compositor reads.  Constructing a ``QPainter(self)`` on the
+    widget rebinds the current GL render target to the paint-engine-owned
+    FBO.  The buggy code did ``glClear(...)`` *before* constructing the
+    ``QPainter`` and outside any ``begin/endNativePainting`` bracket, so the
+    clear hit the wrong framebuffer.  The molecule then rendered into the
+    paint-engine FBO that was never cleared, giving a black background with
+    only the molecule + text composited on top.
+
+    The earlier attempt to test this with ``widget.grab()`` failed because
+    ``QWidget.grab()`` on ``QOpenGLWidget`` uses a *different* paint route
+    (``QWidget::render``) that doesn't trigger the bug.  The reliable probe
+    is :meth:`QOpenGLWidget.grabFramebuffer`, which forces a real ``paintGL``
+    pass through the live compositor route and reads back the actual FBO
+    Qt would composite to the screen.
+
+    The test renders a single carbon at the centre of a 200×200 widget with
+    a distinctive teal background, then reads a corner pixel both with
+    labels off (control) and on (regression).  Both must show the configured
+    background colour.
+    """
+    if not molecule3d._HAS_PYOPENGL or not molecule3d._IS_GL_WIDGET:
+        pytest.skip("requires real OpenGL context")
+
+    widget = MoleculeWidget3D()
+    bg = QtGui.QColor(50, 150, 200)  # distinctive teal, far from black
+    widget.set_background_color(bg)
+    widget.resize(200, 200)
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+
+    if widget._gl_failed:
+        pytest.skip("OpenGL context creation failed in this environment")
+    if not hasattr(widget, "grabFramebuffer"):
+        pytest.skip("QOpenGLWidget.grabFramebuffer() unavailable")
+
+    # Single atom at origin.  It projects to the centre of the widget, so
+    # corner pixels are guaranteed to be pure background.
+    widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+    QtWidgets.QApplication.processEvents()
+
+    expected = (bg.red(), bg.green(), bg.blue())
+    tol = 4  # tight: glClear should give exactly the configured colour
+
+    def corner_rgb(labels_on: bool) -> tuple[int, int, int]:
+        widget.show_labels(labels_on)
+        widget.update()
+        QtWidgets.QApplication.processEvents()
+        img = widget.grabFramebuffer()
+        c = img.pixelColor(3, 3)
+        return c.red(), c.green(), c.blue()
+
+    rgb_off = corner_rgb(False)
+    rgb_on = corner_rgb(True)
+
+    def _close(actual: tuple[int, int, int]) -> bool:
+        return all(abs(a - e) <= tol for a, e in zip(actual, expected))
+
+    # Sanity: labels-off must show the configured background.  If this fails
+    # the test environment can't render the GL widget at all.
+    if not _close(rgb_off):
+        pytest.skip(
+            f"GL framebuffer readback returned {rgb_off} with labels OFF; "
+            f"expected ~{expected}.  The environment cannot render GL — "
+            f"the regression assertion would be meaningless here."
+        )
+
+    assert _close(rgb_on), (
+        f"Corner pixel with labels ON = {rgb_on}, expected ~{expected}.  "
+        f"The QPainter label overlay clobbered the GL framebuffer — likely "
+        f"the QPainter was constructed outside the begin/endNativePainting "
+        f"bracket, or glClear() ran before QPainter rebound the FBO."
+    )
 
 
 # ------------------------------------------------------------------

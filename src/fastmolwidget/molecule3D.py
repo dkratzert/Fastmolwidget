@@ -799,35 +799,58 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             print(f"[MoleculeWidget3D] paintGL error (continuing): {exc}")
 
     def _do_paintGL(self) -> None:
-        r, g, b = self._bg_rgb
-        gl.glClearColor(r, g, b, 1.0)
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-
-        if not self.atoms:
-            return
-
-        if self._geometry_dirty:
+        if self._geometry_dirty and self.atoms:
             self._upload_geometry()
 
-        mv = self._compute_mv_matrix()
-        proj = self._compute_proj_matrix()
-        # Labels overlay
-        if self.labels:
-            self._draw_labels_overlay(mv, proj)
+        mv = self._compute_mv_matrix() if self.atoms else None
+        proj = self._compute_proj_matrix() if self.atoms else None
 
-        # Bonds first (behind atom spheres)
-        if self._cylinder_count > 0:
-            self._render_cylinders(mv, proj)
+        # Mixed raw-GL + QPainter rendering on a QOpenGLWidget MUST follow the
+        # canonical Qt pattern:
+        #   1. construct a single QPainter on the widget *first*,
+        #   2. open a beginNativePainting() bracket,
+        #   3. run glClear() and ALL raw gl.* draws inside that bracket,
+        #   4. close it with endNativePainting(),
+        #   5. issue QPainter overlay draws,
+        #   6. painter.end().
+        #
+        # Constructing QPainter rebinds the QOpenGLWidget's render target to
+        # the paint-engine-owned FBO.  Doing glClear *before* QPainter is
+        # created therefore clears the wrong framebuffer; the molecule then
+        # renders into the painter's FBO which was never cleared, giving a
+        # black background with only the rendered geometry composited on top.
+        painter: QtGui.QPainter | None = None
+        if self.labels and self.atoms:
+            painter = QtGui.QPainter(self)
+            painter.beginNativePainting()
+        try:
+            r, g, b = self._bg_rgb
+            gl.glClearColor(r, g, b, 1.0)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
-        # Regular atom spheres
-        if self._sphere_count > 0:
-            self._render_spheres(mv, proj)
+            if not self.atoms:
+                return
 
-        # ADP ellipsoids (one draw call each)
-        if self._show_adps and self._adp_draw_list:
-            for atom in self._adp_draw_list:
-                if atom.adp_A_matrix is not None:
-                    self._render_one_ellipsoid(atom, mv, proj)
+            # Bonds first (behind atom spheres)
+            if self._cylinder_count > 0:
+                self._render_cylinders(mv, proj)
+
+            # Regular atom spheres
+            if self._sphere_count > 0:
+                self._render_spheres(mv, proj)
+
+            # ADP ellipsoids (one draw call each)
+            if self._show_adps and self._adp_draw_list:
+                for atom in self._adp_draw_list:
+                    if atom.adp_A_matrix is not None:
+                        self._render_one_ellipsoid(atom, mv, proj)
+        finally:
+            if painter is not None:
+                painter.endNativePainting()
+                try:
+                    self._draw_labels_with_painter(painter, mv, proj)
+                finally:
+                    painter.end()
 
     # ------------------------------------------------------------------
     # paintEvent – routes to OpenGL path or pure-QPainter fallback
@@ -1133,7 +1156,27 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         gl.glUseProgram(0)
 
     def _draw_labels_overlay(self, mv: np.ndarray, proj: np.ndarray) -> None:
-        """Draw atom labels as a QPainter overlay on top of the GL scene."""
+        """Draw atom labels as a QPainter overlay on top of the GL scene.
+
+        Standalone entry point used by the pure-QWidget fallback path.  Inside
+        the GL paintGL flow the painter is owned by ``_do_paintGL`` and the
+        labels are drawn by :meth:`_draw_labels_with_painter` directly.
+        """
+        if not self.atoms:
+            return
+        painter = QtGui.QPainter(self)
+        try:
+            self._draw_labels_with_painter(painter, mv, proj)
+        finally:
+            painter.end()
+
+    def _draw_labels_with_painter(
+        self,
+        painter: QtGui.QPainter,
+        mv: np.ndarray,
+        proj: np.ndarray,
+    ) -> None:
+        """Draw atom labels using an already-active ``QPainter``."""
         if not self.atoms:
             return
 
@@ -1141,35 +1184,31 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         h = max(1, self.height())
         hydrogens = ("H", "D")
 
-        painter = QtGui.QPainter(self)
-        try:
-            font = QtGui.QFont()
-            font.setPixelSize(max(1, self.fontsize))
-            painter.setFont(font)
-            painter.setPen(self.label_color)
+        font = QtGui.QFont()
+        font.setPixelSize(max(1, self.fontsize))
+        painter.setFont(font)
+        painter.setPen(self.label_color)
 
-            for atom in self.atoms:
-                if atom.type_ in hydrogens:
-                    continue
+        for atom in self.atoms:
+            if atom.type_ in hydrogens:
+                continue
 
-                pos4 = np.array([*atom.center, 1.0], dtype=np.float32)
-                eye = mv @ pos4
-                clip = proj @ eye
-                if abs(clip[3]) < 1e-8:
-                    continue
-                ndc = clip[:3] / clip[3]
-                if not (
-                        -1.0 <= ndc[0] <= 1.0
-                        and -1.0 <= ndc[1] <= 1.0
-                        and -1.0 <= ndc[2] <= 1.0
-                ):
-                    continue
+            pos4 = np.array([*atom.center, 1.0], dtype=np.float32)
+            eye = mv @ pos4
+            clip = proj @ eye
+            if abs(clip[3]) < 1e-8:
+                continue
+            ndc = clip[:3] / clip[3]
+            if not (
+                    -1.0 <= ndc[0] <= 1.0
+                    and -1.0 <= ndc[1] <= 1.0
+                    and -1.0 <= ndc[2] <= 1.0
+            ):
+                continue
 
-                sx = int((ndc[0] + 1.0) * 0.5 * w)
-                sy = int((1.0 - ndc[1]) * 0.5 * h)
-                painter.drawText(sx + 4, sy - 4, atom.label)
-        finally:
-            painter.end()
+            sx = int((ndc[0] + 1.0) * 0.5 * w)
+            sy = int((1.0 - ndc[1]) * 0.5 * h)
+            painter.drawText(sx + 4, sy - 4, atom.label)
 
     # ------------------------------------------------------------------
     # Matrix helpers
