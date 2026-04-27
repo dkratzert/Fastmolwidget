@@ -45,6 +45,8 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
     * **Show Hydrogens** – toggle hydrogen visibility.
     * **Bond Width** – spinbox controlling cylinder radius.
     * **Bond Color** – button opening a color picker for all non-selected bonds.
+    * **Reset Rotation Center** – restores the rotation pivot to the molecule's
+      geometric centre (undoes a middle-click recentring).
 
     The loader (:class:`~fastmolwidget.loader.MoleculeLoader`) is identical to
     the 2-D widget so all supported file formats (CIF, SHELX .res/.ins, XYZ)
@@ -73,6 +75,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.setRange(1, 15)
         self._bond_width_spinbox.setValue(3)
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
+        self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
 
         # Initial checked state matches the renderer defaults
         self._adp_checkbox.setChecked(True)
@@ -86,6 +89,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
+        self._reset_center_button.clicked.connect(self._render_widget.reset_rotation_center)
         self._grow_checkbox.toggled.connect(self._loader.set_grow)
 
         # Apply initial defaults to the renderer
@@ -103,6 +107,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar.addWidget(self._bw_label)
         control_bar.addWidget(self._bond_width_spinbox)
         control_bar.addWidget(self._bond_color_button)
+        control_bar.addWidget(self._reset_center_button)
         control_bar.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)

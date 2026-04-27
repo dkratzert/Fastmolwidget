@@ -1490,6 +1490,17 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._pan = np.zeros(2, dtype=np.float32)
         self.update()
 
+    def reset_rotation_center(self) -> None:
+        """Restore the rotation pivot to the molecule's geometric centre.
+
+        Undoes any previous middle-click recentring: the pivot is moved back
+        to the centre of the atom bounding box and the pan offset is cleared
+        so the molecule is re-framed.  Rotation, zoom and selection are kept.
+        """
+        self._compute_molecule_bounds()
+        self._pan = np.zeros(2, dtype=np.float32)
+        self.update()
+
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
         """Save the current view to an image file."""
         pixmap = self.grab()
