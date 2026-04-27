@@ -1586,50 +1586,19 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def _handle_click(self, event: QtGui.QMouseEvent) -> None:
         """Select atom or bond under the cursor."""
         pos = event.position()
-        # Guard: if position moved more than 5 pixels treat as drag
-        if self._pressPos is not None:
-            dx = pos.x() - self._pressPos.x()
-            dy = pos.y() - self._pressPos.y()
-            if dx * dx + dy * dy > 25:
-                return
+        if self._is_click_drag(pos):
+            return
 
         mv = self._compute_mv_matrix()
         proj = self._compute_proj_matrix()
         sx, sy = float(pos.x()), float(pos.y())
 
-        ray_origin, ray_dir = self._screen_to_ray_viewspace(sx, sy)
-
-        best_atom: _Atom3D | None = None
+        # Atom pass — shared with middle-click centring.
+        best_atom, best_t = self._pick_atom_at(sx, sy, mv=mv)
         best_bond: tuple[str, str] | None = None
-        best_t = float("inf")
-
-        for atom in self.atoms:
-            if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
-                continue
-            # Hit test against the *rendered* surface so the entire visible
-            # ellipsoid / sphere is selectable.
-            if (
-                    self._show_adps
-                    and atom.u_cart is not None
-                    and atom.adp_valid
-                    and atom.adp_A_matrix is not None
-            ):
-                t = self._ray_ellipsoid_hit_viewspace(
-                    ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
-                )
-            else:
-                radius = float(atom.u_iso or atom.display_radius)
-                t = self._ray_sphere_hit_viewspace(
-                    ray_origin, ray_dir, atom.center, radius, mv
-                )
-            # Nearest-t wins → front-most surface is selected (z-ordering).
-            if t is not None and t < best_t:
-                best_t = t
-                best_atom = atom
-                best_bond = None
 
         # Bonds are tested in the same pass so that a bond visually in front of
-        # an atom behind it can still be selected.  _ray_bond_screen now returns
+        # an atom behind it can still be selected.  _ray_bond_screen returns
         # viewspace t (same unit as the atom ray-casters), so the comparison is
         # consistent and the front-most object always wins.
         for n1, n2 in self.connections:
@@ -1687,14 +1656,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         moved to the screen centre by resetting the pan offset.
         """
         pos = event.position()
-        # Same drag tolerance as the left-click selector.
-        if self._pressPos is not None:
-            dx = pos.x() - self._pressPos.x()
-            dy = pos.y() - self._pressPos.y()
-            if dx * dx + dy * dy > 25:
-                return
+        if self._is_click_drag(pos):
+            return
 
-        atom = self._pick_atom_at(float(pos.x()), float(pos.y()))
+        atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()))
         if atom is None:
             return
 
@@ -1702,10 +1667,33 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._pan = np.zeros(2, dtype=np.float32)
         self.update()
 
-    def _pick_atom_at(self, sx: float, sy: float) -> _Atom3D | None:
-        """Return the front-most atom under screen position *(sx, sy)* or
-        ``None`` if no atom is hit.  Bonds are ignored."""
-        mv = self._compute_mv_matrix()
+    def _is_click_drag(self, pos: QtCore.QPointF) -> bool:
+        """Return ``True`` when the cursor moved more than 5 px from the
+        original press position — i.e. this release should be treated as a
+        drag, not a click."""
+        if self._pressPos is None:
+            return False
+        dx = pos.x() - self._pressPos.x()
+        dy = pos.y() - self._pressPos.y()
+        return dx * dx + dy * dy > 25
+
+    def _pick_atom_at(
+            self,
+            sx: float,
+            sy: float,
+            *,
+            mv: np.ndarray | None = None,
+    ) -> tuple[_Atom3D | None, float]:
+        """Return the front-most atom under screen position *(sx, sy)* and
+        its viewspace ray *t*, or ``(None, inf)`` if no atom is hit.  Bonds
+        are ignored.
+
+        :param mv: Optional precomputed model-view matrix; pass it when the
+            caller already needs it (e.g. for a subsequent bond pass) to
+            avoid recomputing.
+        """
+        if mv is None:
+            mv = self._compute_mv_matrix()
         ray_origin, ray_dir = self._screen_to_ray_viewspace(sx, sy)
 
         best_atom: _Atom3D | None = None
@@ -1714,6 +1702,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
                 continue
+            # Hit test against the *rendered* surface so the entire visible
+            # ellipsoid / sphere is selectable.
             if (
                     self._show_adps
                     and atom.u_cart is not None
@@ -1728,10 +1718,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 t = self._ray_sphere_hit_viewspace(
                     ray_origin, ray_dir, atom.center, radius, mv
                 )
+            # Nearest-t wins → front-most surface is selected (z-ordering).
             if t is not None and t < best_t:
                 best_t = t
                 best_atom = atom
-        return best_atom
+        return best_atom, best_t
 
     # ------------------------------------------------------------------
     # Hit testing
