@@ -464,3 +464,106 @@ def test_adp_tensors_computed():
         assert atom.adp_A_matrix is not None
         assert atom.adp_A_matrix.shape == (3, 3)
         assert atom.adp_billboard_r > 0.0
+
+
+# ------------------------------------------------------------------
+# Bond hit-testing (depth ordering fix)
+# ------------------------------------------------------------------
+
+def test_ray_bond_screen_returns_viewspace_t():
+    """_ray_bond_screen must return a viewspace t comparable to atom t values.
+
+    Specifically, a bond whose midpoint is closer to the camera (smaller
+    viewspace z absolute value) must return a *smaller* t than one farther away.
+    """
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+
+    # Two atoms on screen centre so bonds project through the click point.
+    widget.open_molecule([
+        Atomtuple("C1", "C", -0.5, 0.0, 0.0, 0),
+        Atomtuple("C2", "C",  0.5, 0.0, 0.0, 0),
+        Atomtuple("C3", "C", -0.5, 0.0, -2.0, 0),
+        Atomtuple("C4", "C",  0.5, 0.0, -2.0, 0),
+    ])
+
+    mv = widget._compute_mv_matrix()
+    proj = widget._compute_proj_matrix()
+
+    p1_near = widget.atoms[0].center
+    p2_near = widget.atoms[1].center
+    p1_far  = widget.atoms[2].center
+    p2_far  = widget.atoms[3].center
+
+    # Click exactly at the screen centre
+    sx, sy = 400.0, 300.0
+    t_near = widget._ray_bond_screen(sx, sy, p1_near, p2_near, mv, proj)
+    t_far  = widget._ray_bond_screen(sx, sy, p1_far,  p2_far,  mv, proj)
+
+    assert t_near is not None, "Near bond should register a hit"
+    assert t_far  is not None, "Far bond should register a hit"
+    # Near bond is closer to the camera → smaller t.
+    assert t_near < t_far, (
+        f"Near bond t={t_near:.3f} must be less than far bond t={t_far:.3f}"
+    )
+
+
+def test_bond_selectable_in_front_of_atom():
+    """Clicking on a bond that is in front of an atom must select the bond.
+
+    The old code tested bonds only when no atom was hit; this test ensures that
+    a bond closer to the camera wins over an atom behind it.
+    """
+    from qtpy import QtCore, QtGui
+
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.show_adps(False)  # use sphere hit-testing, simpler geometry
+
+    # Atom at (0, 0, -5) — behind the bond in view space.
+    # Bond C1–C2 runs along X at z=0 (i.e. closer to camera).
+    #
+    # In view space the camera looks along -Z, so z=0 > z=–5 (closer).
+    # The atom's world position (0,0,-5) will be rotated by the MV matrix but
+    # the bond (along X at z=0) is effectively in the near plane.
+    # We place the bond along the screen midline so the click hits it.
+    widget.open_molecule([
+        Atomtuple("N1", "N",  0.0, 0.0, -5.0, 0),  # farther atom (behind bond)
+        Atomtuple("C1", "C", -0.5, 0.0,  0.0, 0),  # bond endpoint (near)
+        Atomtuple("C2", "C",  0.5, 0.0,  0.0, 0),  # bond endpoint (near)
+    ])
+
+    mv   = widget._compute_mv_matrix()
+    proj = widget._compute_proj_matrix()
+
+    # Project the far atom to find its screen position, then click there.
+    # That pixel should be covered by the near bond, so the bond wins.
+    import numpy as np
+    pos4 = np.array([0.0, 0.0, -5.0, 1.0], dtype=np.float32)
+    clip = proj @ (mv @ pos4)
+    ndc  = clip[:3] / clip[3]
+    w, h = widget.width(), widget.height()
+    sx = (ndc[0] + 1.0) * 0.5 * w
+    sy = (1.0 - ndc[1]) * 0.5 * h
+
+    # Simulate a click via _handle_click using a fake QMouseEvent.
+    # We test the lower-level selection logic directly.
+    ray_origin, ray_dir = widget._screen_to_ray_viewspace(sx, sy)
+
+    # Compute t for the far atom sphere.
+    t_atom = widget._ray_sphere_hit_viewspace(
+        ray_origin, ray_dir, widget.atoms[0].center,
+        widget.atoms[0].display_radius, mv
+    )
+
+    # Compute t for the near bond (C1–C2).
+    t_bond = widget._ray_bond_screen(
+        sx, sy, widget.atoms[1].center, widget.atoms[2].center, mv, proj
+    )
+
+    assert t_atom is not None, "Far atom should be hit"
+    assert t_bond is not None, "Near bond should be hit"
+    # Bond is closer → smaller t.
+    assert t_bond < t_atom, (
+        f"Near bond t={t_bond:.3f} must be less than far atom t={t_atom:.3f}"
+    )

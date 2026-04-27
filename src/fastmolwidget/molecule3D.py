@@ -1208,7 +1208,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             internal_name = base_name if count == 0 else f"{base_name}>>{count}"
             name_counts[base_name] = count + 1
 
-            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part, at.u_eq)
+            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part)
 
             if self._adp_map and self._cell and base_name in self._adp_map:
                 try:
@@ -1557,17 +1557,21 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 best_t = t
                 best_atom = atom
                 best_bond = None
-        if not best_atom:
-            for n1, n2 in self.connections:
-                at1, at2 = self.atoms[n1], self.atoms[n2]
-                if not self.show_hydrogens_flag:
-                    if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
-                        continue
-                t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
-                if t is not None and t < best_t:
-                    best_t = t
-                    best_bond = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
-                    best_atom = None
+
+        # Bonds are tested in the same pass so that a bond visually in front of
+        # an atom behind it can still be selected.  _ray_bond_screen now returns
+        # viewspace t (same unit as the atom ray-casters), so the comparison is
+        # consistent and the front-most object always wins.
+        for n1, n2 in self.connections:
+            at1, at2 = self.atoms[n1], self.atoms[n2]
+            if not self.show_hydrogens_flag:
+                if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                    continue
+            t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
+            if t is not None and t < best_t:
+                best_t = t
+                best_bond = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
+                best_atom = None
 
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
         changed = False
@@ -1709,42 +1713,60 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             mv: np.ndarray,
             proj: np.ndarray,
     ) -> float | None:
-        """Return average NDC depth of bond *p1–p2* if the screen click *(sx,sy)*
-        is within 6 pixels of its projected line segment, else ``None``."""
+        """Return the viewspace *t* of the closest point on bond *p1–p2* to the
+        screen click *(sx, sy)* if that point is within 6 pixels of the projected
+        line segment, else ``None``.
+
+        The returned value uses the same unit as
+        :meth:`_ray_sphere_hit_viewspace` and
+        :meth:`_ray_ellipsoid_hit_viewspace` (``t = −z_eye``, positive, smaller
+        = closer to the camera), so all three can be compared directly and the
+        front-most object wins.
+        """
         w = max(1, self.width())
         h = max(1, self.height())
 
-        def _project(pos: np.ndarray) -> np.ndarray | None:
+        def _project(pos: np.ndarray) -> tuple[np.ndarray, float] | None:
             p4 = np.array([*pos, 1.0], dtype=np.float32)
-            clip = proj @ (mv @ p4)
+            eye = mv @ p4
+            clip = proj @ eye
             if abs(clip[3]) < 1e-8:
                 return None
             ndc = clip[:3] / clip[3]
             if ndc[2] < -1.0 or ndc[2] > 1.0:
                 return None
-            return np.array(
-                [(ndc[0] + 1.0) * 0.5 * w, (1.0 - ndc[1]) * 0.5 * h, ndc[2]],
+            screen = np.array(
+                [(ndc[0] + 1.0) * 0.5 * w, (1.0 - ndc[1]) * 0.5 * h],
                 dtype=np.float32,
             )
+            return screen, float(eye[2])  # viewspace z (negative in front of camera)
 
-        sp1 = _project(p1)
-        sp2 = _project(p2)
-        if sp1 is None or sp2 is None:
+        r1 = _project(p1)
+        r2 = _project(p2)
+        if r1 is None or r2 is None:
             return None
+
+        sp1, z1 = r1
+        sp2, z2 = r2
 
         p = np.array([sx, sy], dtype=np.float32)
-        a = sp1[:2]
-        b = sp2[:2]
-        ab = b - a
+        ab = sp2 - sp1
         ab_len2 = float(np.dot(ab, ab))
         if ab_len2 < 1e-6:
+            # Both endpoints project to essentially the same pixel.
+            dist = float(np.linalg.norm(p - sp1))
+            if dist <= 6.0:
+                return float(-(z1 + z2) / 2.0)
             return None
-        t = float(max(0.0, min(1.0, np.dot(p - a, ab) / ab_len2)))
-        proj_pt = a + t * ab
+
+        t = float(max(0.0, min(1.0, np.dot(p - sp1, ab) / ab_len2)))
+        proj_pt = sp1 + t * ab
         dist = float(np.linalg.norm(p - proj_pt))
 
         if dist <= 6.0:
-            return float((sp1[2] + sp2[2]) / 2.0)
+            # Interpolate viewspace z and negate to get t (positive, smaller = closer).
+            z_closest = z1 + t * (z2 - z1)
+            return float(-z_closest)
         return None
 
 
