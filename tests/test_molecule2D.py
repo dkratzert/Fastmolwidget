@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 from fastmolwidget.cif.cif_file_io import CifReader
 from fastmolwidget.molecule2D import calc_volume, RenderItem, MoleculeWidget
@@ -168,3 +168,116 @@ def test_mouse_events_record_position():
 
     assert widget._lastPos == QPointF(10.0, 20.0)
     assert widget._pressPos == QPointF(10.0, 20.0)
+
+
+# ------------------------------------------------------------------
+# Bond color control
+# ------------------------------------------------------------------
+
+def test_set_bond_color_with_qcolor():
+    """Test set_bond_color with QColor input."""
+    widget = MoleculeWidget()
+    widget.set_bond_color(QtGui.QColor("#6b5d4f"))
+    assert widget.bond_color == QtGui.QColor("#6b5d4f")
+
+
+def test_set_bond_color_with_hex_string():
+    """Test set_bond_color with hex string input."""
+    widget = MoleculeWidget()
+    widget.set_bond_color("#5f5348")
+    assert widget.bond_color == QtGui.QColor("#5f5348")
+
+
+def test_set_bond_color_with_integer_tuple():
+    """Test set_bond_color with integer RGB tuple (0..255)."""
+    widget = MoleculeWidget()
+    widget.set_bond_color((120, 110, 100))
+    expected = QtGui.QColor(120, 110, 100)
+    assert widget.bond_color == expected
+
+
+def test_set_bond_color_with_float_tuple():
+    """Test set_bond_color with float RGB tuple (0..1)."""
+    widget = MoleculeWidget()
+    widget.set_bond_color((0.5, 0.4, 0.3))
+    expected = QtGui.QColor(int(0.5 * 255), int(0.4 * 255), int(0.3 * 255))
+    assert widget.bond_color == expected
+
+
+def test_set_bond_color_updates_bond_brush():
+    """bond_brush must be rebuilt when set_bond_color is called, so that
+    rounded-bond rendering actually uses the new colour."""
+    widget = MoleculeWidget()
+    old_brush = widget.bond_brush
+
+    widget.set_bond_color(QtGui.QColor("#ff0000"))  # bright red
+
+    # brush object must be replaced (not the same instance)
+    assert widget.bond_brush is not old_brush
+
+    # The gradient inside the new brush must contain colours derived from red.
+    # We sample the gradient at the 'light' stop (t=0.2) and check that the
+    # red channel dominates over green and blue.
+    new_gradient = widget.bond_brush.gradient()
+    stops = new_gradient.stops()
+    # stops is a list of (position, QColor) tuples
+    colors = [c for (_, c) in stops]
+    # At least one stop should have a significantly higher red channel
+    assert any(c.red() > c.blue() + 20 for c in colors), (
+        "After set_bond_color('#ff0000') the bond_brush gradient should "
+        "contain reddish colours, but got: " + str([(c.red(), c.green(), c.blue()) for c in colors])
+    )
+
+
+def test_set_bond_color_visible_in_rounded_mode():
+    """Rendered pixels must differ between the default grey and a vivid new
+    bond colour when round-bond mode is active (the default)."""
+    import numpy as np
+    from fastmolwidget.sdm import Atomtuple
+
+    # Two atoms close enough to be bonded
+    atoms = [
+        Atomtuple('C1', 'C', 0.0, 0.0, 0.0, 0),
+        Atomtuple('C2', 'C', 1.5, 0.0, 0.0, 0),
+    ]
+
+    widget = MoleculeWidget()
+    widget.resize(400, 300)
+    widget.show()
+    widget.show_round_bonds(True)
+    widget.open_molecule(atoms)
+
+    # Flush pending paint events so the widget has actually drawn
+    app.processEvents()
+
+    # Capture with the default grey bond colour
+    pixmap_grey = widget.grab()
+    img_grey = pixmap_grey.toImage()
+
+    # Change to a vivid blue and flush again
+    widget.set_bond_color(QtGui.QColor("#0000ff"))
+    app.processEvents()
+    pixmap_blue = widget.grab()
+    img_blue = pixmap_blue.toImage()
+
+    # Convert to numpy arrays for easy pixel comparison
+    def img_to_array(img):
+        img = img.convertToFormat(QtGui.QImage.Format.Format_RGB32)
+        w, h = img.width(), img.height()
+        ptr = img.bits()
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+        return arr[:, :, :3].copy()
+
+    arr_grey = img_to_array(img_grey)
+    arr_blue = img_to_array(img_blue)
+
+    # Sanity: at least some pixels should be non-white (i.e., the bond was drawn)
+    assert arr_grey.min() < 255, "No bond pixels rendered in grey mode – widget may not have painted."
+
+    diff = np.abs(arr_grey.astype(int) - arr_blue.astype(int))
+    assert diff.max() > 10, (
+        "Rendered bond pixels did not change after set_bond_color('#0000ff'); "
+        "max pixel diff = " + str(diff.max())
+    )
+
+

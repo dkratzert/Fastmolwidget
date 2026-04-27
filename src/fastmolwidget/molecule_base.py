@@ -93,6 +93,13 @@ class MoleculeWidgetProtocol(Protocol):
         """Set the bond width (screen pixels or world-space scaling factor)."""
         ...
 
+    def set_bond_color(self, color: object) -> None:
+        """Set the default colour used for non-selected bonds.
+
+        :param color: A :class:`~qtpy.QtGui.QColor`, hex string, or RGB tuple.
+        """
+        ...
+
     # ------------------------------------------------------------------
     # Appearance
     # ------------------------------------------------------------------

@@ -190,6 +190,57 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.bond_width = width
         self.update()
 
+    def set_bond_color(self, color: QColor | str | tuple[float, float, float] | tuple[int, int, int]) -> None:
+        """Set the default color used for all non-selected bonds.
+
+        Updates both the flat-bond color (used by :meth:`_draw_bond`) and the
+        cylinder-gradient brush (used by :meth:`_draw_bond_rounded`), so the
+        change is visible regardless of the current bond-rendering mode.
+
+        :param color: A QColor instance, hex string (e.g. ``"#d1812a"``), or
+            RGB tuple – either ``(r, g, b)`` floats in ``[0..1]`` or integers
+            in ``[0..255]``.
+        """
+        if isinstance(color, QColor):
+            self.bond_color = color
+        elif isinstance(color, str):
+            self.bond_color = QColor(color)
+        elif isinstance(color, tuple) and len(color) == 3:
+            r, g, b = color
+            if all(isinstance(c, (int, float)) for c in (r, g, b)):
+                if all(c <= 1.0 for c in (r, g, b)):
+                    self.bond_color = QColor(int(r * 255), int(g * 255), int(b * 255))
+                else:
+                    self.bond_color = QColor(int(r), int(g), int(b))
+            else:
+                raise ValueError("RGB tuple components must be numeric.")
+        else:
+            raise ValueError(
+                "Bond color must be a QColor, hex string, or RGB tuple (0..1 or 0..255)."
+            )
+        # Rebuild the cylinder-gradient brush so _draw_bond_rounded also
+        # reflects the new colour.
+        self._rebuild_bond_brush()
+        self.update()
+
+    def _rebuild_bond_brush(self) -> None:
+        """Recreate :attr:`bond_brush` from the current :attr:`bond_color`.
+
+        Called automatically by :meth:`set_bond_color`.  The gradient uses
+        darker / lighter variants of the base colour to preserve the 3-D
+        cylinder shading illusion.
+        """
+        base = self.bond_color
+        dark   = base.darker(170)
+        light  = base.lighter(160)
+        shadow = base.darker(280)
+
+        bg = QLinearGradient(0, 1, 0, -1)
+        bg.setColorAt(0.0, dark)
+        bg.setColorAt(0.2, light)
+        bg.setColorAt(1.0, shadow)
+        self.bond_brush = QBrush(bg)
+
     def set_labels_visible(self, visible: bool):
         """Toggle visibility of atom labels."""
         self.labels = visible
@@ -1032,8 +1083,8 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         # Colors for shading (light source top-left)
         color_base = atom.color
-        color_light = atom.color_light
-        color_dark = atom.color_dark
+        color_light = atom.color.lighter(160)
+        color_dark = atom.color.darker(180)
 
         pen = QPen(self.fallback_pen_color, 1)
         self._painter.setPen(pen)

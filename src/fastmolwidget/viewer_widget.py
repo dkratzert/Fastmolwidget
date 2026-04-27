@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule2D import MoleculeWidget
@@ -22,8 +22,17 @@ from fastmolwidget.molecule2D import MoleculeWidget
 
 class MoleculeViewerWidget(QtWidgets.QWidget):
     """A ready-to-use viewer widget that combines a :class:`MoleculeWidget`
-    with a control bar (ADP toggle, label toggle, bond style, hydrogen
-    visibility, and bond-width adjustment).
+    with a control bar.
+
+    The control bar provides the following controls:
+
+    * **Grow** – expand the asymmetric unit to complete molecules.
+    * **Show ADP** – toggle ADP ellipsoid / sphere display.
+    * **Show Labels** – toggle atom-name labels.
+    * **Round Bonds** – switch between 3D-shaded and flat bond rendering.
+    * **Show Hydrogens** – toggle hydrogen visibility.
+    * **Bond Width** – spinbox controlling bond width.
+    * **Bond Color** – button opening a color picker for all non-selected bonds.
 
     The interface is intentionally minimal: call :meth:`load_file` to display a
     structure.
@@ -49,6 +58,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_width_spinbox = QtWidgets.QSpinBox()
         self._bond_width_spinbox.setRange(1, 15)
         self._bond_width_spinbox.setValue(3)
+        self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
 
         # default state
         self._adp_checkbox.setChecked(True)
@@ -61,6 +71,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_type_checkbox.toggled.connect(self._render_widget.show_round_bonds)
         self._hydrogens_checkbox.toggled.connect(self._render_widget.show_hydrogens)
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
+        self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._grow_checkbox.toggled.connect(self._loader.set_grow)
 
         # apply initial defaults to the renderer
@@ -77,6 +88,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar.addWidget(self._hydrogens_checkbox)
         control_bar.addWidget(self._bw_label)
         control_bar.addWidget(self._bond_width_spinbox)
+        control_bar.addWidget(self._bond_color_button)
         control_bar.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
@@ -103,6 +115,20 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         :raises FileNotFoundError: If the file does not exist.
         """
         self._loader.load_file(filename)
+
+    def set_bond_color(
+        self,
+        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+    ) -> None:
+        """Set the default colour used for non-selected bonds."""
+        self._render_widget.set_bond_color(color)
+
+    def _choose_bond_color(self) -> None:
+        """Open a colour picker for the bond colour."""
+        current = QtGui.QColor(self._render_widget.bond_color)
+        color = QtWidgets.QColorDialog.getColor(current, self, "Choose Bond Color")
+        if color.isValid():
+            self._render_widget.set_bond_color(color)
 
 if __name__ == '__main__':
 

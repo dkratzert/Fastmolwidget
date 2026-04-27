@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from qtpy import QtWidgets
+from qtpy import QtGui, QtWidgets
 
 from fastmolwidget.viewer_widget import MoleculeViewerWidget
 
@@ -70,3 +70,38 @@ def test_viewer_renders():
     assert w.render_widget.height() > 0
     pixmap = w.grab()
     assert not pixmap.isNull()
+
+
+# ------------------------------------------------------------------
+# Bond color control
+# ------------------------------------------------------------------
+
+def test_set_bond_color_with_qcolor():
+    """Test set_bond_color with QColor input."""
+    widget = MoleculeViewerWidget()
+    widget.set_bond_color(QtGui.QColor("#6b5d4f"))
+    assert widget.render_widget.bond_color == QtGui.QColor("#6b5d4f")
+
+
+def test_set_bond_color_with_hex_string():
+    """Test set_bond_color with hex string input."""
+    widget = MoleculeViewerWidget()
+    widget.set_bond_color("#5f5348")
+    assert widget.render_widget.bond_color == QtGui.QColor("#5f5348")
+
+
+def test_set_bond_color_with_integer_tuple():
+    """Test set_bond_color with integer RGB tuple (0..255)."""
+    widget = MoleculeViewerWidget()
+    widget.set_bond_color((120, 110, 100))
+    expected = QtGui.QColor(120, 110, 100)
+    assert widget.render_widget.bond_color == expected
+
+
+def test_set_bond_color_with_float_tuple():
+    """Test set_bond_color with float RGB tuple (0..1)."""
+    widget = MoleculeViewerWidget()
+    widget.set_bond_color((0.5, 0.4, 0.3))
+    expected = QtGui.QColor(int(0.5 * 255), int(0.4 * 255), int(0.3 * 255))
+    assert widget.render_widget.bond_color == expected
+
