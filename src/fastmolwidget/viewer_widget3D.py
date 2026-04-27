@@ -17,9 +17,8 @@ from __future__ import annotations
 """
 TODO:
 
-* Middle-click should center the current atom.
 * Find out why rotation of 1000+ atom structures is rather slow.
-* Make colors a bit brighter.
+
 
 """
 

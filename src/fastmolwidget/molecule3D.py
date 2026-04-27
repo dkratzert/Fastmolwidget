@@ -38,6 +38,8 @@ Mouse controls
 * **Left drag**  – rotate.
 * **Right drag** – zoom.
 * **Middle drag** – pan.
+* **Middle click** – centre the view on the clicked atom (becomes the new
+  rotation pivot).
 * **Scroll wheel** – increase / decrease label font size.
 * **Left click** – select atom or bond; emit ``atomClicked`` / ``bondClicked``.
 * **Ctrl + left click** – add to / remove from selection.
@@ -1565,6 +1567,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 and self._pressPos is not None
         ):
             self._handle_click(event)
+        elif (
+                event.button() == Qt.MouseButton.MiddleButton
+                and not self._mouse_moved
+                and self._pressPos is not None
+        ):
+            self._handle_middle_click(event)
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
@@ -1671,6 +1679,59 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if changed:
             self._build_geometry()
             self.update()
+
+    def _handle_middle_click(self, event: QtGui.QMouseEvent) -> None:
+        """Centre the view on the atom under the cursor (no-op if nothing hit).
+
+        After centring, the picked atom becomes the rotation pivot and is
+        moved to the screen centre by resetting the pan offset.
+        """
+        pos = event.position()
+        # Same drag tolerance as the left-click selector.
+        if self._pressPos is not None:
+            dx = pos.x() - self._pressPos.x()
+            dy = pos.y() - self._pressPos.y()
+            if dx * dx + dy * dy > 25:
+                return
+
+        atom = self._pick_atom_at(float(pos.x()), float(pos.y()))
+        if atom is None:
+            return
+
+        self._molecule_center = atom.center.astype(np.float32).copy()
+        self._pan = np.zeros(2, dtype=np.float32)
+        self.update()
+
+    def _pick_atom_at(self, sx: float, sy: float) -> _Atom3D | None:
+        """Return the front-most atom under screen position *(sx, sy)* or
+        ``None`` if no atom is hit.  Bonds are ignored."""
+        mv = self._compute_mv_matrix()
+        ray_origin, ray_dir = self._screen_to_ray_viewspace(sx, sy)
+
+        best_atom: _Atom3D | None = None
+        best_t = float("inf")
+
+        for atom in self.atoms:
+            if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
+                continue
+            if (
+                    self._show_adps
+                    and atom.u_cart is not None
+                    and atom.adp_valid
+                    and atom.adp_A_matrix is not None
+            ):
+                t = self._ray_ellipsoid_hit_viewspace(
+                    ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
+                )
+            else:
+                radius = float(atom.u_iso or atom.display_radius)
+                t = self._ray_sphere_hit_viewspace(
+                    ray_origin, ray_dir, atom.center, radius, mv
+                )
+            if t is not None and t < best_t:
+                best_t = t
+                best_atom = atom
+        return best_atom
 
     # ------------------------------------------------------------------
     # Hit testing
