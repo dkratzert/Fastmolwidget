@@ -534,7 +534,7 @@ void main() {
         float spec   = pow(max(dot(reflect(-light, normal),
                                    normalize(-v_pos_eye)), 0.0), 32.0);
 
-        color = v_color * (0.2 + 0.7 * diff) + vec3(0.35) * spec;
+        color = v_color * (0.45 + 0.55 * diff) + vec3(0.30) * spec;
     }
     gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
