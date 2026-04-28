@@ -1,6 +1,6 @@
 [project]
 name = "fastmolwidget"
-version = "0.5.1"
+version = "0.6.0"
 description = "A PyQt widget to display crystal structures"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -8,7 +8,7 @@ authors = [
     { name = "Daniel Kratzert", email = "dkratzert@gmx.de" }
 ]
 requires-python = ">=3.12"
-keywords = ["chemistry", "crystallography", "qt", "widget", "molecule"]
+keywords = ["chemistry", "crystallography", "qt", "widget", "molecule", "structure", "visualization"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",

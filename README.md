@@ -1,8 +1,8 @@
-# Fastmolwidget
+# fastmolwidget
 
 **A PyQt/PySide6 widget to display crystal structures**
 
-Fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in both 2D projection and real-time 3D OpenGL.
+fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in both 2D projection and real-time 3D OpenGL.
 It supports anisotropic displacement parameter (ADP) ellipsoids, ball-and-stick diagrams, and plain sphere representations.
 The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D backend uses hardware-accelerated OpenGL with sphere and ellipsoid impostors.
 
@@ -21,9 +21,11 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 - **Graceful degradation** — if PyOpenGL is not installed or OpenGL fails, `MoleculeWidget3D` falls back to an informational text overlay; the host application never crashes
 - **Interactive mouse controls**: rotate (left-drag), zoom (right-drag), pan (middle-drag), scroll wheel to resize labels
 - **Atom and bond selection**: single click or Ctrl+click for multi-selection; emits `atomClicked` / `bondClicked` Qt signals
+- **Hover labels**: hovering over an atom shows its label (enlarged when persistent labels are on); hovering over a bond shows the distance in Ångströms in a rounded tooltip near the cursor
 - **Hydrogen visibility toggle**
 - **Atom label display toggle** with adjustable font size
 - **Bond width** adjustment via spin box
+- **Configurable bond color** — set programmatically or via the control-bar color picker
 - **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) are plain `QWidget` subclasses; drop either into any layout
 - **Ready-to-use viewers** — `MoleculeViewerWidget` (2D) and `MoleculeViewer3DWidget` (3D) bundle the renderer with a full control bar
@@ -165,9 +167,12 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 | Left-drag | Rotate the molecule |
 | Right-drag | Zoom in / out |
 | Middle-drag | Pan the view |
+| Middle-click | Recentre the rotation pivot on the clicked atom (3D only) |
 | Scroll wheel | Increase / decrease label font size |
 | Left-click | Select a single atom or bond |
 | Ctrl + Left-click | Toggle multi-selection |
+| Hover over atom | Show the atom label (enlarged when persistent labels are on) |
+| Hover over bond | Show the bond distance (Å) in a rounded tooltip near the cursor |
 
 ## Control Bar Options
 
@@ -184,6 +189,8 @@ Both viewers expose the same control bar:
 | Round Bonds | ✓ | Switch between round cylinder and flat bond drawing |
 | Show Hydrogens | ✓ | Show or hide hydrogen atoms and their bonds |
 | Bond Width | 3 | Stroke width / cylinder radius for bonds (1–15) |
+| Bond Color | — | Opens a colour picker to change the default bond colour |
+| Reset Rotation Center | — | Restores the rotation pivot to the molecule's geometric centre (3D only) |
 
 ## API Overview
 
@@ -201,6 +208,7 @@ Sets a sensible `QSurfaceFormat` default (24-bit depth, double-buffer, 4× MSAA)
 A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
 
 - `load_file(path)` — load a structure file (format auto-detected from extension: `.cif`, `.res`, `.ins`, `.xyz`)
+- `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget3D`
 
 ### `MoleculeWidget3D(parent=None)`
@@ -248,9 +256,12 @@ If *PyOpenGL* is not installed, or if OpenGL context creation fails at runtime, 
 - **`show_labels(value: bool)`** — show / hide atom labels
 - **`show_hydrogens(value: bool)`** — show / hide hydrogen atoms and bonds
 - **`set_bond_width(width: int)`** — set cylinder radius scale (1–15)
+- **`set_bond_color(color)`** — set the default color for non-selected bonds; accepts `QColor`, hex string, or an RGB tuple
+- **`set_labels_visible(visible: bool)`** — alias for `show_labels`
 - **`setLabelFont(font_size: int)`** — set label font pixel size
 - **`set_background_color(color: QColor)`** — change background colour
 - **`reset_view()`** — reset zoom, rotation, and pan to defaults
+- **`reset_rotation_center()`** — restore the rotation pivot to the molecule's geometric center (undoes a middle-click recentring)
 - **`save_image(filename, image_scale=1.5)`** — render the current view to an image file
 
 #### Example — feeding atom data directly to `MoleculeWidget3D`
@@ -287,6 +298,7 @@ layout.addWidget(mol)
 A self-contained 2D viewer combining `MoleculeWidget` with the control bar.
 
 - `load_file(path)` — load a structure file (format auto-detected from extension)
+- `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget`
 
 ### `MoleculeWidget(parent=None)`
@@ -327,15 +339,20 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 - **`show_hydrogens(value: bool)`**  
   Show or hide hydrogen / deuterium atoms and their bonds.
 
-
 - **`set_bond_width(width: int)`**  
   Set the stroke width for bonds in pixels (valid range: 1–15).
+
+- **`set_bond_color(color)`**  
+  Set the default color for non-selected bonds. Accepts `QColor`, hex string (e.g. `"#d1812a"`), or an RGB tuple (floats in `[0..1]` or integers in `[0..255]`).
+
+- **`set_labels_visible(visible: bool)`**  
+  Alias for `show_labels`.
 
 - **`setLabelFont(font_size: int)`**  
   Set the pixel size used for atom labels.
 
 - **`set_background_color(color: QColor)`**  
-  Change the widget background colour.
+  Change the widget background color.
 
 - **`reset_view()`**  
   Reset zoom, pan, and rotation to their defaults.
@@ -384,7 +401,7 @@ def load_into(widget: MoleculeWidgetProtocol, atoms, cell, adps) -> None:
     widget.show_labels(True)
 ```
 
-Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_background_color`, `setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
+Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `set_background_color`, `setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
 
 ### `MoleculeLoader(widget)`
 
