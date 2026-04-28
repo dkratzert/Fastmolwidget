@@ -44,7 +44,7 @@ def test_widget3d_satisfies_protocol():
 def test_construction_defaults():
     widget = MoleculeWidget3D()
     assert widget.atoms_size == 12
-    assert widget.fontsize == 13
+    assert widget.fontsize == 18
     assert widget.bond_width == 3
     assert widget.labels is True
     assert widget._show_adps is True

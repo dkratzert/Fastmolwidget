@@ -24,10 +24,10 @@ except ImportError:
     HAS_CPP = False
 
 from fastmolwidget.atoms import get_radius_from_element
-from fastmolwidget.dsrmath import Array, SymmetryElement, Matrix, frac_to_cart
+from fastmolwidget.dsrmath import SymmetryElement, frac_to_cart
 
 if TYPE_CHECKING:
-    from cif.cif_file_io import CifReader
+    pass
 
 DEBUG = False
 Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix'), defaults=(None,))
@@ -128,16 +128,6 @@ class SDM:
         self.maxmol = 1
         self.sdmtime = 0
 
-    def orthogonal_matrix(self) -> Matrix:
-        """
-        Converts von fractional to cartesian.
-        """
-        return Matrix([[self.cell[0], self.cell[1] * cos(self.cell[5]), self.cell[2] * cos(self.cell[4])],
-                       [0, self.cell[1] * sin(self.cell[5]),
-                        (self.cell[2] * (cos(self.cell[3]) - cos(self.cell[4]) * cos(self.cell[5])) / sin(
-                            self.cell[5]))],
-                       [0, 0, self.cell[6] / (self.cell[0] * self.cell[1] * sin(self.cell[5]))]])
-
     def calc_sdm(self) -> list:
         t1 = time.perf_counter()
         h = {'H', 'D'}
@@ -146,7 +136,7 @@ class SDM:
         symm_m = []
         symm_t = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         # C++ Fast Path
@@ -263,7 +253,7 @@ class SDM:
         symm_m = []
         symm_t = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         aga, bbe, cal = self.aga, self.bbe, self.cal
@@ -330,15 +320,15 @@ class SDM:
         """
         n = len(all_atoms)
         for at in all_atoms:
-            at.append(-1)      # reserve the molindex slot (keeps original API)
+            at.append(-1)  # reserve the molindex slot (keeps original API)
 
         # ── Union-Find with path-halving and union-by-rank ────────────────────
         parent = list(range(n))
-        rank   = [0] * n
+        rank = [0] * n
 
         def find(x: int) -> int:
             while parent[x] != x:
-                parent[x] = parent[parent[x]]   # path halving (no recursion)
+                parent[x] = parent[parent[x]]  # path halving (no recursion)
                 x = parent[x]
             return x
 
@@ -369,10 +359,10 @@ class SDM:
         self.maxmol = mol_counter
 
     def pack_unit_cell(
-        self,
-        symmop_indices: list[int] | None = None,
-        *,
-        cart_tolerance: float = 0.2,
+            self,
+            symmop_indices: list[int] | None = None,
+            *,
+            cart_tolerance: float = 0.2,
     ) -> list[Atomtuple]:
         """Pack all symmetry-equivalent positions into one unit cell.
 
@@ -404,7 +394,7 @@ class SDM:
         symm_m: list = []
         symm_t: list = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         cell = self.cell[:6]
@@ -442,9 +432,12 @@ class SDM:
                     # be duplicates of each other.
                     if ex[5] != 0 and part != 0 and ex[5] != part:
                         continue
-                    ddx = px - ex[2]; ddx -= round(ddx)
-                    ddy = py - ex[3]; ddy -= round(ddy)
-                    ddz = pz - ex[4]; ddz -= round(ddz)
+                    ddx = px - ex[2];
+                    ddx -= round(ddx)
+                    ddy = py - ex[3];
+                    ddy -= round(ddy)
+                    ddz = pz - ex[4];
+                    ddz -= round(ddz)
                     if self.vector_length(ddx, ddy, ddz) < cart_tolerance:
                         is_dup = True
                         break
@@ -485,7 +478,7 @@ class SDM:
         symm_m = []
         symm_t = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         for symm in need_symm:

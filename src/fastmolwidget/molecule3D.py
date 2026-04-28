@@ -737,7 +737,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._amatrix: np.ndarray = np.eye(3, dtype=float)
 
         # ---- Public display state (mirrors MoleculeWidget) ----------------
-        self.fontsize: int = 13
+        self.fontsize: int = 18
         self.label_color = QtGui.QColor(100, 50, 5)
         self.bond_width: int = 3
         self.atoms_size: int = 12  # kept for API compatibility
