@@ -162,6 +162,9 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.labels = True
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # Hover-label support: the name of the atom currently under the cursor.
+        self.hovered_atom: str | None = None
+        self.setMouseTracking(True)
         self.atomClicked.connect(lambda x: print(f"Atom Selected: {x}"))
         self.bondClicked.connect(lambda x, y: print(f"Bond Selected: {x}-{y}"))
 
@@ -657,7 +660,42 @@ class MoleculeWidget(QtWidgets.QWidget):
             self.zoom_molecule(event)
         elif event.buttons() == QtCore.Qt.MouseButton.MiddleButton:
             self.pan_molecule(event)
+        else:
+            self._update_hover(event.position().x(), event.position().y())
         self._lastPos = event.position()
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        """Clear the hovered-atom label when the cursor leaves the widget."""
+        if self.hovered_atom is not None:
+            self.hovered_atom = None
+            self.update()
+        super().leaveEvent(event)
+
+    def _update_hover(self, px: float, py: float) -> None:
+        """Update :attr:`hovered_atom` from screen coordinates *(px, py)*.
+
+        Uses the same hit test as left-click selection. Hidden hydrogens are
+        excluded so they never receive a hover label.
+        """
+        if not self.atoms:
+            return
+        hydrogens = ('H', 'D')
+        new_hover: str | None = None
+        front_z = float('inf')
+        # Iterate front-to-back via z_order populated in calculate_z_order().
+        for item in self.objects:
+            if item.is_bond:
+                continue
+            atom = item.atom1
+            if not self.show_hydrogens_flag and atom.type_ in hydrogens:
+                continue
+            if self.is_point_inside_atom(atom, px, py):
+                if item.z_order < front_z:
+                    front_z = item.z_order
+                    new_hover = atom.name
+        if new_hover != self.hovered_atom:
+            self.hovered_atom = new_hover
+            self.update()
 
     def pan_molecule(self, event):
         """Translate the molecule center based on the middle-button drag delta."""
@@ -755,8 +793,13 @@ class MoleculeWidget(QtWidgets.QWidget):
                 self._draw_bond_rounded(item.atom1, item.atom2)
             else:
                 self.draw_atom(item.atom1)
-                if self.labels and item.atom1.type_ not in hydrogens:
-                    self.draw_label(item.atom1)
+                is_hovered = item.atom1.name == self.hovered_atom
+                if self.labels and not is_hovered:
+                    if item.atom1.type_ in hydrogens:
+                        continue
+                    self.draw_label(item.atom1, enlarged=is_hovered)
+                elif is_hovered:
+                    self.draw_label(item.atom1, enlarged=True)
         self._painter.end()
 
     def calculate_z_order(self):
@@ -1083,11 +1126,24 @@ class MoleculeWidget(QtWidgets.QWidget):
         font.setPixelSize(old_size)
         self._painter.setFont(font)
 
-    def draw_label(self, atom: Atom):
-        """Draw the atom's name next to its ellipsoid/sphere."""
+    def draw_label(self, atom: Atom, enlarged: bool = False):
+        """Draw the atom's name next to its ellipsoid/sphere.
+
+        :param enlarged: When ``True`` (used for the hovered atom) the label
+            is rendered with a slightly larger, bold font.
+        """
         self._painter.setPen(QPen(QColor(100, 50, 5), 2, Qt.PenStyle.SolidLine))
         r_pix = self.get_spherical_radius(atom) * self.scale
-        self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
+        if enlarged:
+            base_font = self._painter.font()
+            hover_font = QtGui.QFont(base_font)
+            hover_font.setPixelSize(max(1, self.fontsize + 4))
+            hover_font.setBold(True)
+            self._painter.setFont(hover_font)
+            self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
+            self._painter.setFont(base_font)
+        else:
+            self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
 
     def get_conntable_from_atoms(self, extra_param: float = 1.2) -> tuple:
         """Build a connectivity table from atomic coordinates and covalent radii."""

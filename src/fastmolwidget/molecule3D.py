@@ -805,6 +805,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._lastPos: QtCore.QPointF | None = None
         self._pressPos: QtCore.QPointF | None = None
         self._mouse_moved: bool = False
+        # Label of the atom currently under the cursor (None if no atom hovered)
+        self._hover_atom_label: str | None = None
+        # Enable mouse-move events without a button held (for hover detection)
+        self.setMouseTracking(True)
 
         # ---- Widget appearance --------------------------------------------
         pal = QtGui.QPalette()
@@ -949,7 +953,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # renders into the painter's FBO which was never cleared, giving a
         # black background with only the rendered geometry composited on top.
         painter: QtGui.QPainter | None = None
-        if self.labels and self.atoms:
+        if self.atoms and (self.labels or self._hover_atom_label is not None):
             painter = QtGui.QPainter(self)
             painter.beginNativePainting()
         try:
@@ -1458,31 +1462,69 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         h = max(1, self.height())
         hydrogens = ("H", "D")
 
+        base_size = max(1, self.fontsize)
+        hover_size = base_size + 4  # enlarge hovered label
+
         font = QtGui.QFont()
-        font.setPixelSize(max(1, self.fontsize))
+        font.setPixelSize(base_size)
         painter.setFont(font)
         painter.setPen(self.label_color)
 
-        for atom in self.atoms:
-            if atom.type_ in hydrogens:
-                continue
+        hover_label = self._hover_atom_label
+        hover_atom = None
 
+        def project(atom) -> tuple[int, int] | None:
             pos4 = np.array([*atom.center, 1.0], dtype=np.float32)
             eye = mv @ pos4
             clip = proj @ eye
             if abs(clip[3]) < 1e-8:
-                continue
+                return None
             ndc = clip[:3] / clip[3]
             if not (
-                    -1.0 <= ndc[0] <= 1.0
-                    and -1.0 <= ndc[1] <= 1.0
-                    and -1.0 <= ndc[2] <= 1.0
+                -1.0 <= ndc[0] <= 1.0
+                and -1.0 <= ndc[1] <= 1.0
+                and -1.0 <= ndc[2] <= 1.0
             ):
-                continue
+                return None
+            return (
+                int((ndc[0] + 1.0) * 0.5 * w),
+                int((1.0 - ndc[1]) * 0.5 * h),
+            )
 
-            sx = int((ndc[0] + 1.0) * 0.5 * w)
-            sy = int((1.0 - ndc[1]) * 0.5 * h)
-            painter.drawText(sx + 4, sy - 4, atom.label)
+        # Persistent labels (only when "Show Labels" is on). Hidden hydrogens
+        # never get a label, and the hovered atom is drawn separately below
+        # with a larger font.
+        if self.labels:
+            for atom in self.atoms:
+                if not self.show_hydrogens_flag and atom.type_ in hydrogens:
+                    continue
+                if atom.label == hover_label:
+                    hover_atom = atom
+                    continue
+                pt = project(atom)
+                if pt is None:
+                    continue
+                painter.drawText(pt[0] + 4, pt[1] - 4, atom.label)
+        elif hover_label is not None:
+            for atom in self.atoms:
+                if atom.label == hover_label:
+                    hover_atom = atom
+                    break
+
+        # Hover label – enlarged. Only draw if the hovered atom is actually
+        # displayed (hydrogens are filtered out by _pick_atom_at when hidden,
+        # but we double-check here for safety).
+        if hover_atom is not None:
+            if not self.show_hydrogens_flag and hover_atom.type_ in hydrogens:
+                return
+            pt = project(hover_atom)
+            if pt is None:
+                return
+            hover_font = QtGui.QFont(font)
+            hover_font.setPixelSize(hover_size)
+            hover_font.setBold(True)
+            painter.setFont(hover_font)
+            painter.drawText(pt[0] + 4, pt[1] - 4, hover_atom.label)
 
     # ------------------------------------------------------------------
     # Matrix helpers
@@ -1855,12 +1897,25 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self._lastPos is None:
+            # Hover only — no prior press. Update the hovered-atom label.
+            if event.buttons() == Qt.MouseButton.NoButton:
+                self._update_hover(event.position())
             return
 
         pos = event.position()
         dx = float(pos.x() - self._lastPos.x())
         dy = float(pos.y() - self._lastPos.y())
         self._mouse_moved = True
+
+        if event.buttons() == Qt.MouseButton.NoButton:
+            # Pure hover (no drag in progress)
+            self._update_hover(pos)
+            self._lastPos = pos
+            return
+
+        # Any drag suppresses the hover label until the mouse stops moving.
+        if self._hover_atom_label is not None:
+            self._hover_atom_label = None
 
         if event.buttons() == Qt.MouseButton.LeftButton:
             # Arcball-style rotation
@@ -1914,6 +1969,27 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         ):
             self._handle_middle_click(event)
         super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:  # type: ignore[override]
+        """Clear the hovered-atom label when the cursor leaves the widget."""
+        if self._hover_atom_label is not None:
+            self._hover_atom_label = None
+            self.update()
+        super().leaveEvent(event)
+
+    def _update_hover(self, pos: QtCore.QPointF) -> None:
+        """Pick the atom under *pos* and refresh the hover label if it changed.
+
+        Hidden hydrogens are excluded by :meth:`_pick_atom_at`.
+        """
+        if not self.atoms:
+            new_label: str | None = None
+        else:
+            atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()))
+            new_label = atom.label if atom is not None else None
+        if new_label != self._hover_atom_label:
+            self._hover_atom_label = new_label
+            self.update()
 
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
         """Scroll wheel adjusts label font size."""
