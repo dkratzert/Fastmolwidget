@@ -274,3 +274,187 @@ def test_set_bond_color_visible_in_rounded_mode():
     )
 
 
+# ------------------------------------------------------------------
+# Hover labels (atom name + bond distance)
+# ------------------------------------------------------------------
+
+from qtpy import QtCore  # noqa: E402  (used only by the hover tests below)
+
+
+def _make_two_atom_widget(label1: str = "C1", elem1: str = "C",
+                          label2: str = "O1", elem2: str = "O",
+                          dx: float = 1.5) -> MoleculeWidget:
+    """Build a paint-ready widget with two atoms ``dx`` Å apart on the X axis.
+
+    The widget is resized and shown so that ``draw()`` has populated
+    ``screenx`` / ``screeny`` on every atom — a precondition for the 2-D hit
+    tests that drive the hover state.
+    """
+    widget = MoleculeWidget()
+    widget.resize(800, 600)
+    widget.show()
+    widget.open_molecule([
+        Atomtuple(label1, elem1, 0.0, 0.0, 0.0, 0),
+        Atomtuple(label2, elem2, dx,  0.0, 0.0, 0),
+    ])
+    app.processEvents()
+    widget.grab()  # force a paint pass → screenx/screeny populated
+    return widget
+
+
+def test_hover_atom_sets_hovered_atom_name():
+    widget = _make_two_atom_widget()
+    ax = widget.atoms[0].screenx
+    ay = widget.atoms[0].screeny
+
+    widget._update_hover(ax, ay)
+    assert widget.hovered_atom == "C1"
+    # When an atom is hovered, no bond hover state must be active.
+    assert widget.hovered_bond is None
+    assert widget._hovered_bond_distance is None
+    assert widget._hover_cursor is None
+
+
+def test_hover_bond_records_distance_in_angstrom():
+    widget = _make_two_atom_widget(dx=1.5)
+    a, b = widget.atoms[0], widget.atoms[1]
+    mx = (a.screenx + b.screenx) / 2.0
+    my = (a.screeny + b.screeny) / 2.0
+
+    widget._update_hover(mx, my)
+    assert widget.hovered_bond == ("C1", "O1")
+    assert widget._hovered_bond_distance == pytest.approx(1.5, abs=1e-3)
+    # Cursor position must be tracked so the rounded label can anchor to it.
+    assert widget._hover_cursor is not None
+    assert widget._hover_cursor.x() == pytest.approx(mx)
+    assert widget._hover_cursor.y() == pytest.approx(my)
+    # Atom hover must not be set when the cursor is between atoms.
+    assert widget.hovered_atom is None
+
+
+def test_hover_bond_distance_label_renders_in_paint():
+    """The rounded distance label must actually appear in the painted output
+    when a bond is hovered, even with ``Show Labels`` off."""
+    import numpy as np
+
+    widget = _make_two_atom_widget(dx=1.5)
+    widget.show_labels(False)
+    a, b = widget.atoms[0], widget.atoms[1]
+    mx = (a.screenx + b.screenx) / 2.0
+    my = (a.screeny + b.screeny) / 2.0
+
+    def grab_array() -> np.ndarray:
+        app.processEvents()
+        img = widget.grab().toImage().convertToFormat(QtGui.QImage.Format.Format_RGB32)
+        w, h = img.width(), img.height()
+        ptr = img.bits()
+        return np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))[:, :, :3].copy()
+
+    # Baseline: no hover state at all.
+    widget.hovered_atom = None
+    widget.hovered_bond = None
+    widget._hovered_bond_distance = None
+    widget._hover_cursor = None
+    widget.update()
+    arr_off = grab_array()
+
+    # Activate bond hover and grab again.
+    widget._update_hover(mx, my)
+    assert widget.hovered_bond is not None  # precondition
+    widget.update()
+    arr_on = grab_array()
+
+    # Only the rounded distance label changes between the two grabs (the
+    # molecule itself is identical), so any non-trivial pixel diff over the
+    # full image is attributable to the hover label.  We compare the full
+    # image to avoid making assumptions about HiDPI scaling factors applied
+    # by ``QWidget.grab()``.
+    if arr_on.shape != arr_off.shape:
+        # Different image sizes ⇒ different code paths; treat as changed.
+        return
+    diff = np.abs(arr_on.astype(int) - arr_off.astype(int)).sum(axis=2)
+    changed = int((diff > 20).sum())
+    assert changed > 100, (
+        f"Only {changed} pixels changed between hover-off and hover-on grabs; "
+        f"the rounded distance label is probably not being drawn."
+    )
+
+
+def test_hover_atom_priority_over_bond_at_atom_center():
+    """If the cursor is over the atom centre, atom hover wins over bond hover."""
+    widget = _make_two_atom_widget(dx=1.5)
+    ax = widget.atoms[0].screenx
+    ay = widget.atoms[0].screeny
+
+    widget._update_hover(ax, ay)
+    assert widget.hovered_atom == "C1"
+    assert widget.hovered_bond is None
+
+
+def test_hover_excludes_hidden_hydrogens_2d():
+    """Hidden hydrogens must never produce a hover label, neither as atoms
+    nor as the endpoints of a bond."""
+    widget = MoleculeWidget()
+    widget.resize(800, 600)
+    widget.show()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("H1", "H", 1.0, 0.0, 0.0, 0),
+    ])
+    widget.show_hydrogens(False)
+    app.processEvents()
+    widget.grab()
+
+    h_atom = widget.atoms[1]
+    widget._update_hover(h_atom.screenx, h_atom.screeny)
+    assert widget.hovered_atom is None
+    assert widget.hovered_bond is None
+
+
+def test_hover_excludes_hydrogen_atom_label_even_when_visible():
+    """Hydrogens are displayed but never receive an atom-name hover label."""
+    widget = MoleculeWidget()
+    widget.resize(800, 600)
+    widget.show()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("H1", "H", 1.0, 0.0, 0.0, 0),
+    ])
+    app.processEvents()
+    widget.grab()
+
+    h_atom = widget.atoms[1]
+    widget._update_hover(h_atom.screenx, h_atom.screeny)
+    assert widget.hovered_atom is None
+
+
+def test_leave_event_clears_hover_state_2d():
+    widget = _make_two_atom_widget(dx=1.5)
+    a, b = widget.atoms[0], widget.atoms[1]
+    mx = (a.screenx + b.screenx) / 2.0
+    my = (a.screeny + b.screeny) / 2.0
+    widget._update_hover(mx, my)
+    assert widget.hovered_bond is not None
+
+    widget.leaveEvent(QtCore.QEvent(QtCore.QEvent.Type.Leave))
+    assert widget.hovered_atom is None
+    assert widget.hovered_bond is None
+    assert widget._hovered_bond_distance is None
+    assert widget._hover_cursor is None
+
+
+def test_drag_clears_hover_state_2d():
+    """While the user is rotating / panning / zooming the molecule, hover
+    labels must be suppressed."""
+    widget = _make_two_atom_widget(dx=1.5)
+    a, b = widget.atoms[0], widget.atoms[1]
+    mx = (a.screenx + b.screenx) / 2.0
+    my = (a.screeny + b.screeny) / 2.0
+    widget._update_hover(mx, my)
+    assert widget.hovered_bond is not None
+
+    widget._clear_hover_state()
+    assert widget.hovered_atom is None
+    assert widget.hovered_bond is None
+    assert widget._hovered_bond_distance is None
+    assert widget._hover_cursor is None

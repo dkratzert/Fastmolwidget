@@ -513,7 +513,7 @@ def test_proj_matrix_shape():
     assert proj[3, 3] == pytest.approx(1.0)
 
 
-def test_screen_to_ray_viewspace_is_orthographic():
+def test_screen_to_ray_viewspace_orthographic():
     widget = MoleculeWidget3D()
     widget.resize(800, 600)
 
@@ -731,3 +731,149 @@ def test_bond_selected_when_in_front_of_atom():
     assert t_bond < t_atom, (
         f"Near bond t={t_bond:.3f} must be less than far atom t={t_atom:.3f}"
     )
+
+
+# ------------------------------------------------------------------
+# Hover labels (atom name + bond distance)
+# ------------------------------------------------------------------
+
+from qtpy import QtCore  # noqa: E402  (used by the hover tests below)
+
+
+def _project_to_screen(widget: MoleculeWidget3D, world_pos: np.ndarray) -> tuple[float, float]:
+    """Project a world-space point to widget screen coordinates."""
+    mv = widget._compute_mv_matrix()
+    proj = widget._compute_proj_matrix()
+    p4 = np.array([*world_pos, 1.0], dtype=np.float32)
+    clip = proj @ (mv @ p4)
+    ndc = clip[:3] / clip[3]
+    w, h = widget.width(), widget.height()
+    return (ndc[0] + 1.0) * 0.5 * w, (1.0 - ndc[1]) * 0.5 * h
+
+
+def _make_two_atom_widget3d(label1: str = "C1", elem1: str = "C",
+                            label2: str = "O1", elem2: str = "O",
+                            dx: float = 1.5) -> MoleculeWidget3D:
+    """Build a sized 3-D widget with two atoms ``dx`` Å apart on the X axis."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple(label1, elem1, 0.0, 0.0, 0.0, 0),
+        Atomtuple(label2, elem2, dx,  0.0, 0.0, 0),
+    ])
+    return widget
+
+
+def test_hover_atom_sets_hover_label_3d():
+    widget = _make_two_atom_widget3d()
+    sx, sy = _project_to_screen(widget, widget.atoms[0].center)
+
+    widget._update_hover(QtCore.QPointF(sx, sy))
+    assert widget._hover_atom_label == "C1"
+    # Atom hover wins → no bond hover state.
+    assert widget._hover_bond is None
+    assert widget._hover_bond_distance is None
+    assert widget._hover_cursor is None
+
+
+def test_hover_bond_records_distance_in_angstrom_3d():
+    widget = _make_two_atom_widget3d(dx=1.5)
+    a, b = widget.atoms[0], widget.atoms[1]
+    sx1, sy1 = _project_to_screen(widget, a.center)
+    sx2, sy2 = _project_to_screen(widget, b.center)
+    mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
+
+    widget._update_hover(QtCore.QPointF(mx, my))
+    assert widget._hover_bond == ("C1", "O1")
+    assert widget._hover_bond_distance == pytest.approx(1.5, abs=1e-3)
+    assert widget._hover_cursor is not None
+    assert widget._hover_cursor.x() == pytest.approx(mx)
+    assert widget._hover_cursor.y() == pytest.approx(my)
+    assert widget._hover_atom_label is None
+
+
+def test_hover_atom_priority_over_bond_3d():
+    """When the cursor sits over an atom, atom hover wins over bond hover."""
+    widget = _make_two_atom_widget3d(dx=1.5)
+    sx, sy = _project_to_screen(widget, widget.atoms[0].center)
+
+    widget._update_hover(QtCore.QPointF(sx, sy))
+    assert widget._hover_atom_label == "C1"
+    assert widget._hover_bond is None
+
+
+def test_hover_excludes_hidden_hydrogens_3d():
+    """A bond whose endpoint is a hidden hydrogen must not be hoverable."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("H1", "H", 1.0, 0.0, 0.0, 0),
+    ])
+    widget.show_hydrogens(False)
+
+    # Cursor over the hidden hydrogen position.
+    sx, sy = _project_to_screen(widget, widget.atoms[1].center)
+    widget._update_hover(QtCore.QPointF(sx, sy))
+    assert widget._hover_atom_label is None
+    assert widget._hover_bond is None
+
+    # Cursor on the bond midpoint between C1 and the hidden H1.
+    sx1, sy1 = _project_to_screen(widget, widget.atoms[0].center)
+    mx, my = (sx + sx1) / 2.0, (sy + sy1) / 2.0
+    widget._update_hover(QtCore.QPointF(mx, my))
+    assert widget._hover_bond is None
+
+
+def test_leave_event_clears_hover_state_3d():
+    widget = _make_two_atom_widget3d(dx=1.5)
+    a, b = widget.atoms[0], widget.atoms[1]
+    sx1, sy1 = _project_to_screen(widget, a.center)
+    sx2, sy2 = _project_to_screen(widget, b.center)
+    widget._update_hover(QtCore.QPointF((sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0))
+    assert widget._hover_bond is not None
+
+    widget.leaveEvent(QtCore.QEvent(QtCore.QEvent.Type.Leave))
+    assert widget._hover_atom_label is None
+    assert widget._hover_bond is None
+    assert widget._hover_bond_distance is None
+    assert widget._hover_cursor is None
+
+
+def test_drag_clears_hover_state_3d():
+    """A mouse drag must suppress both atom and bond hover labels."""
+    widget = _make_two_atom_widget3d(dx=1.5)
+    a, b = widget.atoms[0], widget.atoms[1]
+    sx1, sy1 = _project_to_screen(widget, a.center)
+    sx2, sy2 = _project_to_screen(widget, b.center)
+    mx, my = (sx1 + sx2) / 2.0, (sy1 + sy2) / 2.0
+    widget._update_hover(QtCore.QPointF(mx, my))
+    assert widget._hover_bond is not None
+
+    # Simulate the start of a left-button drag.
+    widget._lastPos = QtCore.QPointF(mx, my)
+    drag_event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseMove,
+        QtCore.QPointF(mx + 30, my + 30),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    widget.mouseMoveEvent(drag_event)
+
+    assert widget._hover_atom_label is None
+    assert widget._hover_bond is None
+    assert widget._hover_bond_distance is None
+    assert widget._hover_cursor is None
+
+
+def test_hover_state_default_values_3d():
+    """Newly constructed widget must have no hover state set."""
+    widget = MoleculeWidget3D()
+    assert widget._hover_atom_label is None
+    assert widget._hover_bond is None
+    assert widget._hover_bond_distance is None
+    assert widget._hover_cursor is None
+    # Mouse tracking must be enabled so hover events fire without a button.
+    assert widget.hasMouseTracking() is True
+

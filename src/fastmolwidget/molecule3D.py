@@ -807,6 +807,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._mouse_moved: bool = False
         # Label of the atom currently under the cursor (None if no atom hovered)
         self._hover_atom_label: str | None = None
+        # Bond currently under the cursor (sorted label tuple) and its
+        # Cartesian length in Å, plus the latest cursor position used to
+        # anchor the rounded distance label.
+        self._hover_bond: tuple[str, str] | None = None
+        self._hover_bond_distance: float | None = None
+        self._hover_cursor: QtCore.QPointF | None = None
         # Enable mouse-move events without a button held (for hover detection)
         self.setMouseTracking(True)
 
@@ -953,7 +959,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # renders into the painter's FBO which was never cleared, giving a
         # black background with only the rendered geometry composited on top.
         painter: QtGui.QPainter | None = None
-        if self.atoms and (self.labels or self._hover_atom_label is not None):
+        if self.atoms and (
+            self.labels
+            or self._hover_atom_label is not None
+            or self._hover_bond is not None
+        ):
             painter = QtGui.QPainter(self)
             painter.beginNativePainting()
         try:
@@ -1526,6 +1536,20 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             painter.setFont(hover_font)
             painter.drawText(pt[0] + 4, pt[1] - 4, hover_atom.label)
 
+        # Bond-distance hover label (only when no atom is hovered).
+        if (
+            hover_atom is None
+            and self._hover_bond is not None
+            and self._hover_bond_distance is not None
+            and self._hover_cursor is not None
+        ):
+            self._draw_hover_distance_label(
+                painter,
+                f"{self._hover_bond_distance:.3f} Å",
+                self._hover_cursor.x(),
+                self._hover_cursor.y(),
+            )
+
     # ------------------------------------------------------------------
     # Matrix helpers
     # ------------------------------------------------------------------
@@ -1916,6 +1940,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # Any drag suppresses the hover label until the mouse stops moving.
         if self._hover_atom_label is not None:
             self._hover_atom_label = None
+        if self._hover_bond is not None:
+            self._hover_bond = None
+            self._hover_bond_distance = None
+            self._hover_cursor = None
 
         if event.buttons() == Qt.MouseButton.LeftButton:
             # Arcball-style rotation
@@ -1972,24 +2000,118 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # type: ignore[override]
         """Clear the hovered-atom label when the cursor leaves the widget."""
+        changed = False
         if self._hover_atom_label is not None:
             self._hover_atom_label = None
+            changed = True
+        if self._hover_bond is not None:
+            self._hover_bond = None
+            self._hover_bond_distance = None
+            self._hover_cursor = None
+            changed = True
+        if changed:
             self.update()
         super().leaveEvent(event)
 
     def _update_hover(self, pos: QtCore.QPointF) -> None:
-        """Pick the atom under *pos* and refresh the hover label if it changed.
+        """Pick the atom (or, if none, the bond) under *pos* and refresh the
+        hover state if it changed.
 
-        Hidden hydrogens are excluded by :meth:`_pick_atom_at`.
+        Hidden hydrogens are excluded from both atom and bond picks.  Atom
+        hover takes priority over bond hover, so the rounded distance label
+        is only shown when the cursor is over a bond but not over any atom.
         """
         if not self.atoms:
-            new_label: str | None = None
+            new_atom: str | None = None
+            new_bond: tuple[str, str] | None = None
+            new_dist: float | None = None
         else:
-            atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()))
-            new_label = atom.label if atom is not None else None
-        if new_label != self._hover_atom_label:
-            self._hover_atom_label = new_label
+            sx, sy = float(pos.x()), float(pos.y())
+            mv = self._compute_mv_matrix()
+            atom, atom_t = self._pick_atom_at(sx, sy, mv=mv)
+            new_atom = atom.label if atom is not None else None
+            new_bond = None
+            new_dist = None
+            if atom is None:
+                # Bond pick – reuse exactly the same ray test as click selection.
+                proj = self._compute_proj_matrix()
+                best_t = float("inf")
+                best_pair: tuple[_Atom3D, _Atom3D] | None = None
+                for n1, n2 in self.connections:
+                    at1, at2 = self.atoms[n1], self.atoms[n2]
+                    if not self.show_hydrogens_flag and (
+                        at1.type_ in ("H", "D") or at2.type_ in ("H", "D")
+                    ):
+                        continue
+                    t = self._ray_bond_screen(
+                        sx, sy, at1.center, at2.center, mv, proj
+                    )
+                    if t is not None and t < best_t:
+                        best_t = t
+                        best_pair = (at1, at2)
+                if best_pair is not None:
+                    a, b = best_pair
+                    new_bond = tuple(sorted((a.label, b.label)))  # type: ignore[assignment]
+                    new_dist = float(np.linalg.norm(a.center - b.center))
+
+        changed = (
+            new_atom != self._hover_atom_label
+            or new_bond != self._hover_bond
+            or (new_bond is not None and self._hover_cursor != pos)
+        )
+        self._hover_atom_label = new_atom
+        self._hover_bond = new_bond
+        self._hover_bond_distance = new_dist
+        self._hover_cursor = QtCore.QPointF(pos) if new_bond is not None else None
+        if changed:
             self.update()
+
+    def _draw_hover_distance_label(
+        self,
+        painter: QtGui.QPainter,
+        text: str,
+        cx: float,
+        cy: float,
+    ) -> None:
+        """Render *text* in a rounded, semi-transparent box near *(cx, cy)*.
+
+        The fill is a blend of *Himmelblau* and *Mintgrün* with mild
+        transparency; the border is a thin neutral grey.
+        """
+        font = QtGui.QFont()
+        font.setPixelSize(max(1, self.fontsize))
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = QtGui.QFontMetrics(font)
+        pad_x, pad_y = 6.0, 3.0
+        tw = metrics.horizontalAdvance(text)
+        th = metrics.height()
+
+        # Place the box just below-right of the cursor; clamp to widget bounds.
+        box_w = tw + 2 * pad_x
+        box_h = th + 2 * pad_y
+        x = cx + 14.0
+        y = cy + 14.0
+        w = max(1, self.width())
+        h = max(1, self.height())
+        if x + box_w > w:
+            x = cx - 14.0 - box_w
+        if y + box_h > h:
+            y = cy - 14.0 - box_h
+        rect = QtCore.QRectF(x, y, box_w, box_h)
+
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(QtGui.QColor(143, 230, 193, 220))  # Himmelblau ↔ Mintgrün
+        painter.setPen(QtGui.QPen(QtGui.QColor(60, 60, 60, 220), 1.0))
+        painter.drawRoundedRect(rect, 5.0, 5.0)
+        painter.setPen(QtGui.QColor(20, 20, 20))
+        painter.drawText(
+            rect,
+            int(QtCore.Qt.AlignmentFlag.AlignCenter),
+            text,
+        )
+        painter.restore()
 
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
         """Scroll wheel adjusts label font size."""

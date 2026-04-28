@@ -164,6 +164,11 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Hover-label support: the name of the atom currently under the cursor.
         self.hovered_atom: str | None = None
+        # Bond hover state: sorted (label1, label2), Cartesian distance in Å,
+        # and latest cursor position used to anchor the rounded distance label.
+        self.hovered_bond: tuple[str, str] | None = None
+        self._hovered_bond_distance: float | None = None
+        self._hover_cursor: QtCore.QPointF | None = None
         self.setMouseTracking(True)
         self.atomClicked.connect(lambda x: print(f"Atom Selected: {x}"))
         self.bondClicked.connect(lambda x, y: print(f"Bond Selected: {x}-{y}"))
@@ -656,46 +661,137 @@ class MoleculeWidget(QtWidgets.QWidget):
         """Dispatch drag events to rotate, zoom, or pan depending on the mouse button."""
         if event.buttons() == QtCore.Qt.MouseButton.LeftButton:
             self.rotate_molecule(event)
+            self._clear_hover_state()
         elif event.buttons() == QtCore.Qt.MouseButton.RightButton:
             self.zoom_molecule(event)
+            self._clear_hover_state()
         elif event.buttons() == QtCore.Qt.MouseButton.MiddleButton:
             self.pan_molecule(event)
+            self._clear_hover_state()
         else:
             self._update_hover(event.position().x(), event.position().y())
         self._lastPos = event.position()
 
+    def _clear_hover_state(self) -> None:
+        """Suppress hover labels while the user is dragging the view."""
+        if self.hovered_atom is not None or self.hovered_bond is not None:
+            self.hovered_atom = None
+            self.hovered_bond = None
+            self._hovered_bond_distance = None
+            self._hover_cursor = None
+
     def leaveEvent(self, event: QtCore.QEvent) -> None:
         """Clear the hovered-atom label when the cursor leaves the widget."""
+        changed = False
         if self.hovered_atom is not None:
             self.hovered_atom = None
+            changed = True
+        if self.hovered_bond is not None:
+            self.hovered_bond = None
+            self._hovered_bond_distance = None
+            self._hover_cursor = None
+            changed = True
+        if changed:
             self.update()
         super().leaveEvent(event)
 
     def _update_hover(self, px: float, py: float) -> None:
-        """Update :attr:`hovered_atom` from screen coordinates *(px, py)*.
+        """Update :attr:`hovered_atom` / :attr:`hovered_bond` from screen
+        coordinates *(px, py)*.
 
-        Uses the same hit test as left-click selection. Hidden hydrogens are
-        excluded so they never receive a hover label.
+        Uses the same hit tests as left-click selection. Atom hover takes
+        priority over bond hover; hidden hydrogens (and bonds touching them)
+        are excluded so they never trigger a hover label.
         """
         if not self.atoms:
             return
         hydrogens = ('H', 'D')
-        new_hover: str | None = None
+
+        new_atom: str | None = None
+        new_bond: tuple[str, str] | None = None
+        new_dist: float | None = None
         front_z = float('inf')
         # Iterate front-to-back via z_order populated in calculate_z_order().
         for item in self.objects:
             if item.is_bond:
-                continue
-            atom = item.atom1
-            if not self.show_hydrogens_flag and atom.type_ in hydrogens:
-                continue
-            if self.is_point_inside_atom(atom, px, py):
-                if item.z_order < front_z:
-                    front_z = item.z_order
-                    new_hover = atom.name
-        if new_hover != self.hovered_atom:
-            self.hovered_atom = new_hover
+                at1, at2 = item.atom1, item.atom2
+                if not self.show_hydrogens_flag and (
+                    at1.type_ in hydrogens or at2.type_ in hydrogens
+                ):
+                    continue
+                if self.is_point_near_bond(at1, at2, px, py):
+                    if item.z_order < front_z:
+                        front_z = item.z_order
+                        new_bond = tuple(sorted((at1.name, at2.name)))
+                        new_atom = None
+                        # Distance in Å – rotation preserves Euclidean length,
+                        # so the live (rotated) coordinates are fine.
+                        new_dist = float(
+                            np.linalg.norm(at1.coordinate - at2.coordinate)
+                        )
+            else:
+                atom = item.atom1
+                if not self.show_hydrogens_flag and atom.type_ in hydrogens:
+                    continue
+                if atom.type_ in hydrogens:
+                    # Hydrogens never get a label, even when displayed.
+                    continue
+                if self.is_point_inside_atom(atom, px, py):
+                    if item.z_order < front_z:
+                        front_z = item.z_order
+                        new_atom = atom.name
+                        new_bond = None
+                        new_dist = None
+
+        cursor = QtCore.QPointF(px, py)
+        changed = (
+            new_atom != self.hovered_atom
+            or new_bond != self.hovered_bond
+            or (new_bond is not None and self._hover_cursor != cursor)
+        )
+        self.hovered_atom = new_atom
+        self.hovered_bond = new_bond
+        self._hovered_bond_distance = new_dist
+        self._hover_cursor = cursor if new_bond is not None else None
+        if changed:
             self.update()
+
+    def _draw_hover_distance_label(self, text: str, cx: float, cy: float) -> None:
+        """Render *text* in a rounded, semi-transparent box near *(cx, cy)*.
+
+        Fill colour blends *Himmelblau* and *Mintgrün* with mild transparency.
+        """
+        font = self._painter.font()
+        hover_font = QtGui.QFont(font)
+        hover_font.setPixelSize(max(1, self.fontsize))
+        hover_font.setBold(True)
+        self._painter.setFont(hover_font)
+        metrics = QtGui.QFontMetrics(hover_font)
+        pad_x, pad_y = 6.0, 3.0
+        tw = metrics.horizontalAdvance(text)
+        th = metrics.height()
+
+        box_w = tw + 2 * pad_x
+        box_h = th + 2 * pad_y
+        x = cx + 14.0
+        y = cy + 14.0
+        w = max(1, self.width())
+        h = max(1, self.height())
+        if x + box_w > w:
+            x = cx - 14.0 - box_w
+        if y + box_h > h:
+            y = cy - 14.0 - box_h
+        rect = QRectF(x, y, box_w, box_h)
+
+        self._painter.save()
+        self._painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._painter.setBrush(QColor(143, 230, 193, 220))
+        self._painter.setPen(QPen(QColor(60, 60, 60, 220), 1.0))
+        self._painter.drawRoundedRect(rect, 5.0, 5.0)
+        self._painter.setPen(QColor(20, 20, 20))
+        self._painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)
+        self._painter.restore()
+        self._painter.setFont(font)
 
     def pan_molecule(self, event):
         """Translate the molecule center based on the middle-button drag delta."""
@@ -800,6 +896,19 @@ class MoleculeWidget(QtWidgets.QWidget):
                     self.draw_label(item.atom1, enlarged=is_hovered)
                 elif is_hovered:
                     self.draw_label(item.atom1, enlarged=True)
+
+        # Bond-distance hover label – drawn last so it sits above everything.
+        if (
+            self.hovered_atom is None
+            and self.hovered_bond is not None
+            and self._hovered_bond_distance is not None
+            and self._hover_cursor is not None
+        ):
+            self._draw_hover_distance_label(
+                f"{self._hovered_bond_distance:.3f} Å",
+                self._hover_cursor.x(),
+                self._hover_cursor.y(),
+            )
         self._painter.end()
 
     def calculate_z_order(self):
