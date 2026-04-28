@@ -66,6 +66,9 @@ class CifReader:
                 raise GemmiError(e)
         # Starting with first block, but can use others with subsequent self._onload():
         self.block: gemmi.cif.Block = self.doc[0]
+        if self.block.name == 'New_Global_Publ_Block':
+            # Special case for PublCif files.
+            self.block: gemmi.cif.Block = self.doc[1]
         self._on_load()
 
     @property

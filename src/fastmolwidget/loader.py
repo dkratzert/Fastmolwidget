@@ -48,6 +48,8 @@ class MoleculeLoader:
     def __init__(self, widget: MoleculeWidget) -> None:
         self._widget = widget
         self._grow_enabled: bool = False
+        self._pack_enabled: bool = False
+        self._pack_symmop_indices: list[int] | None = None
         self._last_path: Path | None = None
 
     @property
@@ -88,12 +90,40 @@ class MoleculeLoader:
 
         Grow expands the asymmetric unit to complete molecules using crystal
         symmetry.  Has no effect when the last loaded file is an XYZ (no
-        symmetry information).
+        symmetry information).  When :meth:`set_pack` is active, pack mode
+        takes priority and grow does nothing until pack is disabled.
 
         :param enabled: ``True`` to enable structure growing, ``False`` to
             revert to the bare asymmetric unit.
         """
         self._grow_enabled = enabled
+        if (self._last_path is not None
+                and self._last_path.suffix.lower() in self._GROWABLE_FORMATS
+                and not self._pack_enabled):
+            self.load_file(self._last_path, keep_view=True)
+
+    def set_pack(
+        self,
+        enabled: bool,
+        symmop_indices: list[int] | None = None,
+    ) -> None:
+        """Toggle unit-cell packing mode and reload the current file.
+
+        Packing generates all symmetry-equivalent positions within one unit
+        cell.  Positions closer than the default tolerance to an already-added
+        atom are discarded as duplicates.  When pack is enabled it takes
+        priority over :meth:`set_grow`.
+
+        :param enabled: ``True`` to enable packing, ``False`` to revert to the
+            asymmetric unit (or to grown molecules if grow is still active).
+        :param symmop_indices: Optional list of 0-based symmetry-operation
+            indices (referring to the internal ``SymmCards`` list, including the
+            identity at index 0) to apply.  ``None`` applies all operations
+            from the space group, including the inversion centre for
+            centrosymmetric structures.
+        """
+        self._pack_enabled = enabled
+        self._pack_symmop_indices = symmop_indices
         if (self._last_path is not None
                 and self._last_path.suffix.lower() in self._GROWABLE_FORMATS):
             self.load_file(self._last_path, keep_view=True)
@@ -105,17 +135,41 @@ class MoleculeLoader:
     def _load_cif(self, path: Path, *, keep_view: bool = False) -> None:
         """Load a CIF file using :class:`CifReader`."""
         cif = CifReader(path)
-        atoms = (
-            self._compute_grown_atoms(cif)
-            if self._grow_enabled
-            else list(cif.atoms_orth)
-        )
+        if self._pack_enabled:
+            atoms = self._compute_packed_atoms_cif(cif, self._pack_symmop_indices)
+        elif self._grow_enabled:
+            atoms = self._compute_grown_atoms(cif)
+        else:
+            atoms = list(cif.atoms_orth)
         self._widget.open_molecule(
             atoms=atoms,
             cell=cif.cell[:6],
             adps=self._load_adps_from_cif(cif.displacement_parameters()),
             keep_view=keep_view,
         )
+
+    @staticmethod
+    def _compute_packed_atoms_cif(
+        cif: CifReader,
+        symmop_indices: list[int] | None = None,
+    ) -> list:
+        """Pack one complete unit cell from a CIF.
+
+        Applies all (or selected) symmetry operations to the fractional-
+        coordinate atoms and folds every position back into [0, 1).
+        Near-duplicate positions are discarded automatically.
+
+        :param cif: The parsed CIF to pack.
+        :param symmop_indices: Optional subset of 0-based symmetry-operation
+            indices.  ``None`` uses all operations from the space group.
+        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
+            coordinates covering one unit cell.
+        """
+        from fastmolwidget.sdm import SDM
+
+        fract_atoms = list(cif.atoms_fract)
+        sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
+        return sdm.pack_unit_cell(symmop_indices=symmop_indices)
 
     @staticmethod
     def _compute_grown_atoms(cif: CifReader) -> list:
@@ -167,7 +221,9 @@ class MoleculeLoader:
         """Load a SHELX instruction (.res / .ins) file using the
         :mod:`shelxfile` library."""
         atoms, cell, adps = self._parse_shelx(path)
-        if self._grow_enabled:
+        if self._pack_enabled:
+            atoms = self._compute_packed_atoms_shelx(path, self._pack_symmop_indices)
+        elif self._grow_enabled:
             atoms = self._compute_grown_atoms_shelx(path)
         self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
                                    keep_view=keep_view)
@@ -213,6 +269,48 @@ class MoleculeLoader:
         sdm = SDM(fract_atoms, symmops, cell_params, centric=centric)
         need_symm = sdm.calc_sdm()
         return sdm.packer(sdm, need_symm)
+
+    @staticmethod
+    def _compute_packed_atoms_shelx(
+        path: Path,
+        symmop_indices: list[int] | None = None,
+    ) -> list:
+        """Pack one complete unit cell from a SHELX file.
+
+        Applies all (or selected) symmetry operations to the fractional-
+        coordinate atoms and folds every position back into [0, 1).
+        Near-duplicate positions are discarded automatically.
+
+        :param path: Path to the SHELX ``.res`` / ``.ins`` file.
+        :param symmop_indices: Optional subset of 0-based symmetry-operation
+            indices.  ``None`` uses all operations from the space group.
+        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
+            coordinates covering one unit cell.
+        """
+        from fastmolwidget.sdm import SDM
+
+        shx = Shelxfile()
+        shx.read_file(path)
+
+        cell_params: tuple[float, float, float, float, float, float] = (
+            shx.cell.a, shx.cell.b, shx.cell.c,
+            shx.cell.alpha, shx.cell.beta, shx.cell.gamma,
+        )
+
+        fract_atoms: list[list] = []
+        for at in shx.atoms:
+            if at.qpeak:
+                continue
+            x, y, z = at.frac_coords
+            fract_atoms.append(
+                [at.name, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
+            )
+
+        symmops: list[str] = [s.to_shelxl() for s in shx.symmcards]
+        centric = shx.latt.centric if shx.latt else False
+
+        sdm = SDM(fract_atoms, symmops, cell_params, centric=centric)
+        return sdm.pack_unit_cell(symmop_indices=symmop_indices)
 
     # ------------------------------------------------------------------
     # XYZ loading

@@ -94,7 +94,6 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.bond_width = 3
         self.labels = True
         self._show_adps = True
-        self.bond_drawer = self._draw_bond_rounded
 
         self.show_hydrogens_flag = True
 
@@ -163,6 +162,14 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.labels = True
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # Hover-label support: the name of the atom currently under the cursor.
+        self.hovered_atom: str | None = None
+        # Bond hover state: sorted (label1, label2), Cartesian distance in Å,
+        # and latest cursor position used to anchor the rounded distance label.
+        self.hovered_bond: tuple[str, str] | None = None
+        self._hovered_bond_distance: float | None = None
+        self._hover_cursor: QtCore.QPointF | None = None
+        self.setMouseTracking(True)
         self.atomClicked.connect(lambda x: print(f"Atom Selected: {x}"))
         self.bondClicked.connect(lambda x, y: print(f"Bond Selected: {x}-{y}"))
 
@@ -189,6 +196,57 @@ class MoleculeWidget(QtWidgets.QWidget):
         """Set the width of the bonds."""
         self.bond_width = width
         self.update()
+
+    def set_bond_color(self, color: QColor | str | tuple[float, float, float] | tuple[int, int, int]) -> None:
+        """Set the default color used for all non-selected bonds.
+
+        Updates both the flat-bond color (used by :meth:`_draw_bond`) and the
+        cylinder-gradient brush (used by :meth:`_draw_bond_rounded`), so the
+        change is visible regardless of the current bond-rendering mode.
+
+        :param color: A QColor instance, hex string (e.g. ``"#d1812a"``), or
+            RGB tuple – either ``(r, g, b)`` floats in ``[0..1]`` or integers
+            in ``[0..255]``.
+        """
+        if isinstance(color, QColor):
+            self.bond_color = color
+        elif isinstance(color, str):
+            self.bond_color = QColor(color)
+        elif isinstance(color, tuple) and len(color) == 3:
+            r, g, b = color
+            if all(isinstance(c, (int, float)) for c in (r, g, b)):
+                if all(c <= 1.0 for c in (r, g, b)):
+                    self.bond_color = QColor(int(r * 255), int(g * 255), int(b * 255))
+                else:
+                    self.bond_color = QColor(int(r), int(g), int(b))
+            else:
+                raise ValueError("RGB tuple components must be numeric.")
+        else:
+            raise ValueError(
+                "Bond color must be a QColor, hex string, or RGB tuple (0..1 or 0..255)."
+            )
+        # Rebuild the cylinder-gradient brush so _draw_bond_rounded also
+        # reflects the new colour.
+        self._rebuild_bond_brush()
+        self.update()
+
+    def _rebuild_bond_brush(self) -> None:
+        """Recreate :attr:`bond_brush` from the current :attr:`bond_color`.
+
+        Called automatically by :meth:`set_bond_color`.  The gradient uses
+        darker / lighter variants of the base colour to preserve the 3-D
+        cylinder shading illusion.
+        """
+        base = self.bond_color
+        dark   = base.darker(170)
+        light  = base.lighter(160)
+        shadow = base.darker(280)
+
+        bg = QLinearGradient(0, 1, 0, -1)
+        bg.setColorAt(0.0, dark)
+        bg.setColorAt(0.2, light)
+        bg.setColorAt(1.0, shadow)
+        self.bond_brush = QBrush(bg)
 
     def set_labels_visible(self, visible: bool):
         """Toggle visibility of atom labels."""
@@ -230,14 +288,6 @@ class MoleculeWidget(QtWidgets.QWidget):
     def show_adps(self, value: bool):
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
         self._show_adps = value
-        self.update()
-
-    def show_round_bonds(self, bond_type: bool = True):
-        """Switch between flat and 3D-shaded (rounded) bond rendering."""
-        if not bond_type:
-            self.bond_drawer = self._draw_bond
-        else:
-            self.bond_drawer = self._draw_bond_rounded
         self.update()
 
     def open_molecule(self,
@@ -611,11 +661,137 @@ class MoleculeWidget(QtWidgets.QWidget):
         """Dispatch drag events to rotate, zoom, or pan depending on the mouse button."""
         if event.buttons() == QtCore.Qt.MouseButton.LeftButton:
             self.rotate_molecule(event)
+            self._clear_hover_state()
         elif event.buttons() == QtCore.Qt.MouseButton.RightButton:
             self.zoom_molecule(event)
+            self._clear_hover_state()
         elif event.buttons() == QtCore.Qt.MouseButton.MiddleButton:
             self.pan_molecule(event)
+            self._clear_hover_state()
+        else:
+            self._update_hover(event.position().x(), event.position().y())
         self._lastPos = event.position()
+
+    def _clear_hover_state(self) -> None:
+        """Suppress hover labels while the user is dragging the view."""
+        if self.hovered_atom is not None or self.hovered_bond is not None:
+            self.hovered_atom = None
+            self.hovered_bond = None
+            self._hovered_bond_distance = None
+            self._hover_cursor = None
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:
+        """Clear the hovered-atom label when the cursor leaves the widget."""
+        changed = False
+        if self.hovered_atom is not None:
+            self.hovered_atom = None
+            changed = True
+        if self.hovered_bond is not None:
+            self.hovered_bond = None
+            self._hovered_bond_distance = None
+            self._hover_cursor = None
+            changed = True
+        if changed:
+            self.update()
+        super().leaveEvent(event)
+
+    def _update_hover(self, px: float, py: float) -> None:
+        """Update :attr:`hovered_atom` / :attr:`hovered_bond` from screen
+        coordinates *(px, py)*.
+
+        Uses the same hit tests as left-click selection. Atom hover takes
+        priority over bond hover; hidden hydrogens (and bonds touching them)
+        are excluded so they never trigger a hover label.
+        """
+        if not self.atoms:
+            return
+        hydrogens = ('H', 'D')
+
+        new_atom: str | None = None
+        new_bond: tuple[str, str] | None = None
+        new_dist: float | None = None
+        front_z = float('inf')
+        # Iterate front-to-back via z_order populated in calculate_z_order().
+        for item in self.objects:
+            if item.is_bond:
+                at1, at2 = item.atom1, item.atom2
+                if not self.show_hydrogens_flag and (
+                    at1.type_ in hydrogens or at2.type_ in hydrogens
+                ):
+                    continue
+                if self.is_point_near_bond(at1, at2, px, py):
+                    if item.z_order < front_z:
+                        front_z = item.z_order
+                        new_bond = tuple(sorted((at1.name, at2.name)))
+                        new_atom = None
+                        # Distance in Å – rotation preserves Euclidean length,
+                        # so the live (rotated) coordinates are fine.
+                        new_dist = float(
+                            np.linalg.norm(at1.coordinate - at2.coordinate)
+                        )
+            else:
+                atom = item.atom1
+                if not self.show_hydrogens_flag and atom.type_ in hydrogens:
+                    continue
+                if atom.type_ in hydrogens:
+                    # Hydrogens never get a label, even when displayed.
+                    continue
+                if self.is_point_inside_atom(atom, px, py):
+                    if item.z_order < front_z:
+                        front_z = item.z_order
+                        new_atom = atom.name
+                        new_bond = None
+                        new_dist = None
+
+        cursor = QtCore.QPointF(px, py)
+        changed = (
+            new_atom != self.hovered_atom
+            or new_bond != self.hovered_bond
+            or (new_bond is not None and self._hover_cursor != cursor)
+        )
+        self.hovered_atom = new_atom
+        self.hovered_bond = new_bond
+        self._hovered_bond_distance = new_dist
+        self._hover_cursor = cursor if new_bond is not None else None
+        if changed:
+            self.update()
+
+    def _draw_hover_distance_label(self, text: str, cx: float, cy: float) -> None:
+        """Render *text* in a rounded, semi-transparent box near *(cx, cy)*.
+
+        Fill colour blends *Himmelblau* and *Mintgrün* with mild transparency.
+        """
+        font = self._painter.font()
+        hover_font = QtGui.QFont(font)
+        hover_font.setPixelSize(max(1, self.fontsize))
+        hover_font.setBold(True)
+        self._painter.setFont(hover_font)
+        metrics = QtGui.QFontMetrics(hover_font)
+        pad_x, pad_y = 6.0, 3.0
+        tw = metrics.horizontalAdvance(text)
+        th = metrics.height()
+
+        box_w = tw + 2 * pad_x
+        box_h = th + 2 * pad_y
+        x = cx + 14.0
+        y = cy + 14.0
+        w = max(1, self.width())
+        h = max(1, self.height())
+        if x + box_w > w:
+            x = cx - 14.0 - box_w
+        if y + box_h > h:
+            y = cy - 14.0 - box_h
+        rect = QRectF(x, y, box_w, box_h)
+
+        self._painter.save()
+        self._painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        self._painter.setBrush(QColor(143, 230, 193, 220))
+        self._painter.setPen(QPen(QColor(60, 60, 60, 220), 1.0))
+        self._painter.drawRoundedRect(rect, 5.0, 5.0)
+        self._painter.setPen(QColor(20, 20, 20))
+        self._painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)
+        self._painter.restore()
+        self._painter.setFont(font)
 
     def pan_molecule(self, event):
         """Translate the molecule center based on the middle-button drag delta."""
@@ -710,11 +886,29 @@ class MoleculeWidget(QtWidgets.QWidget):
                 if item.atom1.type_ in hydrogens or (item.is_bond and item.atom2.type_ in hydrogens):
                     continue
             if item.is_bond:
-                self.bond_drawer(item.atom1, item.atom2)
+                self._draw_bond_rounded(item.atom1, item.atom2)
             else:
                 self.draw_atom(item.atom1)
-                if self.labels and item.atom1.type_ not in hydrogens:
-                    self.draw_label(item.atom1)
+                is_hovered = item.atom1.name == self.hovered_atom
+                if self.labels and not is_hovered:
+                    if item.atom1.type_ in hydrogens:
+                        continue
+                    self.draw_label(item.atom1, enlarged=is_hovered)
+                elif is_hovered:
+                    self.draw_label(item.atom1, enlarged=True)
+
+        # Bond-distance hover label – drawn last so it sits above everything.
+        if (
+            self.hovered_atom is None
+            and self.hovered_bond is not None
+            and self._hovered_bond_distance is not None
+            and self._hover_cursor is not None
+        ):
+            self._draw_hover_distance_label(
+                f"{self._hovered_bond_distance:.3f} Å",
+                self._hover_cursor.x(),
+                self._hover_cursor.y(),
+            )
         self._painter.end()
 
     def calculate_z_order(self):
@@ -815,24 +1009,6 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         pen = QPen(self.bond_brush, dynamic_width, Qt.PenStyle.SolidLine)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)  # Creates perfect elliptical intersection blend
-        self._painter.setPen(pen)
-        self._painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-    def _draw_bond(self, at1: Atom, at2: Atom) -> None:
-        """Draw a flat single-colour bond between two atoms."""
-        line_data = self._get_bond_line(at1, at2)
-        if not line_data:
-            return
-
-        x1, y1, x2, y2, dynamic_width = line_data
-
-        # Check Selection
-        bond_key = tuple(sorted((at1.name, at2.name)))
-        if bond_key in self.selected_bonds:
-            self._draw_bond_selection(x1, y1, x2, y2, dynamic_width)
-
-        pen = QPen(self.bond_color, dynamic_width, Qt.PenStyle.SolidLine)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self._painter.setPen(pen)
         self._painter.drawLine(int(x1), int(y1), int(x2), int(y2))
 
@@ -1032,8 +1208,8 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         # Colors for shading (light source top-left)
         color_base = atom.color
-        color_light = atom.color_light
-        color_dark = atom.color_dark
+        color_light = atom.color.lighter(160)
+        color_dark = atom.color.darker(180)
 
         pen = QPen(self.fallback_pen_color, 1)
         self._painter.setPen(pen)
@@ -1059,11 +1235,24 @@ class MoleculeWidget(QtWidgets.QWidget):
         font.setPixelSize(old_size)
         self._painter.setFont(font)
 
-    def draw_label(self, atom: Atom):
-        """Draw the atom's name next to its ellipsoid/sphere."""
+    def draw_label(self, atom: Atom, enlarged: bool = False):
+        """Draw the atom's name next to its ellipsoid/sphere.
+
+        :param enlarged: When ``True`` (used for the hovered atom) the label
+            is rendered with a slightly larger, bold font.
+        """
         self._painter.setPen(QPen(QColor(100, 50, 5), 2, Qt.PenStyle.SolidLine))
         r_pix = self.get_spherical_radius(atom) * self.scale
-        self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
+        if enlarged:
+            base_font = self._painter.font()
+            hover_font = QtGui.QFont(base_font)
+            hover_font.setPixelSize(max(1, self.fontsize + 4))
+            hover_font.setBold(True)
+            self._painter.setFont(hover_font)
+            self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
+            self._painter.setFont(base_font)
+        else:
+            self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)
 
     def get_conntable_from_atoms(self, extra_param: float = 1.2) -> tuple:
         """Build a connectivity table from atomic coordinates and covalent radii."""

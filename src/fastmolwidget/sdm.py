@@ -8,11 +8,12 @@
 # Daniel Kratzert
 # ----------------------------------------------------------------------------
 #
-
+from __future__ import annotations
 
 import time
 from collections import namedtuple
 from math import sqrt, cos, radians, sin, floor
+from operator import attrgetter
 from typing import TYPE_CHECKING
 
 try:
@@ -23,10 +24,10 @@ except ImportError:
     HAS_CPP = False
 
 from fastmolwidget.atoms import get_radius_from_element
-from fastmolwidget.dsrmath import Array, SymmetryElement, Matrix, frac_to_cart
+from fastmolwidget.dsrmath import SymmetryElement, frac_to_cart
 
 if TYPE_CHECKING:
-    from cif.cif_file_io import CifReader
+    pass
 
 DEBUG = False
 Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix'), defaults=(None,))
@@ -85,7 +86,7 @@ class SDMItem:
     def __lt__(self, a2) -> bool:
         return True if self.dist < a2.dist else False
 
-    def __eq__(self, other: 'SDMItem') -> bool:
+    def __eq__(self, other: SDMItem) -> bool:
         if other.a1 == self.a2 and other.a2 == self.a1:
             return True
         return False
@@ -127,16 +128,6 @@ class SDM:
         self.maxmol = 1
         self.sdmtime = 0
 
-    def orthogonal_matrix(self) -> Matrix:
-        """
-        Converts von fractional to cartesian.
-        """
-        return Matrix([[self.cell[0], self.cell[1] * cos(self.cell[5]), self.cell[2] * cos(self.cell[4])],
-                       [0, self.cell[1] * sin(self.cell[5]),
-                        (self.cell[2] * (cos(self.cell[3]) - cos(self.cell[4]) * cos(self.cell[5])) / sin(
-                            self.cell[5]))],
-                       [0, 0, self.cell[6] / (self.cell[0] * self.cell[1] * sin(self.cell[5]))]])
-
     def calc_sdm(self) -> list:
         t1 = time.perf_counter()
         h = {'H', 'D'}
@@ -145,7 +136,7 @@ class SDM:
         symm_m = []
         symm_t = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         # C++ Fast Path
@@ -248,7 +239,7 @@ class SDM:
         self.sdmtime = t2 - t1
         print(f'Time for sdm {"(C++)" if HAS_CPP else "(Python fallback)"}:', round(self.sdmtime, 4), 's')
 
-        self.sdm_list.sort()
+        self.sdm_list.sort(key=attrgetter('dist'))
         self.calc_molindex(self.atoms)
         need_symm = self.collect_needed_symmetry()
         if DEBUG:
@@ -262,7 +253,7 @@ class SDM:
         symm_m = []
         symm_t = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         aga, bbe, cal = self.aga, self.bbe, self.cal
@@ -320,29 +311,150 @@ class SDM:
         return need_symm
 
     def calc_molindex(self, all_atoms):
-        # Start for George's "bring atoms together algorithm":
-        someleft = 1
-        nextmol = 1
+        """Assign a molecule index to every atom using Union-Find (path-halving +
+        union-by-rank).  Replaces the original O(K·|sdm_list|) repeated-scan loop
+        with an essentially linear O(N + M·α(N)) algorithm.
+
+        The last element of each atom list is set to its molecule index (1-based),
+        matching the contract expected by collect_needed_symmetry() and packer().
+        """
+        n = len(all_atoms)
         for at in all_atoms:
-            at.append(-1)
-        all_atoms[0][-1] = 1
-        while nextmol:
-            someleft = 1
-            nextmol = 0
-            while someleft:
-                someleft = 0
-                for sdm_item in self.sdm_list:
-                    if sdm_item.covalent and sdm_item.atom1[-1] * sdm_item.atom2[-1] < 0:
-                        sdm_item.atom1[-1] = self.maxmol  # last item is the molindex
-                        sdm_item.atom2[-1] = self.maxmol
-                        someleft += 1
-            for ni, at in enumerate(all_atoms):
-                if at[-1] < 0:
-                    nextmol = ni
-                    break
-            if nextmol:
-                self.maxmol += 1
-                all_atoms[nextmol][-1] = self.maxmol
+            at.append(-1)  # reserve the molindex slot (keeps original API)
+
+        # ── Union-Find with path-halving and union-by-rank ────────────────────
+        parent = list(range(n))
+        rank = [0] * n
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]  # path halving (no recursion)
+                x = parent[x]
+            return x
+
+        def union(x: int, y: int) -> None:
+            rx, ry = find(x), find(y)
+            if rx == ry:
+                return
+            if rank[rx] < rank[ry]:
+                rx, ry = ry, rx
+            parent[ry] = rx
+            if rank[rx] == rank[ry]:
+                rank[rx] += 1
+
+        for sdm_item in self.sdm_list:
+            if sdm_item.covalent:
+                union(sdm_item.a1, sdm_item.a2)
+
+        # ── assign sequential 1-based molecule indices ────────────────────────
+        root_to_mol: dict[int, int] = {}
+        mol_counter = 0
+        for i in range(n):
+            root = find(i)
+            if root not in root_to_mol:
+                mol_counter += 1
+                root_to_mol[root] = mol_counter
+            all_atoms[i][-1] = root_to_mol[root]
+
+        self.maxmol = mol_counter
+
+    def pack_unit_cell(
+            self,
+            symmop_indices: list[int] | None = None,
+            *,
+            cart_tolerance: float = 0.2,
+    ) -> list[Atomtuple]:
+        """Pack all symmetry-equivalent positions into one unit cell.
+
+        For every atom in the asymmetric unit every selected symmetry
+        operation is applied and the result is folded back into [0, 1)
+        fractional coordinates.  Positions that are already occupied within
+        *cart_tolerance* Ångström (with periodic boundary conditions) are
+        discarded as duplicates.  The threshold matches the one used by the
+        molecule-grow :meth:`packer`.
+
+        This call can be made on a fresh :class:`SDM` object before
+        :meth:`calc_sdm` — it does **not** require the SDM to have been run.
+
+        :param symmop_indices: 0-based indices into the internal
+            :class:`SymmCards` list (identity is always index 0).  ``None``
+            applies all operations including the inversion centre when the
+            structure is centrosymmetric.
+        :param cart_tolerance: Cartesian distance threshold (Å) for duplicate
+            detection with periodic boundary conditions.  Default 0.2 Å
+            matches the grow packer.
+        :returns: List of :class:`Atomtuple` in Cartesian Ångström coordinates.
+        """
+        selected: list[int] = (
+            list(range(len(self.symmcards)))
+            if symmop_indices is None
+            else list(symmop_indices)
+        )
+
+        symm_m: list = []
+        symm_t: list = []
+        for s in self.symmcards:
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
+            symm_t.append(tuple(s.trans))
+
+        cell = self.cell[:6]
+
+        # packed entries: [label, type, fx, fy, fz, part, cx, cy, cz, matrix]
+        # cx/cy/cz are Cartesian Å (for fast distance checks)
+        packed: list[list] = []
+
+        for at in self.atoms:
+            x1, y1, z1 = at[2], at[3], at[4]
+            part = at[5]
+            label = at[0]
+            elem = at[1]
+
+            for idx in selected:
+                m = symm_m[idx]
+                t = symm_t[idx]
+
+                # Apply symmetry operation (column-major, matching packer())
+                px = x1 * m[0][0] + y1 * m[1][0] + z1 * m[2][0] + t[0]
+                py = x1 * m[0][1] + y1 * m[1][1] + z1 * m[2][1] + t[1]
+                pz = x1 * m[0][2] + y1 * m[1][2] + z1 * m[2][2] + t[2]
+
+                # Fold into [0, 1)
+                px %= 1.0
+                py %= 1.0
+                pz %= 1.0
+
+                # Duplicate check using Cartesian distances with PBCs.
+                # Fractional difference folded to [−0.5, 0.5] → then
+                # converted to Å via vector_length() — same as packer().
+                is_dup = False
+                for ex in packed:
+                    # Atoms in different (non-zero) disorder parts cannot
+                    # be duplicates of each other.
+                    if ex[5] != 0 and part != 0 and ex[5] != part:
+                        continue
+                    ddx = px - ex[2];
+                    ddx -= round(ddx)
+                    ddy = py - ex[3];
+                    ddy -= round(ddy)
+                    ddz = pz - ex[4];
+                    ddz -= round(ddz)
+                    if self.vector_length(ddx, ddy, ddz) < cart_tolerance:
+                        is_dup = True
+                        break
+
+                if not is_dup:
+                    cx, cy, cz = frac_to_cart([px, py, pz], cell)
+                    packed.append([label, elem, px, py, pz, part, cx, cy, cz, m])
+
+        cart_atoms: list[Atomtuple] = []
+        for at in packed:
+            cart_atoms.append(
+                Atomtuple(
+                    label=at[0], type=at[1], x=at[6], y=at[7], z=at[8],
+                    part=at[5], symm_matrix=at[9],
+                )
+            )
+        return cart_atoms
 
     def vector_length(self, x: float, y: float, z: float) -> float:
         """
@@ -351,7 +463,7 @@ class SDM:
         A = 2.0 * (x * y * self.aga + x * z * self.bbe + y * z * self.cal)
         return sqrt(x ** 2 * self.asq + y ** 2 * self.bsq + z ** 2 * self.csq + A)
 
-    def packer(self, sdm: 'SDM', need_symm: list, with_qpeaks=False) -> list[Atomtuple]:
+    def packer(self, sdm: SDM, need_symm: list, with_qpeaks=False) -> list[Atomtuple]:
         """
         Packs atoms of the asymmetric unit to real molecules.
         """
@@ -366,7 +478,7 @@ class SDM:
         symm_m = []
         symm_t = []
         for s in self.symmcards:
-            symm_m.append(tuple(tuple(row) for row in s.matrix.values))
+            symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
         for symm in need_symm:
@@ -420,6 +532,7 @@ if __name__ == "__main__":
     from fastmolwidget.viewer_widget import MoleculeViewerWidget
 
     app = QtWidgets.QApplication(sys.argv)
-    viewer = MoleculeViewerWidget(Path('tests/test-data/4060314.cif'))
+    viewer = MoleculeViewerWidget()
+    viewer.load_file(Path('../../tests/test-data/4060314.cif'))
     viewer.show()
     sys.exit(app.exec())

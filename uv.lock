@@ -122,7 +122,7 @@ wheels = [
 
 [[package]]
 name = "fastmolwidget"
-version = "0.1.5"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "gemmi" },
@@ -132,6 +132,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+cpp = [
+    { name = "pybind11" },
+]
+gl3d = [
+    { name = "pyopengl" },
+]
 pyqt6 = [
     { name = "pyqt6" },
 ]
@@ -141,6 +147,7 @@ pyside6 = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pybind11" },
     { name = "pyside6-stubs" },
     { name = "pytest" },
     { name = "ruff" },
@@ -155,15 +162,18 @@ doc = [
 requires-dist = [
     { name = "gemmi", specifier = ">=0.7.5" },
     { name = "numpy", specifier = ">=2.2.0" },
+    { name = "pybind11", marker = "extra == 'cpp'", specifier = ">=2.13" },
+    { name = "pyopengl", marker = "extra == 'gl3d'", specifier = ">=3.1.7" },
     { name = "pyqt6", marker = "extra == 'pyqt6'", specifier = ">=6.9.0" },
     { name = "pyside6-essentials", marker = "extra == 'pyside6'", specifier = ">=6.11.0" },
     { name = "qtpy", specifier = ">=2.4.3" },
     { name = "shelxfile", specifier = ">=22" },
 ]
-provides-extras = ["pyside6", "pyqt6"]
+provides-extras = ["pyside6", "pyqt6", "gl3d", "cpp"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pybind11", specifier = ">=2.13" },
     { name = "pyside6-stubs" },
     { name = "pytest" },
     { name = "ruff" },
@@ -513,12 +523,30 @@ wheels = [
 ]
 
 [[package]]
+name = "pybind11"
+version = "3.0.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/f0/35145a3c3baffeef55d4b8324caa33abaa8fa56ab345ecd4b2211d09163e/pybind11-3.0.4.tar.gz", hash = "sha256:3286b59c8a774b9ee650169302dd5a4eedc30a8617905a0560dd8ee44775130c", size = 589533, upload-time = "2026-04-19T03:08:15.925Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/06/c3a23c9a0263b136c519f033a58d4641e73065fefc7754e9667ec206d992/pybind11-3.0.4-py3-none-any.whl", hash = "sha256:961720ee652da51d531b7b2451a6bd2bc042b0106e6d9baa48ecb7d58034ce63", size = 314166, upload-time = "2026-04-19T03:08:14.091Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
+]
+
+[[package]]
+name = "pyopengl"
+version = "3.1.10"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/16/912b7225d56284859cd9a672827f18be43f8012f8b7b932bc4bd959a298e/pyopengl-3.1.10.tar.gz", hash = "sha256:c4a02d6866b54eb119c8e9b3fb04fa835a95ab802dd96607ab4cdb0012df8335", size = 1915580, upload-time = "2025-08-18T02:33:01.76Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/de/e4/1ba6f44e491c4eece978685230dde56b14d51a0365bc1b774ddaa94d14cd/pyopengl-3.1.10-py3-none-any.whl", hash = "sha256:794a943daced39300879e4e47bd94525280685f42dbb5a998d336cfff151d74f", size = 3194996, upload-time = "2025-08-18T02:32:59.902Z" },
 ]
 
 [[package]]
