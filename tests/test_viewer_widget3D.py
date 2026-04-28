@@ -246,6 +246,8 @@ def test_viewer3d_set_bond_color_proxy():
 
 def test_compile_program_disables_validate(monkeypatch):
     """Shader linking should skip eager program validation in initializeGL."""
+    if not molecule3d._HAS_PYOPENGL or molecule3d._glshaders is None:
+        pytest.skip("requires PyOpenGL")
     widget = MoleculeWidget3D()
     calls = []
 
