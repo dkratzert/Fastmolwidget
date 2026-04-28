@@ -1,4 +1,4 @@
-# möp
+from __future__ import annotations
 #
 # ----------------------------------------------------------------------------
 # "THE BEER-WARE LICENSE" (Revision 42):
@@ -12,8 +12,8 @@
 import random
 import string
 from math import sqrt, radians, cos, sin, acos, degrees, floor
-from operator import sub, add
-from typing import Union
+from operator import sub, add, attrgetter
+from typing import Any, Generator
 
 
 class Array:
@@ -57,13 +57,13 @@ class Array:
     def __init__(self, values: list | tuple):
         self.values = values
 
-    def __iter__(self) -> iter:
+    def __iter__(self) -> Generator[float, None, None]:
         yield from self.values
 
     def __len__(self) -> int:
         return len(self.values)
 
-    def __add__(self, other: (list, 'Array')) -> 'Array':
+    def __add__(self, other: list | Array) -> Array:
         """
         This method is optimized for speed.
         >>> a = Array([1, 2, 3])
@@ -79,10 +79,10 @@ class Array:
         else:
             raise TypeError(f'Cannot add type Array to type {type(other)!s}.')
 
-    def __iadd__(self, other):
+    def __iadd__(self, other: Array) -> Array:
         return self.__add__(other)
 
-    def __eq__(self, other):
+    def __eq__(self, other: Array) -> bool:
         """
         >>> a1 = Array([1, 2, 3, 4])
         >>> a2 = Array([1, 2, 3.0, 4.0])
@@ -95,7 +95,7 @@ class Array:
         """
         return all(a == b for (a, b) in zip(self.values, other.values, strict=True))
 
-    def __sub__(self, other):
+    def __sub__(self, other: Array) -> Array:
         """
         Subtracts eiter an Array or a value from the self Array.
         This method is optimized for speed.
@@ -113,7 +113,7 @@ class Array:
         else:
             raise TypeError(f'Cannot add type Array to type {type(other)!s}.')
 
-    def __imul__(self, other):
+    def __imul__(self, other: int | float) -> Array:
         """
         Currently supports multiplication by a number. 
         __imul__ means a *= b
@@ -124,7 +124,7 @@ class Array:
         else:
             raise TypeError('Unsupported operation.')
 
-    def __mul__(self, other: ('Array', 'Matrix')) -> (float, 'Array'):
+    def __mul__(self, other: Array | Matrix) -> float | Array:
         """
         a * b = axbx + ayby + azbz
 
@@ -145,10 +145,10 @@ class Array:
         else:
             return self.dot(other)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'Array({self.values!s})'
 
-    def __getitem__(self, val):
+    def __getitem__(self, val) -> float | list[float]:
         """
         Get one item from the array.
         >>> Array([1, 2, 3])[1]
@@ -186,7 +186,7 @@ class Array:
         return sqrt(self.norm())
 
     @staticmethod
-    def zero(m: int) -> 'Array':
+    def zero(m: int) -> Array:
         """
         Create zero Array of dimension m
 
@@ -196,7 +196,7 @@ class Array:
         return Array([0.0 for row in range(m)])
 
     @staticmethod
-    def randarray(m: int) -> 'Array':
+    def randarray(m: int) -> Array:
         """
         Create zero Array of dimension m
 
@@ -209,7 +209,7 @@ class Array:
     def floor(self):
         return Array([floor(x) for x in self.values])
 
-    def dot(self, other: 'Array') -> float:
+    def dot(self, other: Array) -> float:
         """
         Dot product of an array in kartesian space.
         """
@@ -217,7 +217,7 @@ class Array:
             raise ValueError('Vector sizes must match')
         return sum([i * j for i, j in zip(self, other, strict=True)])
 
-    def cross(self, other: 'Array') -> 'Array':
+    def cross(self, other: Array) -> Array:
         """
         Cross product of the Array (currently only for 3D vectors).
 
@@ -232,7 +232,7 @@ class Array:
         b1, b2, b3 = other
         return Array([(a2 * b3 - a3 * b2), (a3 * b1 - a1 * b3), (a1 * b2 - a2 * b1)])
 
-    def angle(self, other: 'Array') -> float:
+    def angle(self, other: Array) -> float:
         """
         Calculates the angle between two vectors.
         >>> a = Array([1, 0, 1])
@@ -305,7 +305,7 @@ class Matrix:
             rows += '|' + ' '.join([f'{float(x):>7.3f}' for x in row]) + '|' + '\n'
         return rows
 
-    def __add__(self, other: (list, 'Matrix')) -> 'Matrix':
+    def __add__(self, other: list | Matrix) -> Matrix:
         """
         Matrix addition
 
@@ -334,7 +334,7 @@ class Matrix:
         else:
             raise TypeError(f'Cannot add type {type(other)!s} Array to Matrix.')
 
-    def __mul__(self, other: ('Matrix', 'Array', int, float)) -> ('Matrix', 'Array'):
+    def __mul__(self, other: Matrix | Array | int | float) -> Matrix | Array:
         """
         a * b operation
         >>> m = Matrix([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
@@ -414,10 +414,10 @@ class Matrix:
         raise NotImplementedError
 
     @property
-    def T(self):
+    def T(self) -> Matrix:
         return self.transpose()
 
-    def transpose(self) -> 'Matrix':
+    def transpose(self) -> Matrix:
         """
         transposes a matrix
 
@@ -427,7 +427,7 @@ class Matrix:
         """
         return Matrix(list(zip(*self.values)))
 
-    def transpose_alt(self):
+    def transpose_alt(self) -> Matrix:
         """
         Transposes the current matrix.
         >>> m = Matrix([[1, 2, 3], [1, 2, 3], [1, 2, 3]])
@@ -439,7 +439,7 @@ class Matrix:
             rows.append([r[i] for r in self.values])
         return Matrix(rows)
 
-    def dot(self, other):
+    def dot(self, other) -> Matrix:
         """
         Dot product of two matrices.
         """
@@ -450,7 +450,7 @@ class Matrix:
         return Matrix(newA)
 
     @staticmethod
-    def zero(m: int, n: int) -> 'Matrix':
+    def zero(m: int, n: int) -> Matrix:
         """
         Create zero matrix of dimension m,n
 
@@ -465,7 +465,7 @@ class Matrix:
         return Matrix([[0.0 for row in range(n)] for col in range(m)])
 
     @staticmethod
-    def randmat(m: int, n: int) -> 'Matrix':
+    def randmat(m: int, n: int) -> Matrix:
         """
         Create random matrix of dimension m, n
 
@@ -479,7 +479,7 @@ class Matrix:
         """
         return Matrix([[random.randint(1, 9) for y in range(n)] for x in range(m)])
 
-    def cholesky(self) -> 'Matrix':
+    def cholesky(self) -> Matrix:
         """
         >>> m = Matrix([[25, 15, -5], [15, 18,  0], [-5,  0, 11]])
         >>> m.cholesky()
@@ -574,16 +574,16 @@ class SymmetryElement:
             self.matrix *= -1
             self.trans *= -1
 
-    def __str__(self):
+    def __str__(self) -> str:
         string = f"|{self.matrix[0, 0]:2} {self.matrix[0, 1]:2} {self.matrix[0, 2]:2}|   |{float(self.trans[0]):>4.2}| \n" \
                  f"|{self.matrix[1, 0]:2} {self.matrix[1, 1]:2} {self.matrix[1, 2]:2}| + |{float(self.trans[1]):>4.2}| \n" \
                  f"|{self.matrix[2, 0]:2} {self.matrix[2, 1]:2} {self.matrix[2, 2]:2}|   |{float(self.trans[2]):>4.2}| \n"
         return string
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return self.toShelxl()
 
-    def __eq__(self, other):
+    def __eq__(self, other: SymmetryElement) -> bool:
         """
         Check two SymmetryElement instances for equivalence.
         Note that differences in lattice translation are ignored.
@@ -608,7 +608,7 @@ class SymmetryElement:
         t = (t1 == t2)
         return m and t
 
-    def __sub__(self, other):
+    def __sub__(self, other: SymmetryElement) -> Array | float:
         """
         Computes and returns the translational difference between two SymmetryElements. Returns 999.0 if the elements
         cannot be superimposed via an integer shift of the translational parts.
@@ -616,7 +616,7 @@ class SymmetryElement:
         :return: float
         """
         if not self == other:
-            return 999.
+            return 999.0
         return self.trans - other.trans
 
     def applyLattSymm(self, lattSymm):
