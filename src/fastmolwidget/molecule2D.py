@@ -99,7 +99,7 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         # Track selected atoms and bonds as sets for multi-selection
         self.selected_atoms: set[str] = set()
-        self.selected_bonds: set[tuple[str, str]] = set()
+        self.selected_bonds: set[tuple[str, ...]] = set()
 
         # scaling factor for ADP ellipsoids in screen coordinates
         # 1.5382 is the standard ORTEP scaling factor for 50% probability:

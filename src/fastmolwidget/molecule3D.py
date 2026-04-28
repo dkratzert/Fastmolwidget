@@ -167,7 +167,7 @@ def _make_cylinder(
         p2: np.ndarray,
         radius: float,
         color: tuple[float, float, float],
-        n_seg: int = 8,
+        n_seg: int = 20,
         selected: bool = False,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """Generate a cylinder mesh between *p1* and *p2*.
@@ -341,27 +341,16 @@ void main() {
     vec3 hit    = v_center_eye + local_hit;
     vec3 normal = normalize(local_hit);
 
-    vec3 color;
-    if (v_selected > 0.5) {
-        // Bright, low-shadow lighting for crisp atom colours
-        vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
-        float diff      = max(dot(normal, light), 0.0);
-        float soft_diff = 0.25 + 0.75 * diff;
-        float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+    // Bright, low-shadow lighting for crisp atom colours.
+    // Selected atoms are coloured via v_color upstream, so no branch needed.
+    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
+    float diff      = max(dot(normal, light), 0.0);
+    float soft_diff = 0.25 + 0.75 * diff;
+    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-        vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-        color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
-    } else {
-        // Bright, low-shadow lighting for crisp atom colours
-        vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
-        float diff      = max(dot(normal, light), 0.0);
-        float soft_diff = 0.25 + 0.75 * diff;
-        float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
-
-        vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-        color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
-    }
-    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
+    vec3 color      = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
+    gl_FragColor    = vec4(clamp(color, 0.0, 1.0), 1.0);
 
     // Write corrected depth so atoms occlude bonds and each other properly
     vec4 clip_pos = u_proj * vec4(hit, 1.0);
@@ -445,7 +434,7 @@ void main() {
         vec3 normal = normalize(mat3(u_mv) * normal_world);
 
         vec3  light     = normalize(vec3(2.0, 1.5, 2.0));
-        float diff      = max(dot(normal, light), 1.6);
+        float diff      = max(dot(normal, light), 0.0);
         float soft_diff = 0.25 + 0.75 * diff;
         float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
@@ -657,8 +646,7 @@ void main() {
     vec3  light     = v_selected > 0.5
                         ? normalize(vec3(2.0, 1.5, 2.0))
                         : normalize(vec3(1.0, 1.5, 2.0));
-    float diff_min  = v_selected > 0.5 ? 1.6 : 0.0;
-    float diff      = max(dot(normal, light), diff_min);
+    float diff      = max(dot(normal, light), 0.0);
     float soft_diff = 0.25 + 0.75 * diff;
     float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
@@ -817,9 +805,15 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.setMouseTracking(True)
 
         # ---- Widget appearance --------------------------------------------
+        # NB: do NOT enable autoFillBackground on a QOpenGLWidget.  The Qt
+        # paint engine would erase our GL framebuffer to the palette Window
+        # colour the moment we construct a QPainter for the label overlay,
+        # leaving only the painter's output visible.  The background is
+        # cleared explicitly with glClearColor in _do_paintGL instead.
         pal = QtGui.QPalette()
         pal.setColor(QtGui.QPalette.ColorRole.Window, QtCore.Qt.GlobalColor.white)
-        self.setAutoFillBackground(True)
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setPalette(pal)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -897,6 +891,21 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             self._ellipsoid_batch_vbo, self._ellipsoid_batch_ibo,
         ) = buffers
 
+        # One-shot MSAA diagnostic: warn when the actual sample count is < 2,
+        # which usually means configure_opengl_format() was not called before
+        # QApplication(...) and the driver fell back to a single-sample format.
+        try:
+            samples = int(self.format().samples())
+            if samples < 2:
+                print(
+                    "[MoleculeWidget3D] OpenGL surface has "
+                    f"samples={samples} (no MSAA). Call "
+                    "fastmolwidget.configure_opengl_format() *before* "
+                    "QApplication(...) to enable 4× anti-aliasing."
+                )
+        except Exception:
+            pass
+
 
     def _compile_program(self, vert_src: str, frag_src: str, name: str) -> int:
         """Compile and link a GLSL 1.20 shader program.
@@ -941,57 +950,75 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if self._geometry_dirty and self.atoms:
             self._upload_geometry()
 
-        mv = self._compute_mv_matrix() if self.atoms else None
-        proj = self._compute_proj_matrix() if self.atoms else None
+        # Re-assert GL state every frame.  Once a QPainter has run on this
+        # QOpenGLWidget (for atom labels or the bond-distance hover), Qt's
+        # paint engine leaves several state bits flipped — most importantly
+        # GL_MULTISAMPLE, GL_DEPTH_TEST and the viewport — which would
+        # otherwise persist into the next paintGL and degrade the image
+        # ("view gets worse after the first label was shown").
+        self._reassert_gl_state()
 
-        # Mixed raw-GL + QPainter rendering on a QOpenGLWidget MUST follow the
-        # canonical Qt pattern:
-        #   1. construct a single QPainter on the widget *first*,
-        #   2. open a beginNativePainting() bracket,
-        #   3. run glClear() and ALL raw gl.* draws inside that bracket,
-        #   4. close it with endNativePainting(),
-        #   5. issue QPainter overlay draws,
-        #   6. painter.end().
-        #
-        # Constructing QPainter rebinds the QOpenGLWidget's render target to
-        # the paint-engine-owned FBO.  Doing glClear *before* QPainter is
-        # created therefore clears the wrong framebuffer; the molecule then
-        # renders into the painter's FBO which was never cleared, giving a
-        # black background with only the rendered geometry composited on top.
-        painter: QtGui.QPainter | None = None
-        if self.atoms and (
-            self.labels
-            or self._hover_atom_label is not None
-            or self._hover_bond is not None
-        ):
-            painter = QtGui.QPainter(self)
-            painter.beginNativePainting()
+        r, g, b = self._bg_rgb
+        gl.glClearColor(r, g, b, 1.0)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+
+        if not self.atoms:
+            return
+
+        mv = self._compute_mv_matrix()
+        proj = self._compute_proj_matrix()
+
+        # Bonds first (behind atom spheres)
+        if self._cylinder_count > 0:
+            self._render_cylinders(mv, proj)
+
+        # Regular atom spheres
+        if self._sphere_count > 0:
+            self._render_spheres(mv, proj)
+
+        # ADP ellipsoids – all in a single batched draw call
+        if self._show_adps and self._ellipsoid_count > 0:
+            self._render_ellipsoids_batched(mv, proj)
+
+        # Construct QPainter *after* every raw GL draw is done.  Always
+        # creating it (even when no labels/hover are active) keeps the
+        # GL→QPainter transition state identical on every frame, so the
+        # very first time a label appears no longer triggers a visible
+        # state-change regression.
+        painter = QtGui.QPainter(self)
         try:
-            r, g, b = self._bg_rgb
-            gl.glClearColor(r, g, b, 1.0)
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-
-            if not self.atoms:
-                return
-
-            # Bonds first (behind atom spheres)
-            if self._cylinder_count > 0:
-                self._render_cylinders(mv, proj)
-
-            # Regular atom spheres
-            if self._sphere_count > 0:
-                self._render_spheres(mv, proj)
-
-            # ADP ellipsoids – all in a single batched draw call
-            if self._show_adps and self._ellipsoid_count > 0:
-                self._render_ellipsoids_batched(mv, proj)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+            self._draw_labels_with_painter(painter, mv, proj)
         finally:
-            if painter is not None:
-                painter.endNativePainting()
-                try:
-                    self._draw_labels_with_painter(painter, mv, proj)
-                finally:
-                    painter.end()
+            painter.end()
+
+    def _reassert_gl_state(self) -> None:
+        """Restore the raw-GL state we depend on.
+
+        QPainter (used for atom-label / bond-distance overlays) silently
+        toggles GL_DEPTH_TEST, GL_BLEND, GL_SCISSOR_TEST, GL_MULTISAMPLE and
+        the viewport.  Re-assert everything we rely on at the top of every
+        paintGL so a previous frame's overlay cannot poison this one.
+        """
+        try:
+            gl.glEnable(gl.GL_DEPTH_TEST)
+            gl.glDepthFunc(gl.GL_LEQUAL)
+            gl.glDepthMask(gl.GL_TRUE)
+            gl.glDisable(gl.GL_BLEND)
+            gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glDisable(gl.GL_CULL_FACE)
+            try:
+                gl.glEnable(gl.GL_MULTISAMPLE)
+            except Exception:
+                pass  # not fatal on contexts without MSAA
+            dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
+            w = max(1, int(self.width() * dpr))
+            h = max(1, int(self.height() * dpr))
+            gl.glViewport(0, 0, w, h)
+        except Exception:
+            # Never let a state hiccup take the host app down.
+            pass
 
     # ------------------------------------------------------------------
     # paintEvent – routes to OpenGL path or pure-QPainter fallback
@@ -1095,7 +1122,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def _build_cylinder_geometry(self) -> None:
         """Build tessellated cylinder meshes for all bonds."""
-        n_seg = 8  # always use 8-segment cylinders
+        n_seg = 20  # 20-segment cylinders avoid visible Gouraud facet bands
         # base cylinder radius, scaled by bond_width
         cyl_r = 0.016 * max(0, self.bond_width)
 
@@ -1454,6 +1481,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             return
         painter = QtGui.QPainter(self)
         try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
             self._draw_labels_with_painter(painter, mv, proj)
         finally:
             painter.end()
