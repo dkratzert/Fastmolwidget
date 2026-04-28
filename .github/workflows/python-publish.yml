@@ -35,7 +35,12 @@ jobs:
         run: uv run pytest tests
 
   release-build:
-    runs-on: ubuntu-latest
+    name: Build wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
     # Build and publish are gated on successful tests.
     needs:
       - tests
@@ -44,8 +49,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==3.4.1
 
       - name: Validate tag matches project version
         run: |
@@ -73,11 +79,12 @@ jobs:
 
           echo "Tag and project version are consistent: $project_version"
 
-      - name: Build release distributions
-        run: |
-          # NOTE: put your own distribution build steps here.
-          python -m pip install build
-          python -m build
+      #- name: Build wheels
+      #  run: python -m cibuildwheel --output-dir dist
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.4
+        with:
+            output-dir: dist
 
       - name: Upload distributions
         uses: actions/upload-artifact@v7
