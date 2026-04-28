@@ -258,6 +258,8 @@ def test_set_bond_color_visible_in_rounded_mode():
         img = img.convertToFormat(QtGui.QImage.Format.Format_RGB32)
         w, h = img.width(), img.height()
         ptr = img.bits()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(h * w * 4)
         arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
         return arr[:, :, :3].copy()
 
@@ -348,6 +350,8 @@ def test_hover_bond_distance_label_renders_in_paint():
         img = widget.grab().toImage().convertToFormat(QtGui.QImage.Format.Format_RGB32)
         w, h = img.width(), img.height()
         ptr = img.bits()
+        if hasattr(ptr, 'setsize'):
+            ptr.setsize(h * w * 4)
         return np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))[:, :, :3].copy()
 
     # Baseline: no hover state at all.
