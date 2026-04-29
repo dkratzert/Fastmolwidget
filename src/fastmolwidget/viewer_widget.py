@@ -58,6 +58,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.setRange(1, 15)
         self._bond_width_spinbox.setValue(3)
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
+        self._open_file_button = QtWidgets.QPushButton("Open File…")
 
         # default state
         # "Hide Hydrogens" unchecked → hydrogens are visible by default
@@ -72,6 +73,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         )
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
+        self._open_file_button.clicked.connect(self._open_file_dialog)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
@@ -82,6 +84,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         # ── layout ───────────────────────────────────────────────────────────
         # Row 1: structure toggles
         control_bar = QtWidgets.QHBoxLayout()
+        control_bar.addWidget(self._open_file_button)
         control_bar.addWidget(self._grow_checkbox)
         control_bar.addWidget(self._pack_checkbox)
         control_bar.addWidget(self._adp_checkbox)
@@ -153,6 +156,17 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         color = QtWidgets.QColorDialog.getColor(current, self, "Choose Bond Color")
         if color.isValid():
             self._render_widget.set_bond_color(color)
+
+    def _open_file_dialog(self) -> None:
+        """Open a file dialog to select and load a structure file."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Structure File",
+            "",
+            "Structure Files (*.cif *.res *.ins *.xyz);;All Files (*)",
+        )
+        if path:
+            self.load_file(path)
 
 if __name__ == '__main__':
 
