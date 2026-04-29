@@ -883,6 +883,13 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         hydrogens = ('H', 'D')
 
+        # Viewport bounds for frustum culling (with generous margin for ellipsoids/labels)
+        margin = self.scale * self.adp_scale * 2.0 + 40.0
+        vp_left = -margin
+        vp_top = -margin
+        vp_right = self.width() + margin
+        vp_bottom = self.height() + margin
+
         # Precise 2D centers
         for atom in self.atoms:
             c = atom.coordinate
@@ -896,8 +903,23 @@ class MoleculeWidget(QtWidgets.QWidget):
                 if item.atom1.type_ in hydrogens or (item.is_bond and item.atom2.type_ in hydrogens):
                     continue
             if item.is_bond:
-                self._draw_bond_rounded(item.atom1, item.atom2)
+                # Cull bonds where both endpoints are off-screen
+                a1 = item.atom1
+                a2 = item.atom2
+                if (
+                    (a1.screenx < vp_left and a2.screenx < vp_left)
+                    or (a1.screenx > vp_right and a2.screenx > vp_right)
+                    or (a1.screeny < vp_top and a2.screeny < vp_top)
+                    or (a1.screeny > vp_bottom and a2.screeny > vp_bottom)
+                ):
+                    continue
+                self._draw_bond_rounded(a1, a2)
             else:
+                # Cull atoms entirely outside viewport
+                sx = item.atom1.screenx
+                sy = item.atom1.screeny
+                if sx < vp_left or sx > vp_right or sy < vp_top or sy > vp_bottom:
+                    continue
                 self.draw_atom(item.atom1)
                 is_hovered = item.atom1.name == self.hovered_atom
                 if self.labels and not is_hovered:
