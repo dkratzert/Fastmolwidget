@@ -56,7 +56,7 @@ jobs:
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics  --ignore=E203,E203,E127,E128,E227,E501,W291,W503,E266 --exclude=.venv,cgi_ui/bottle.py
 
       - name: Test with pytest
-        run:
+        run: |
           # Not needed with offscreen rendering:
           if [ "$RUNNER_OS" == "Linux" ]; then
             # Ubuntu needs this to be able to start pyqt6
