@@ -461,6 +461,14 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Detect clicks on atoms or bonds and emit corresponding signals."""
+        if event.button() == QtCore.Qt.MouseButton.MiddleButton:
+            dx = event.position().x() - self._pressPos.x()
+            dy = event.position().y() - self._pressPos.y()
+            if abs(dx) < 5 and abs(dy) < 5:
+                self._recenter_on_click(event.position().x(), event.position().y())
+            super().mouseReleaseEvent(event)
+            return
+
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
             dx = event.position().x() - self._pressPos.x()
             dy = event.position().y() - self._pressPos.y()
@@ -797,6 +805,34 @@ class MoleculeWidget(QtWidgets.QWidget):
         """Translate the molecule center based on the middle-button drag delta."""
         self.molecule_center[0] += (self._lastPos.x() - event.position().x()) / 50
         self.molecule_center[1] += (self._lastPos.y() - event.position().y()) / 50
+        self.update()
+
+    def _recenter_on_click(self, px: float, py: float) -> None:
+        """Recentre the rotation pivot on the atom under the cursor (middle-click)."""
+        if not self.atoms:
+            return
+
+        # Find the frontmost atom under the click position
+        clicked_atom: Atom | None = None
+        front_z = float('inf')
+        for item in self.objects:
+            if item.is_bond:
+                continue
+            if not self.show_hydrogens_flag and item.atom1.type_ in ('H', 'D'):
+                continue
+            if self.is_point_inside_atom(item.atom1, px, py):
+                if item.z_order < front_z:
+                    front_z = item.z_order
+                    clicked_atom = item.atom1
+
+        if clicked_atom is not None:
+            # Set molecule_center to the clicked atom's 3D coordinate
+            self.molecule_center = clicked_atom.coordinate.copy()
+            self.update()
+
+    def reset_rotation_center(self) -> None:
+        """Reset the rotation pivot to the geometric centre of the molecule."""
+        self.get_center_and_radius()
         self.update()
 
     def zoom_molecule(self, event: QMouseEvent):

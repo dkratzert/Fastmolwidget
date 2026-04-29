@@ -58,6 +58,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.setRange(1, 15)
         self._bond_width_spinbox.setValue(3)
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
+        self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
 
         # default state
@@ -74,6 +75,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._open_file_button.clicked.connect(self._open_file_dialog)
+        self._reset_center_button.clicked.connect(self._render_widget.reset_rotation_center)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
@@ -97,6 +99,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._bw_label)
         control_bar2.addWidget(self._bond_width_spinbox)
         control_bar2.addWidget(self._bond_color_button)
+        control_bar2.addWidget(self._reset_center_button)
         control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
