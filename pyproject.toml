@@ -78,6 +78,6 @@ where = ["src"]
 [tool.cibuildwheel]
 # Build wheels for Python 3.12, 3.13, and 3.14 on Windows, macOS, and Linux
 skip = ["*-win32", "*-manylinux_i686"]
-test-requires = ["pytest"]
+test-requires = ["pytest", "pyside6-essentials>=6.11.0"]
 test-command = "pytest {project}/tests"
 build = ["cp312-*", "cp313-*", "cp314-*"]
