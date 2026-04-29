@@ -723,9 +723,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         for item in self.objects:
             if item.is_bond:
                 at1, at2 = item.atom1, item.atom2
-                if not self.show_hydrogens_flag and (
-                    at1.type_ in hydrogens or at2.type_ in hydrogens
-                ):
+                if not self.show_hydrogens_flag and (at1.type_ in hydrogens or at2.type_ in hydrogens):
                     continue
                 if self.is_point_near_bond(at1, at2, px, py):
                     if item.z_order < front_z:
@@ -734,15 +732,10 @@ class MoleculeWidget(QtWidgets.QWidget):
                         new_atom = None
                         # Distance in Å – rotation preserves Euclidean length,
                         # so the live (rotated) coordinates are fine.
-                        new_dist = float(
-                            np.linalg.norm(at1.coordinate - at2.coordinate)
-                        )
+                        new_dist = float(np.linalg.norm(at1.coordinate - at2.coordinate))
             else:
                 atom = item.atom1
                 if not self.show_hydrogens_flag and atom.type_ in hydrogens:
-                    continue
-                if atom.type_ in hydrogens:
-                    # Hydrogens never get a label, even when displayed.
                     continue
                 if self.is_point_inside_atom(atom, px, py):
                     if item.z_order < front_z:
@@ -966,12 +959,10 @@ class MoleculeWidget(QtWidgets.QWidget):
                     self.draw_label(item.atom1, enlarged=True)
 
         # Bond-distance hover label – drawn last so it sits above everything.
-        if (
-            self.hovered_atom is None
+        if (self.hovered_atom is None
             and self.hovered_bond is not None
             and self._hovered_bond_distance is not None
-            and self._hover_cursor is not None
-        ):
+            and self._hover_cursor is not None):
             self._draw_hover_distance_label(
                 f"{self._hovered_bond_distance:.3f} Å",
                 self._hover_cursor.x(),
