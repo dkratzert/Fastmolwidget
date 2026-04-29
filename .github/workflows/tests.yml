@@ -44,7 +44,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install the project
-        run: uv sync --all-extras --dev
+        run: uv sync --extra pyside6 --extra gl3d --dev
 
       - name: Set up testing
         run: uv add flake8 pytest
