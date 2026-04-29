@@ -56,6 +56,12 @@ jobs:
           # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics  --ignore=E203,E203,E127,E128,E227,E501,W291,W503,E266 --exclude=.venv,cgi_ui/bottle.py
 
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+
       - name: Test with pytest
         run: uv run pytest tests
 
