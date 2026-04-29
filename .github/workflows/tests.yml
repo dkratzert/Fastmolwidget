@@ -43,6 +43,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install libomp
+
       - name: Install the project
         # run: uv sync --extra pyside6 --extra gl3d --dev
         run: uv sync --all-extras --dev
@@ -57,18 +68,5 @@ jobs:
           # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics  --ignore=E203,E203,E127,E128,E227,E501,W291,W503,E266 --exclude=.venv,cgi_ui/bottle.py
 
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1
-
-      - name: Install system dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew update
-          brew install libomp
-
       - name: Test with pytest
         run: uv run pytest tests
-
