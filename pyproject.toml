@@ -78,6 +78,11 @@ where = ["src"]
 [tool.cibuildwheel]
 # Build wheels for Python 3.12, 3.13, and 3.14 on Windows, macOS, and Linux
 skip = ["*-win32", "*-manylinux_i686"]
-test-requires = ["pytest", "pyside6-essentials>=6.11.0"]
+test-requires = ["pytest", "pyside6-essentials>=6.9", "PyOpenGL>=3.1"]
 test-command = "cd {project} && pytest tests"
 build = ["cp312-*", "cp313-*", "cp314-*"]
+
+[tool.cibuildwheel.linux]
+# PySide6 6.11+ has no Linux wheels on PyPI — skip the test phase.
+test-skip = "*"
+
