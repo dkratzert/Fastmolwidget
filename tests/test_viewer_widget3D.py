@@ -857,6 +857,7 @@ def test_drag_clears_hover_state_3d():
     drag_event = QtGui.QMouseEvent(
         QtCore.QEvent.Type.MouseMove,
         QtCore.QPointF(mx + 30, my + 30),
+        QtCore.QPointF(mx + 30, my + 30),
         QtCore.Qt.MouseButton.NoButton,
         QtCore.Qt.MouseButton.LeftButton,
         QtCore.Qt.KeyboardModifier.NoModifier,
