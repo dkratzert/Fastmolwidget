@@ -755,24 +755,11 @@ class CifReader:
     def yes_not_set(self, publ: str):
         return publ not in {'y', 'yes', '?', '.'} or publ in {'n', 'no'}
 
-    def key_value_pairs(self) -> list[tuple[str, str]]:
-        """
-        Returns the key/value pairs of a cif file sorted by priority.
-        """
-        keys_without_values, keys_with_values = self.keys_with_essentials()
-        return [*keys_without_values, ('These below are already in:', '---------------------'), *keys_with_values]
-
     def pairs(self):
         for item in self.block:
             if item.pair is not None:
                 yield item.pair
 
-    def _is_centrokey(self, key) -> bool:
-        """
-        Is True if the kurrent key is only valid
-        for non-centrosymmetric structures
-        """
-        return self.is_centrosymm and key in non_centrosymm_keys
 
     def test_res_checksum(self) -> bool:
         """
@@ -809,39 +796,3 @@ class CifReader:
             return True
 
 
-if __name__ == '__main__':
-    # c = CifContainer('../41467_2015.cif')
-    # c = CifContainer('test-data/p21c.cif')
-
-    c = CifContainer('test-data/DK_Zucker2_0m.cif')
-    c.load_this_block(len(c.doc) - 1)
-    # pp(list(c.torsion_angles()))
-    print(c.bond_dist('C1-C2'))
-    # pp(c.hkl_extra_info)
-    # print(c.hkl_file)
-    # print(c.hkl_as_cif)
-    # print(c.test_hkl_checksum())
-    # s = Shelxfile()
-    # print(c.res_file_data)
-    # s.read_string(c.res_file_data)
-    # print(s.hklf.n)
-
-    # print(CifContainer('tests/examples/1979688.cif').hkl_as_cif[-250:])
-
-    """
-    import n#umpy as np
-    mtz = gemmi.Mtz(with_base=True)
-    data = [x.split() for x in c.hkl_file.splitlines()]
-    mtz.add_column('I', 'I')
-    mtz.add_column('SIGI', 'Q')
-    mtz.set_data(data)
-    mtz.set_cell_for_all(gemmi.UnitCell(c.cell.a, c.cell.b, c.cell.c, c.cell.alpha, c.cell.beta, c.cell.gamma))
-    mtz.spacegroup = gemmi.find_spacegroup_by_name(c.space_group)
-    mtz.update_reso()
-    size = mtz.get_size_for_hkl()
-    np.seterr(divide='ignore', invalid='ignore')
-    ios =  intensity.array / sigma.array
-    
-    doc = gemmi.cif.read('tests/examples/1979688-finalcif.fcf')
-    rblock = gemmi.hkl_cif_as_refln_block(doc[0])
-    """
