@@ -41,7 +41,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-          - os: macos-13        # x86_64
+          # - os: macos-13        # x86_64
           - os: macos-14        # arm64
             macos_deployment_target: "14.0"
           - os: windows-latest
