@@ -415,7 +415,7 @@ def test_hover_excludes_hidden_hydrogens_2d():
     assert widget.hovered_bond is None
 
 
-def test_hover_excludes_hydrogen_atom_label_even_when_visible():
+def test_hover_shows_hydrogen_atom_label_when_visible():
     """Hydrogens are displayed but never receive an atom-name hover label."""
     widget = MoleculeWidget()
     widget.resize(800, 600)
@@ -429,7 +429,7 @@ def test_hover_excludes_hydrogen_atom_label_even_when_visible():
 
     h_atom = widget.atoms[1]
     widget._update_hover(h_atom.screenx, h_atom.screeny)
-    assert widget.hovered_atom is None
+    assert widget.hovered_atom == 'H1'
 
 
 def test_leave_event_clears_hover_state_2d():
