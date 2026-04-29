@@ -25,8 +25,9 @@ from fastmolwidget.molecule3D import MoleculeWidget3D, configure_opengl_format
 """
 TODO:
 
-* 
-
+* Make labels of 2D widget always on top when hovering over an atom.
+* Make negative parts bind correctly.
+* Check if it makes sense to support later OpenGl versions (e.g. 3.3 core).
 
 """
 
