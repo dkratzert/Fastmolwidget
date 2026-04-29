@@ -76,8 +76,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.cibuildwheel]
-# Build wheels for Python 3.12 and 3.13 on Windows, macOS, and Linux
-#platforms = "win_amd64 macosx_x86_64 macos manylinux_x86_64"
+# Build wheels for Python 3.12, 3.13, and 3.14 on Windows, macOS, and Linux
 skip = ["*-win32", "*-manylinux_i686"]
 test-command = "pytest {project}/tests"
 build = ["cp312-*", "cp313-*", "cp314-*"]

@@ -39,7 +39,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+          - os: macos-13        # x86_64
+          - os: macos-14        # arm64
+            macos_deployment_target: "14.0"
+          - os: windows-latest
 
     # Build and publish are gated on successful tests.
     needs:
@@ -49,9 +54,6 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-python@v6
-
-      - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==3.4.1
 
       - name: Validate tag matches project version
         run: |
@@ -79,12 +81,14 @@ jobs:
 
           echo "Tag and project version are consistent: $project_version"
 
-      #- name: Build wheels
-      #  run: python -m cibuildwheel --output-dir dist
       # Add -fopenmp for macOS builds to enable OpenMP support.
       - name: Install OpenMP on macOS
         if: runner.os == 'macOS'
         run: brew install libomp
+
+      - name: Set MACOSX_DEPLOYMENT_TARGET for ARM builds
+        if: matrix.macos_deployment_target
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.macos_deployment_target }}" >> "$GITHUB_ENV"
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4
@@ -94,7 +98,7 @@ jobs:
       - name: Upload distributions
         uses: actions/upload-artifact@v7
         with:
-          name: release-dists
+          name: release-dists-${{ matrix.os }}
           path: dist/
 
   pypi-publish:
@@ -111,8 +115,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: release-dists
+          pattern: release-dists-*
           path: dist/
+          merge-multiple: true
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
