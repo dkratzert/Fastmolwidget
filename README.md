@@ -2,7 +2,7 @@
 
 **A PyQt/PySide6 widget to display crystal structures**
 
-fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in both 2D projection and real-time 3D OpenGL.
+fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in both 2D projection and 3D OpenGL.
 It supports anisotropic displacement parameter (ADP) ellipsoids, ball-and-stick diagrams, and plain sphere representations.
 The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D backend uses hardware-accelerated OpenGL with sphere and ellipsoid impostors.
 
@@ -15,13 +15,12 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 
 ## Features
 
-- **ADP ellipsoids** at the 50 % probability level, rendered from anisotropic displacement parameters
-- **Ball-and-stick** and **isotropic sphere** representations as fallbacks or when speed is more important than detail
+- **ADP ellipsoids** at the 50 % probability level
+- **Ball-and-stick** and **isotropic sphere**
 - **Real-time 3D rendering** via `MoleculeWidget3D` — sphere impostors and tessellated cylinder bonds in hardware-accelerated OpenGL
-- **Graceful degradation** — if PyOpenGL is not installed or OpenGL fails, `MoleculeWidget3D` falls back to an informational text overlay; the host application never crashes
 - **Interactive mouse controls**: rotate (left-drag), zoom (right-drag), pan (middle-drag), scroll wheel to resize labels
 - **Atom and bond selection**: single click or Ctrl+click for multi-selection; emits `atomClicked` / `bondClicked` Qt signals
-- **Hover labels**: hovering over an atom shows its label (enlarged when persistent labels are on); hovering over a bond shows the distance in Ångströms in a rounded tooltip near the cursor
+- **Hover labels**: hovering over an atom shows its label; hovering over a bond shows the distance in Ångströms
 - **Hydrogen visibility toggle**
 - **Atom label display toggle** with adjustable font size
 - **Bond width** adjustment via spin box
@@ -56,10 +55,8 @@ pip install "fastmolwidget[pyqt6]"
 For **3D OpenGL rendering**, also install PyOpenGL:
 
 ```bash
-pip install PyOpenGL
+pip install pyopengl
 ```
-
-Without PyOpenGL the 3D widget still loads and displays a helpful message — the host application never crashes.
 
 ### Optional C++ Acceleration (`sdm_cpp`)
 
@@ -226,7 +223,6 @@ Hardware-accelerated OpenGL renderer.  A `QOpenGLWidget` (Qt ≥ 6) or `QWidget`
 
 All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hardware compatibility.
 
-If *PyOpenGL* is not installed, or if OpenGL context creation fails at runtime, the widget falls back to a plain text overlay — the host application never crashes.
 
 #### Qt Signals
 
@@ -418,8 +414,7 @@ BSD 2-Clause License — see [LICENSE](LICENSE) for details.
 
 ## Maintainer Release Workflow
 
-The release workflow is tag-driven and currently publishes to **TestPyPI** only.
-
+The release workflow is tag-driven.
 1. Ensure `project.version` in `pyproject.toml` is the version to publish.
 2. Create and push a matching tag in the format `version-X.Y.Z`.
 3. GitHub Actions builds sdist/wheel and uploads to TestPyPI.
