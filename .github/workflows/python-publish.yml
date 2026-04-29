@@ -82,6 +82,10 @@ jobs:
       #- name: Build wheels
       #  run: python -m cibuildwheel --output-dir dist
       # Add -fopenmp for macOS builds to enable OpenMP support.
+      - name: Install OpenMP on macOS
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4
         with:
