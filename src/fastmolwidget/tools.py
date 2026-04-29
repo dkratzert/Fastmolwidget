@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import itertools
 
+import numpy as np
+
+from fastmolwidget.atoms import get_radius_from_element
+
 
 def to_float(st) -> float | list[float] | None:
     if isinstance(st, list):
@@ -56,3 +60,73 @@ def isnumeric(value: str) -> bool:
 def grouper(inputs, n, fillvalue=None):
     iters = [iter(inputs)] * n
     return itertools.zip_longest(*iters, fillvalue=fillvalue)
+
+
+def build_conntable(
+    coords: np.ndarray,
+    types: list[str],
+    parts: list[int],
+    radii: np.ndarray | None = None,
+    extra_param: float = 1.2,
+) -> tuple[tuple[int, int], ...]:
+    """Vectorised connectivity-table builder (shared by 2D and 3D widgets).
+
+    Parameters
+    ----------
+    coords : ndarray of shape (N, 3)
+        Cartesian atom positions.
+    types : list[str]
+        Element symbols (length N).
+    parts : list[int]
+        SHELX disorder-part numbers (length N).
+    radii : ndarray of shape (N,), optional
+        Pre-computed covalent radii.  If *None*, looked up from *types*.
+    extra_param : float
+        Multiplier applied to the sum of covalent radii for bond detection.
+
+    Returns
+    -------
+    tuple of (i, j) pairs with i < j.
+    """
+    n = len(coords)
+    if n == 0:
+        return ()
+
+    coords = np.asarray(coords, dtype=np.float64)
+
+    # ── pairwise distance matrix ─────────────────────────────────────────
+    diff = coords[:, None, :] - coords[None, :, :]  # (N, N, 3)
+    dists = np.linalg.norm(diff, axis=2)             # (N, N)
+
+    # ── per-pair bond-distance thresholds ────────────────────────────────
+    if radii is None:
+        radii = np.array(
+            [get_radius_from_element(t) for t in types], dtype=np.float64
+        )
+    else:
+        radii = np.asarray(radii, dtype=np.float64)
+
+    radii_sum = (radii[:, None] + radii[None, :]) * extra_param  # (N, N)
+
+    # ── combined Boolean mask ────────────────────────────────────────────
+    # Upper triangle (i < j), non-trivial distance, within 4 Å pre-filter
+    triu = np.triu(np.ones((n, n), dtype=bool), k=1)
+    bond_mask = triu & (dists > 0.01) & (dists <= 4.0) & (dists < radii_sum)
+
+    if not np.any(bond_mask):
+        return ()
+
+    # Part filter: forbidden when both parts are non-zero and differ
+    parts_arr = np.array(parts, dtype=np.int32)
+    bond_mask &= ~(
+        (parts_arr[:, None] != 0)
+        & (parts_arr[None, :] != 0)
+        & (parts_arr[:, None] != parts_arr[None, :])
+    )
+
+    # H–H filter: skip bonds between two hydrogen atoms
+    is_h = np.array([t in ("H", "D") for t in types], dtype=bool)
+    bond_mask &= ~(is_h[:, None] & is_h[None, :])
+
+    rows, cols = np.where(bond_mask)
+    return tuple(zip(rows.tolist(), cols.tolist()))

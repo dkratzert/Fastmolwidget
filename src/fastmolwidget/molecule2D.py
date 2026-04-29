@@ -1256,24 +1256,13 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def get_conntable_from_atoms(self, extra_param: float = 1.2) -> tuple:
         """Build a connectivity table from atomic coordinates and covalent radii."""
-        connections = []
-        h = ('H', 'D')
-        for num1, at1 in enumerate(self.atoms, 0):
-            for num2, at2 in enumerate(self.atoms, 0):
-                if num1 == num2:
-                    continue
-                if (at1.part != 0 and at2.part != 0) and at1.part != at2.part:
-                    continue
-                d = dist(at1.coordinate, at2.coordinate)
-                if d > 4.0:
-                    continue
-                if (at1.radius + at2.radius) * extra_param > d:
-                    if at1.type_ in h and at2.type_ in h:
-                        continue
-                    if (num2, num1) in connections:
-                        continue
-                    connections.append((num1, num2))
-        return tuple(connections)
+        from fastmolwidget.tools import build_conntable
+
+        coords = np.array([a.coordinate for a in self.atoms], dtype=np.float64)
+        types = [a.type_ for a in self.atoms]
+        parts = [a.part for a in self.atoms]
+        radii = np.array([a.radius for a in self.atoms], dtype=np.float64)
+        return build_conntable(coords, types, parts, radii=radii, extra_param=extra_param)
 
 
 class Atom:

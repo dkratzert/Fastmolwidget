@@ -1749,47 +1749,15 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def _get_conntable(self, extra_param: float = 1.2) -> tuple:
         """Build a connectivity table from atomic coordinates and covalent radii.
 
-        Fully-vectorised NumPy implementation that avoids the O(N²) Python
-        loop.  The result is identical to the original but orders of magnitude
-        faster for structures with many atoms.
+        Delegates to the shared vectorised implementation in
+        :func:`fastmolwidget.tools.build_conntable`.
         """
-        n = len(self.atoms)
-        if n == 0:
-            return ()
+        from fastmolwidget.tools import build_conntable
 
-        # ── pairwise distance matrix ─────────────────────────────────────────
-        coords = np.array([a.center for a in self.atoms], dtype=np.float64)  # (N,3)
-        diff = coords[:, None, :] - coords[None, :, :]  # (N,N,3)
-        dists = np.linalg.norm(diff, axis=2)             # (N,N)
-
-        # ── per-pair bond-distance thresholds ────────────────────────────────
-        radii = np.array(
-            [get_radius_from_element(a.type_) for a in self.atoms], dtype=np.float64
-        )
-        radii_sum = (radii[:, None] + radii[None, :]) * extra_param  # (N,N)
-
-        # ── combined Boolean mask ─────────────────────────────────────────────
-        # Upper triangle (i < j), non-trivial distance, within 4 Å pre-filter
-        triu = np.triu(np.ones((n, n), dtype=bool), k=1)
-        bond_mask = triu & (dists > 0.01) & (dists <= 4.0) & (dists < radii_sum)
-
-        if not np.any(bond_mask):
-            return ()
-
-        # Part filter: forbidden when both parts are non-zero and differ
-        parts = np.array([a.part for a in self.atoms], dtype=np.int32)
-        bond_mask &= ~(
-            (parts[:, None] != 0)
-            & (parts[None, :] != 0)
-            & (parts[:, None] != parts[None, :])
-        )
-
-        # H–H filter: skip bonds between two hydrogen atoms
-        is_h = np.array([a.type_ in ("H", "D") for a in self.atoms], dtype=bool)
-        bond_mask &= ~(is_h[:, None] & is_h[None, :])
-
-        rows, cols = np.where(bond_mask)
-        return tuple(zip(rows.tolist(), cols.tolist()))
+        coords = np.array([a.center for a in self.atoms], dtype=np.float64)
+        types = [a.type_ for a in self.atoms]
+        parts = [a.part for a in self.atoms]
+        return build_conntable(coords, types, parts, extra_param=extra_param)
 
     # ------------------------------------------------------------------
     # ADP crystallography helpers  (ported from molecule2D.py)
