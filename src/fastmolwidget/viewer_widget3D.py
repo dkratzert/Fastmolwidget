@@ -143,10 +143,8 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         """
         self._loader.load_file(filename)
 
-    def set_bond_color(
-            self,
-            color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
-    ) -> None:
+    def set_bond_color(self,
+                       color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int]) -> None:
         """Set the default colour used for non-selected 3-D bonds."""
         self._render_widget.set_bond_color(color)
 
@@ -200,7 +198,7 @@ if __name__ == "__main__":
     # w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
     w.load_file('../../tests/test-data/p21c.cif')
     # w.load_file('../../tests/test-data/1000007.cif')
-    #w.load_file('../../tests/test-data/1548072_many_atoms.cif')
+    # w.load_file('../../tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('../../tests/test-data/4060314.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1367_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1368_ESM.cif'))
@@ -209,5 +207,6 @@ if __name__ == "__main__":
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1371_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1372_ESM.cif'))
     w.show()
+    app.processEvents()
     w.showMaximized()
     app.exec()

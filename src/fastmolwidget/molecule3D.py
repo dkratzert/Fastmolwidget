@@ -985,8 +985,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # state-change regression.
         painter = QtGui.QPainter(self)
         try:
-            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+            # painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            # painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
             self._draw_labels_with_painter(painter, mv, proj)
         finally:
             painter.end()
@@ -1510,7 +1510,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         hover_label = self._hover_atom_label
         hover_atom = None
 
-        def project(atom) -> tuple[int, int] | None:
+        def project(atom: _Atom3D) -> tuple[int, int] | None:
             pos4 = np.array([*atom.center, 1.0], dtype=np.float32)
             eye = mv @ pos4
             clip = proj @ eye
