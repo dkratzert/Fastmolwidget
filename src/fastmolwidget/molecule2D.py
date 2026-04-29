@@ -845,7 +845,8 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def get_directional_radius(self, atom: Atom, v: np.ndarray) -> float:
         """Return the distance from the atom centre to its ellipsoid surface along *v*."""
-        d = np.linalg.norm(v)
+        vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
+        d = sqrt(vx * vx + vy * vy + vz * vz)
         if d < 1e-8:
             return 0.23
 
@@ -853,8 +854,14 @@ class MoleculeWidget(QtWidgets.QWidget):
             return 0.23
 
         if self._show_adps and atom.u_inv is not None:
-            u = v / d
-            val = np.dot(u, np.dot(atom.u_inv, u))
+            inv_d = 1.0 / d
+            ux, uy, uz = vx * inv_d, vy * inv_d, vz * inv_d
+            M = atom.u_inv
+            # val = u @ M @ u  (3x3 matrix, inlined for speed)
+            tx = M[0, 0] * ux + M[0, 1] * uy + M[0, 2] * uz
+            ty = M[1, 0] * ux + M[1, 1] * uy + M[1, 2] * uz
+            tz = M[2, 0] * ux + M[2, 1] * uy + M[2, 2] * uz
+            val = ux * tx + uy * ty + uz * tz
             if val > 0:
                 return self.adp_scale / sqrt(val)
 
@@ -870,6 +877,9 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.screen_center = [self.width() / 2, self.height() / 2]
         self.cx_global = self.screen_center[0] - self.molecule_center[0] * self.scale
         self.cy_global = self.screen_center[1] - self.molecule_center[1] * self.scale
+
+        # Cache per-frame constants to avoid repeated method calls
+        self._cached_adp_line_width = self._adp_intersection_line_width()
 
         hydrogens = ('H', 'D')
 
@@ -945,7 +955,8 @@ class MoleculeWidget(QtWidgets.QWidget):
         c1 = at1.coordinate
         c2 = at2.coordinate
         v = c2 - c1
-        d = np.linalg.norm(v)
+        vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
+        d = sqrt(vx * vx + vy * vy + vz * vz)
 
         r1 = self.get_directional_radius(at1, v)
         r2 = self.get_directional_radius(at2, -v)
@@ -1017,12 +1028,12 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def _draw_principal_arcs(self, atom: Atom, r1: float, r2: float, angle: float) -> None:
         """Draw ORTEP-style curved arcs for the three principal planes of the ADP ellipsoid."""
-        if getattr(atom, 'u_eigvals', None) is None or np.any(atom.u_eigvals <= 0):
+        eigvals = atom.u_eigvals
+        if eigvals is None or eigvals[0] <= 0 or eigvals[1] <= 0 or eigvals[2] <= 0:
             self._painter.drawLine(int(-r1), 0, int(r1), 0)
             self._painter.drawLine(0, int(-r2), 0, int(r2))
             return
 
-        eigenvalues = atom.u_eigvals
         eigenvectors = atom.u_eigvecs
 
         angle_rad = radians(angle)
@@ -1034,7 +1045,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         # Use cosmetic pen so line width is independent of the QTransform scale
         pen = self._painter.pen()
         pen.setCosmetic(True)
-        pen.setWidthF(self._adp_intersection_line_width())
+        pen.setWidthF(self._cached_adp_line_width)
         self._painter.setPen(pen)
         self._painter.setBrush(Qt.BrushStyle.NoBrush)
 
@@ -1044,8 +1055,8 @@ class MoleculeWidget(QtWidgets.QWidget):
         plane_pairs = ((1, 2), (0, 2), (0, 1))
 
         for i_ax, j_ax in plane_pairs:
-            li = eigenvalues[i_ax]
-            lj = eigenvalues[j_ax]
+            li = eigvals[i_ax]
+            lj = eigvals[j_ax]
             if li <= 0 or lj <= 0:
                 continue
 
@@ -1055,16 +1066,19 @@ class MoleculeWidget(QtWidgets.QWidget):
             vi = eigenvectors[:, i_ax]
             vj = eigenvectors[:, j_ax]
 
-            Ax = s * ri_3d * (vi[0] * cos_a + vi[1] * sin_a)
-            Bx = s * rj_3d * (vj[0] * cos_a + vj[1] * sin_a)
-            Ay = s * ri_3d * (-vi[0] * sin_a + vi[1] * cos_a)
-            By = s * rj_3d * (-vj[0] * sin_a + vj[1] * cos_a)
+            vi0, vi1, vi2 = float(vi[0]), float(vi[1]), float(vi[2])
+            vj0, vj1, vj2 = float(vj[0]), float(vj[1]), float(vj[2])
+
+            Ax = s * ri_3d * (vi0 * cos_a + vi1 * sin_a)
+            Bx = s * rj_3d * (vj0 * cos_a + vj1 * sin_a)
+            Ay = s * ri_3d * (-vi0 * sin_a + vi1 * cos_a)
+            By = s * rj_3d * (-vj0 * sin_a + vj1 * cos_a)
 
             arc_xform = QTransform(Ax, Ay, Bx, By, 0.0, 0.0)
             self._painter.setTransform(arc_xform * base_transform)
 
-            Az = ri_3d * vi[2]
-            Bz = rj_3d * vj[2]
+            Az = ri_3d * vi2
+            Bz = rj_3d * vj2
             z_amp = sqrt(Az * Az + Bz * Bz)
 
             if z_amp < 1e-8:
@@ -1143,7 +1157,7 @@ class MoleculeWidget(QtWidgets.QWidget):
                     self._painter.setPen(pen)
                     self._painter.drawEllipse(QRectF(-r1, -r2, 2 * r1, 2 * r2))
 
-                    cross_pen = QPen(QColor(0, 0, 0, 120), self._adp_intersection_line_width(),
+                    cross_pen = QPen(QColor(0, 0, 0, 120), self._cached_adp_line_width,
                                      Qt.PenStyle.SolidLine)
                     cross_pen.setCosmetic(True)
                     self._painter.setPen(cross_pen)
