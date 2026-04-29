@@ -1,6 +1,6 @@
 [project]
 name = "fastmolwidget"
-version = "0.6.0"
+version = "0.6.1"
 description = "A PyQt widget to display crystal structures"
 readme = "README.md"
 license = "MIT"
