@@ -482,6 +482,15 @@ class MoleculeWidget(QtWidgets.QWidget):
                 x = event.position().x()
                 y = event.position().y()
 
+                # Support Macs / trackpads without a middle mouse button by
+                # allowing Alt/Option + left-click to act as a middle-click
+                # centring gesture (same behaviour as middle-click).
+                modifiers = event.modifiers()
+                if bool(modifiers & Qt.KeyboardModifier.AltModifier):
+                    self._recenter_on_click(x, y)
+                    super().mouseReleaseEvent(event)
+                    return
+
                 clicked_atom = None
                 clicked_bond = None
                 front_z = float('inf')

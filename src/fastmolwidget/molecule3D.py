@@ -915,12 +915,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         try:
             samples = int(self.format().samples())
             if samples < 2:
-                print(
-                    "[MoleculeWidget3D] OpenGL surface has "
-                    f"samples={samples} (no MSAA). Call "
-                    "fastmolwidget.configure_opengl_format() *before* "
-                    "QApplication(...) to enable 4× anti-aliasing."
-                )
+                print(f"[MoleculeWidget3D] OpenGL surface has samples={samples} (no MSAA).")
         except Exception:
             pass
 
@@ -2005,12 +2000,18 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.update()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
+        # Support Macs / trackpads without a middle mouse button by allowing
+        # Alt/Option + left-click to act as a middle-click centring gesture.
         if (
             event.button() == Qt.MouseButton.LeftButton
             and not self._mouse_moved
             and self._pressPos is not None
         ):
-            self._handle_click(event)
+            # Alt/Option modifier recentres the rotation pivot (emulate middle-click)
+            if bool(event.modifiers() & Qt.KeyboardModifier.AltModifier):
+                self._handle_middle_click(event)
+            else:
+                self._handle_click(event)
         elif (
             event.button() == Qt.MouseButton.MiddleButton
             and not self._mouse_moved

@@ -3,7 +3,7 @@
 ![Contributions](https://img.shields.io/badge/contributions-welcome-blue)
 [![PyPI package](https://repology.org/badge/version-for-repo/pypi/python:fastmolwidget.svg)](https://repology.org/project/python:fastmolwidget/versions)
 <a href="https://repology.org/project/fastmolwidget/versions">
-    <img src="https://repology.org/badge/vertical-allrepos/fastmolwidget.svg" alt="Packaging status" align="right">
+<img src="https://repology.org/badge/vertical-allrepos/fastmolwidget.svg" alt="Packaging status" align="right">
 </a>
 
 # fastmolwidget
@@ -16,10 +16,10 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 
 ## Screenshots
 
-| 2D (QPainter) | 3D (OpenGL) |
-|---|---|
+| 2D (QPainter)                                                                                                  | 3D (OpenGL)                                                                                                       |
+|----------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------|
 | ![Fastmolwidget 2D ORTEP view](https://github.com/dkratzert/Fastmolwidget/raw/main/docs/images/screenshot.png) | ![Fastmolwidget 3D OpenGL view](https://github.com/dkratzert/Fastmolwidget/raw/main/docs/images/screenshot3d.png) |
-| *ORTEP-style crystal structure with ADP ellipsoids (2D QPainter backend)* | *Real-time 3D ball-and-stick view with depth-shaded spheres and cylinder bonds (OpenGL backend)* |
+| *ORTEP-style crystal structure with ADP ellipsoids (2D QPainter backend)*                                      | *Real-time 3D ball-and-stick view with depth-shaded spheres and cylinder bonds (OpenGL backend)*                  |
 
 ## Features
 
@@ -40,11 +40,11 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 
 ## Supported File Formats
 
-| Extension | Format | Notes |
-|-----------|--------|-------|
-| `.cif` | Crystallographic Information File | Reads atoms, unit cell, and ADPs |
-| `.res` / `.ins` | SHELXL instruction file | Reads atoms and unit cell via [shelxfile](https://github.com/dkratzert/ShelXFile) |
-| `.xyz` | Standard XYZ coordinate file | Cartesian coordinates, no cell or ADPs |
+| Extension       | Format                            | Notes                                                                             |
+|-----------------|-----------------------------------|-----------------------------------------------------------------------------------|
+| `.cif`          | Crystallographic Information File | Reads atoms, unit cell, and ADPs                                                  |
+| `.res` / `.ins` | SHELXL instruction file           | Reads atoms and unit cell via [shelxfile](https://github.com/dkratzert/ShelXFile) |
+| `.xyz`          | Standard XYZ coordinate file      | Cartesian coordinates, no cell or ADPs                                            |
 
 ## Installation
 
@@ -70,10 +70,11 @@ pip install pyopengl
 
 The symmetry-growing step (Shortest-Distance-Matrix, SDM) has an optional
 C++ extension (`sdm_cpp`) that uses **pybind11** and **OpenMP** for a significant
-speed-up on large structures.  The pure-Python fallback is always active when
+speed-up on large structures. The pure-Python fallback is always active when
 the extension is not installed.
 
 **macOS**
+
 ```bash
 brew install libomp          # needed for OpenMP; skip if you don't want parallelism
 pip install pybind11
@@ -81,16 +82,19 @@ pip install -e . --no-build-isolation
 ```
 
 **Linux / Windows**
+
 ```bash
 pip install pybind11
 pip install -e . --no-build-isolation
 ```
 
 If `libomp` is not found on macOS the module still builds and works, just
-single-threaded.  You can verify whether OpenMP was compiled in:
+single-threaded. You can verify whether OpenMP was compiled in:
+
 ```python
 import sdm_cpp
-print(sdm_cpp.has_openmp)   # True / False
+
+print(sdm_cpp.has_openmp)  # True / False
 ```
 
 **Requirements**: Python >= 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
@@ -131,7 +135,7 @@ app.exec()
 ```python
 from fastmolwidget import MoleculeWidget3D, configure_opengl_format
 
-configure_opengl_format()   # before QApplication
+configure_opengl_format()  # before QApplication
 
 mol = MoleculeWidget3D(parent=self)
 mol.open_molecule(atoms, cell=cell, adps=adps)
@@ -167,17 +171,18 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 
 ## Mouse Controls
 
-| Action | Effect |
-|--------|--------|
-| Left-drag | Rotate the molecule |
-| Right-drag | Zoom in / out |
-| Middle-drag | Pan the view |
-| Middle-click | Recentre the rotation pivot on the clicked atom (3D only) |
-| Scroll wheel | Increase / decrease label font size |
-| Left-click | Select a single atom or bond |
-| Ctrl + Left-click | Toggle multi-selection |
-| Hover over atom | Show the atom label (enlarged when persistent labels are on) |
-| Hover over bond | Show the bond distance (Å) in a rounded tooltip near the cursor |
+| Action                  | Effect                                                                                                                                    |
+|-------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| Left-drag               | Rotate the molecule                                                                                                                       |
+| Right-drag              | Zoom in / out                                                                                                                             |
+| Middle-drag             | Pan the view                                                                                                                              |
+| Middle-click            | Recentre the rotation pivot on the clicked atom (3D only)                                                                                 |
+| Alt/Option + Left-click | On systems without a middle mouse button, Alt/Option + Left-click recentres the rotation pivot on the clicked atom (same as Middle-click) |
+| Scroll wheel            | Increase / decrease label font size                                                                                                       |
+| Left-click              | Select a single atom or bond                                                                                                              |
+| Ctrl + Left-click       | Toggle multi-selection                                                                                                                    |
+| Hover over atom         | Show the atom label (enlarged when persistent labels are on)                                                                              |
+| Hover over bond         | Show the bond distance (Å) in a rounded tooltip near the cursor                                                                           |
 
 ## Control Bar Options
 
@@ -185,17 +190,17 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 
 Both viewers expose the same control bar:
 
-| Control | Default | Description |
-|---------|---------|-------------|
-| Grow | ✗ | Expand the asymmetric unit to complete molecules |
-| Pack Unit Cell | ✗ | Generate all symmetry-equivalent positions within one unit cell (mutually exclusive with Grow) |
-| Show ADP | ✓ | Toggle ORTEP ellipsoid / isotropic sphere rendering |
-| Show Labels | ✗ | Toggle non-hydrogen atom labels |
-| Round Bonds | ✓ | Switch between round cylinder and flat bond drawing |
-| Show Hydrogens | ✓ | Show or hide hydrogen atoms and their bonds |
-| Bond Width | 3 | Stroke width / cylinder radius for bonds (1–15) |
-| Bond Color | — | Opens a colour picker to change the default bond colour |
-| Reset Rotation Center | — | Restores the rotation pivot to the molecule's geometric centre (3D only) |
+| Control               | Default | Description                                                                                    |
+|-----------------------|---------|------------------------------------------------------------------------------------------------|
+| Grow                  | ✗       | Expand the asymmetric unit to complete molecules                                               |
+| Pack Unit Cell        | ✗       | Generate all symmetry-equivalent positions within one unit cell (mutually exclusive with Grow) |
+| Show ADP              | ✓       | Toggle ORTEP ellipsoid / isotropic sphere rendering                                            |
+| Show Labels           | ✗       | Toggle non-hydrogen atom labels                                                                |
+| Round Bonds           | ✓       | Switch between round cylinder and flat bond drawing                                            |
+| Show Hydrogens        | ✓       | Show or hide hydrogen atoms and their bonds                                                    |
+| Bond Width            | 3       | Stroke width / cylinder radius for bonds (1–15)                                                |
+| Bond Color            | —       | Opens a colour picker to change the default bond colour                                        |
+| Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (3D only)                       |
 
 ## API Overview
 
@@ -203,10 +208,12 @@ Both viewers expose the same control bar:
 
 ```python
 from fastmolwidget import configure_opengl_format
-configure_opengl_format()   # call before QApplication(...)
+
+configure_opengl_format()  # call before QApplication(...)
 ```
 
-Sets a sensible `QSurfaceFormat` default (24-bit depth, double-buffer, 4× MSAA) for all platforms, including macOS where the format **must** be configured before any GL context is created.  Safe to call multiple times; any platform error is silently swallowed.
+Sets a sensible `QSurfaceFormat` default (24-bit depth, double-buffer, 4× MSAA) for all platforms, including macOS where the format **must** be configured before any GL context is
+created. Safe to call multiple times; any platform error is silently swallowed.
 
 ### `MoleculeViewer3DWidget(parent=None)`
 
@@ -218,35 +225,34 @@ A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
 
 ### `MoleculeWidget3D(parent=None)`
 
-Hardware-accelerated OpenGL renderer.  A `QOpenGLWidget` (Qt ≥ 6) or `QWidget` subclass that can be dropped into any layout.
+Hardware-accelerated OpenGL renderer. A `QOpenGLWidget` (Qt ≥ 6) or `QWidget` subclass that can be dropped into any layout.
 
 **Rendering technique**
 
-| Primitive | Technique |
-|-----------|-----------|
-| Atoms | Billboard sphere impostors — each atom is a quad; the fragment shader ray-casts a sphere and writes corrected depth values |
+| Primitive      | Technique                                                                                                                    |
+|----------------|------------------------------------------------------------------------------------------------------------------------------|
+| Atoms          | Billboard sphere impostors — each atom is a quad; the fragment shader ray-casts a sphere and writes corrected depth values   |
 | ADP ellipsoids | Impostor quads — the fragment shader ray-casts an exact ellipsoid using the inverse U_cart tensor passed as a `mat3` uniform |
-| Bonds | Tessellated cylinder mesh (8-segment, 4-segment for angular style) built on the CPU and uploaded as a single VBO |
-| Labels | `QPainter` overlay drawn after the OpenGL pass |
+| Bonds          | Tessellated cylinder mesh (8-segment, 4-segment for angular style) built on the CPU and uploaded as a single VBO             |
+| Labels         | `QPainter` overlay drawn after the OpenGL pass                                                                               |
 
 All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hardware compatibility.
 
-
 #### Qt Signals
 
-| Signal | Signature | Emitted when |
-|--------|-----------|--------------|
-| `atomClicked` | `(label: str)` | The user clicks on an atom |
-| `bondClicked` | `(label1: str, label2: str)` | The user clicks on a bond |
+| Signal        | Signature                    | Emitted when               |
+|---------------|------------------------------|----------------------------|
+| `atomClicked` | `(label: str)`               | The user clicks on an atom |
+| `bondClicked` | `(label1: str, label2: str)` | The user clicks on a bond  |
 
 #### Data Methods
 
 - **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
-  Load a new set of atoms and redraw.  
-  - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)  
-  - `cell` — optional `(a, b, c, α, β, γ)` tuple; required for ADP rendering  
-  - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` tensors  
-  - `keep_view` — preserve current zoom, rotation, and pan when `True`
+  Load a new set of atoms and redraw.
+    - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)
+    - `cell` — optional `(a, b, c, α, β, γ)` tuple; required for ADP rendering
+    - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` tensors
+    - `keep_view` — preserve current zoom, rotation, and pan when `True`
 
 - **`grow_molecule(atoms, cell=None, adps=None)`**  
   Replace atoms while preserving the view. Equivalent to `open_molecule(..., keep_view=True)`.
@@ -274,14 +280,14 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 from fastmolwidget import MoleculeWidget3D, configure_opengl_format
 from fastmolwidget.sdm import Atomtuple
 
-configure_opengl_format()   # before QApplication
+configure_opengl_format()  # before QApplication
 
 mol = MoleculeWidget3D(parent=self)
 
 atoms = [
-    Atomtuple(label="C1", type="C", x=0.0,  y=0.0,  z=0.0,  part=0),
-    Atomtuple(label="O1", type="O", x=1.22, y=0.0,  z=0.0,  part=0),
-    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0,  part=0),
+    Atomtuple(label="C1", type="C", x=0.0, y=0.0, z=0.0, part=0),
+    Atomtuple(label="O1", type="O", x=1.22, y=0.0, z=0.0, part=0),
+    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0, part=0),
 ]
 
 adps = {
@@ -311,19 +317,19 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 #### Qt Signals
 
-| Signal | Signature | Emitted when |
-|--------|-----------|--------------|
-| `atomClicked` | `(label: str)` | The user clicks on an atom; `label` is the atom name (e.g. `"C1"`) |
-| `bondClicked` | `(label1: str, label2: str)` | The user clicks on a bond; both atom labels are passed |
+| Signal        | Signature                    | Emitted when                                                       |
+|---------------|------------------------------|--------------------------------------------------------------------|
+| `atomClicked` | `(label: str)`               | The user clicks on an atom; `label` is the atom name (e.g. `"C1"`) |
+| `bondClicked` | `(label1: str, label2: str)` | The user clicks on a bond; both atom labels are passed             |
 
 #### Data Methods
 
 - **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
-  Load a new set of atoms and reset (or optionally preserve) the view.  
-  - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)  
-  - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering  
-  - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` ADP tensors  
-  - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
+  Load a new set of atoms and reset (or optionally preserve) the view.
+    - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)
+    - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering
+    - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` ADP tensors
+    - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
 
 - **`grow_molecule(atoms, cell=None, adps=None)`**  
   Replace the atom set while always preserving the current view.  
@@ -370,9 +376,9 @@ from fastmolwidget.sdm import Atomtuple
 mol = MoleculeWidget(parent=self)
 
 atoms = [
-    Atomtuple(label="C1", type="C", x=0.0,  y=0.0,  z=0.0,  part=0),
-    Atomtuple(label="O1", type="O", x=1.22, y=0.0,  z=0.0,  part=0),
-    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0,  part=0),
+    Atomtuple(label="C1", type="C", x=0.0, y=0.0, z=0.0, part=0),
+    Atomtuple(label="O1", type="O", x=1.22, y=0.0, z=0.0, part=0),
+    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0, part=0),
 ]
 
 # ADP tensors: {atom_label: (U11, U22, U33, U23, U13, U12)}
@@ -381,7 +387,7 @@ adps = {
     "O1": (0.03, 0.03, 0.03, 0.0, 0.0, 0.0),
 }
 
-cell = (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)   # optional
+cell = (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)  # optional
 
 mol.open_molecule(atoms=atoms, cell=cell, adps=adps)
 mol.atomClicked.connect(lambda label: print(f"Selected: {label}"))
@@ -395,17 +401,19 @@ layout.addWidget(mol)
 from fastmolwidget import MoleculeWidgetProtocol
 ```
 
-A `typing.Protocol` (runtime-checkable) that captures the common public API of both `MoleculeWidget` and `MoleculeWidget3D`.  Use it to write renderer-agnostic code:
+A `typing.Protocol` (runtime-checkable) that captures the common public API of both `MoleculeWidget` and `MoleculeWidget3D`. Use it to write renderer-agnostic code:
 
 ```python
 from fastmolwidget import MoleculeWidgetProtocol
+
 
 def load_into(widget: MoleculeWidgetProtocol, atoms, cell, adps) -> None:
     widget.open_molecule(atoms, cell=cell, adps=adps)
     widget.show_labels(True)
 ```
 
-Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `set_background_color`, `setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
+Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `set_background_color`,
+`setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
 
 ### `MoleculeLoader(widget)`
 
@@ -423,6 +431,7 @@ BSD 2-Clause License — see [LICENSE](LICENSE) for details.
 ## Maintainer Release Workflow
 
 The release workflow is tag-driven.
+
 1. Ensure `project.version` in `pyproject.toml` is the version to publish.
 2. Create and push a matching tag in the format `version-X.Y.Z`.
 3. GitHub Actions builds sdist/wheel and uploads to TestPyPI.
@@ -433,4 +442,3 @@ Example:
 git tag version-0.1.0
 git push origin version-0.1.0
 ```
-
