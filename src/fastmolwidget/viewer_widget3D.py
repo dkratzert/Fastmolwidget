@@ -202,7 +202,7 @@ if __name__ == "__main__":
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup
     # w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
-    #w.load_file('../../tests/test-data/p21c.cif')
+    w.load_file('../../tests/test-data/p21c.cif')
     # w.load_file('../../tests/test-data/1000007.cif')
     # w.load_file('../../tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('../../tests/test-data/4060314.cif'))
@@ -217,5 +217,5 @@ if __name__ == "__main__":
         w.load_file(args.cif_file)
     w.show()
     app.processEvents()
-    w.showMaximized()
+    # w.showMaximized()
     app.exec()
