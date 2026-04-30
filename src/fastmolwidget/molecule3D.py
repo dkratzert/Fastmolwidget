@@ -237,7 +237,7 @@ class _Atom3D:
     """Internal 3-D atom representation used by :class:`MoleculeWidget3D`."""
 
     __slots__ = [
-        "center", "label", "type_", "part",
+        "center", "label", "type_", "part", "symmgen",
         "color_f", "display_radius",
         "u_cart", "u_iso", "adp_valid", "u_eigvals", "u_eigvecs",
         "adp_billboard_r", "adp_A_matrix",
@@ -257,6 +257,7 @@ class _Atom3D:
         self.label = label
         self.type_ = type_
         self.part = part
+        self.symmgen = False
 
         hex_color = element2color.get(type_, "#808080")
         self.color_f: tuple[float, float, float] = _hex_to_rgb_float(hex_color)
@@ -1479,8 +1480,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             return
         painter = QtGui.QPainter(self)
         try:
-            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+            #painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            #painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
             self._draw_labels_with_painter(painter, mv, proj)
         finally:
             painter.end()
@@ -1679,6 +1680,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             name_counts[base_name] = count + 1
 
             a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part)
+            symm = getattr(at, "symm_matrix", None)
+            if symm is not None:
+                symm_np = np.array(symm, dtype=float)
+                a3d.symmgen = not np.allclose(symm_np, np.eye(3))
+            else:
+                a3d.symmgen = False
 
             if self._adp_map and self._cell and base_name in self._adp_map:
                 try:
@@ -1755,7 +1762,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         coords = np.array([a.center for a in self.atoms], dtype=np.float64)
         types = [a.type_ for a in self.atoms]
         parts = [a.part for a in self.atoms]
-        return build_conntable(coords, types, parts, extra_param=extra_param)
+        symmgen = [a.symmgen for a in self.atoms]
+        return build_conntable(coords, types, parts, extra_param=extra_param, symmgen=symmgen)
 
     # ------------------------------------------------------------------
     # ADP crystallography helpers  (ported from molecule2D.py)
@@ -2068,7 +2076,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         font.setBold(True)
         painter.setFont(font)
         metrics = QtGui.QFontMetrics(font)
-        pad_x, pad_y = 6.0, 3.0
+        pad_x, pad_y = 2.0, 0.0
         tw = metrics.horizontalAdvance(text)
         th = metrics.height()
 

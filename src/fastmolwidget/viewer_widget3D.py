@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+from argparse import ArgumentParser
 from pathlib import Path
 
 from qtpy import QtGui, QtWidgets
@@ -194,19 +195,26 @@ if __name__ == "__main__":
         configure_opengl_format()
         app = QtWidgets.QApplication([])
 
+    parse = ArgumentParser(description="Test the 3-D molecule viewer widget with a sample CIF file.")
+    parse.add_argument("cif_file", nargs="?", default=None, help="Path to a CIF file to load (optional).")
+    args = parse.parse_args()
+
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup
     # w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
-    w.load_file('../../tests/test-data/p21c.cif')
+    #w.load_file('../../tests/test-data/p21c.cif')
     # w.load_file('../../tests/test-data/1000007.cif')
     # w.load_file('../../tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('../../tests/test-data/4060314.cif'))
+    # w.load_file(Path('../../tests/test-data/1979688_small.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1367_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1368_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1369_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1370_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1371_ESM.cif'))
     # w.load_file(Path('../../tests/test-data/41467_2015_BFncomms9288_MOESM1372_ESM.cif'))
+    if args.cif_file:
+        w.load_file(args.cif_file)
     w.show()
     app.processEvents()
     w.showMaximized()

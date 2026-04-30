@@ -68,6 +68,7 @@ def build_conntable(
     parts: list[int],
     radii: np.ndarray | None = None,
     extra_param: float = 1.2,
+    symmgen: list[bool] | np.ndarray | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Vectorised connectivity-table builder (shared by 2D and 3D widgets).
 
@@ -83,6 +84,9 @@ def build_conntable(
         Pre-computed covalent radii.  If *None*, looked up from *types*.
     extra_param : float
         Multiplier applied to the sum of covalent radii for bond detection.
+    symmgen : list[bool] or ndarray of shape (N,), optional
+        Per-atom flag indicating whether the atom was symmetry-generated.
+        Required for the negative-PART exclusion rule.
 
     Returns
     -------
@@ -123,6 +127,19 @@ def build_conntable(
         & (parts_arr[None, :] != 0)
         & (parts_arr[:, None] != parts_arr[None, :])
     )
+
+    # Negative-part filter: if an atom has a negative part number, bonds
+    # crossing the asymmetric-unit / symmetry-copy boundary are excluded.
+    # This prevents disordered fragments on special positions from bonding
+    # to their own symmetry images while preserving intra-copy connectivity.
+    if symmgen is not None:
+        symmgen_arr = np.asarray(symmgen, dtype=bool)
+        neg_part = parts_arr < 0
+        # True when the two atoms are on different sides of the boundary
+        cross_boundary = symmgen_arr[:, None] != symmgen_arr[None, :]
+        # Exclude when at least one atom has negative part and they cross
+        either_neg = neg_part[:, None] | neg_part[None, :]
+        bond_mask &= ~(either_neg & cross_boundary)
 
     # H–H filter: skip bonds between two hydrogen atoms
     is_h = np.array([t in ("H", "D") for t in types], dtype=bool)

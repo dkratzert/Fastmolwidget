@@ -424,6 +424,12 @@ class MoleculeWidget(QtWidgets.QWidget):
             name_counts[base_name] = count + 1
 
             a = Atom(at.x, at.y, at.z, internal_name, at.type, at.part)
+            symm_matrix = getattr(at, 'symm_matrix', None)
+            if symm_matrix is not None:
+                symm_np = np.array(symm_matrix, dtype=float)
+                a.symmgen = not np.allclose(symm_np, np.eye(3))
+            else:
+                a.symmgen = False
             if self._adp_map and self._cell and base_name in self._adp_map:
                 try:
                     uvals = self._adp_map[base_name]
@@ -1332,13 +1338,14 @@ class MoleculeWidget(QtWidgets.QWidget):
         types = [a.type_ for a in self.atoms]
         parts = [a.part for a in self.atoms]
         radii = np.array([a.radius for a in self.atoms], dtype=np.float64)
-        return build_conntable(coords, types, parts, radii=radii, extra_param=extra_param)
+        symmgen = [a.symmgen for a in self.atoms]
+        return build_conntable(coords, types, parts, radii=radii, extra_param=extra_param, symmgen=symmgen)
 
 
 class Atom:
     """Internal representation of a single atom for rendering."""
 
-    __slots__ = ['coordinate', 'name', 'part', 'radius', 'screenx', 'screeny', 'type_', 'u_cart', 'color',
+    __slots__ = ['coordinate', 'name', 'part', 'symmgen', 'radius', 'screenx', 'screeny', 'type_', 'u_cart', 'color',
                  'color_light', 'color_dark', 'u_iso', 'z', 'u_eigvals', 'u_eigvecs', 'u_inv',
                  'sphere_brush', 'adp_brush', 'adp_valid']
 
@@ -1348,6 +1355,7 @@ class Atom:
         self.z = z
         self.name = name
         self.part = part
+        self.symmgen = False
         self.type_ = type_
         self.screenx = 0
         self.screeny = 0
