@@ -825,6 +825,24 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.atomClicked.connect(lambda _x: None)
         self.bondClicked.connect(lambda _x, _y: None)
 
+    def paintGL(self):
+        if not self._gl_initialized and not self._gl_failed:
+            try:
+                # try to initialize; this happens with a current context (paintGL guaranteed current)
+                self._do_initializeGL()
+                self._gl_initialized = True
+                if self._geometry_dirty and self.atoms:
+                    self._upload_geometry()
+            except Exception as exc:
+                self._gl_failed = True
+                self._gl_fail_reason = f"OpenGL initialisation failed:\n{exc}"
+                print(self._gl_fail_reason)
+                # fallback painting continues
+        if self._gl_failed:
+            self._paint_fallback_on_gl()
+            return
+        self._do_paintGL()
+
     # ------------------------------------------------------------------
     # Surface format
     # ------------------------------------------------------------------
