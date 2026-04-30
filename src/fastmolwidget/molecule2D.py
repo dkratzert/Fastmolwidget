@@ -927,6 +927,9 @@ class MoleculeWidget(QtWidgets.QWidget):
 
         self.calculate_z_order()
 
+        # --- Pass 1: Draw bonds and atoms (back-to-front) ---
+        label_atoms: list[Atom] = []
+
         for item in self.objects:
             if not self.show_hydrogens_flag:
                 if item.atom1.type_ in hydrogens or (item.is_bond and item.atom2.type_ in hydrogens):
@@ -950,13 +953,17 @@ class MoleculeWidget(QtWidgets.QWidget):
                 if sx < vp_left or sx > vp_right or sy < vp_top or sy > vp_bottom:
                     continue
                 self.draw_atom(item.atom1)
+                # Collect atoms eligible for label drawing
                 is_hovered = item.atom1.name == self.hovered_atom
-                if self.labels and not is_hovered:
-                    if item.atom1.type_ in hydrogens:
-                        continue
-                    self.draw_label(item.atom1, enlarged=is_hovered)
-                elif is_hovered:
-                    self.draw_label(item.atom1, enlarged=True)
+                if is_hovered:
+                    label_atoms.append(item.atom1)
+                elif self.labels and item.atom1.type_ not in hydrogens:
+                    label_atoms.append(item.atom1)
+
+        # --- Pass 2: Draw labels in foreground (always on top of atoms/bonds) ---
+        for atom in label_atoms:
+            is_hovered = atom.name == self.hovered_atom
+            self.draw_label(atom, enlarged=is_hovered)
 
         # Bond-distance hover label – drawn last so it sits above everything.
         if (self.hovered_atom is None
