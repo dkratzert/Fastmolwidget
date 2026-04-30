@@ -26,10 +26,6 @@ from fastmolwidget.molecule3D import MoleculeWidget3D, configure_opengl_format
 """
 TODO:
 
-* Make labels of 2D widget always on top when hovering over an atom.
-* Make negative parts bind correctly.
-* Check if it makes sense to support later OpenGl versions (e.g. 3.3 core).
-
 """
 
 
@@ -192,7 +188,7 @@ if __name__ == "__main__":
     if not app:
         # MUST be called before QApplication is created so the default
         # QSurfaceFormat (incl. 4× MSAA) is honoured by every GL context.
-        configure_opengl_format()
+        # configure_opengl_format()
         app = QtWidgets.QApplication([])
 
     parse = ArgumentParser(description="Test the 3-D molecule viewer widget with a sample CIF file.")
@@ -216,6 +212,6 @@ if __name__ == "__main__":
     if args.cif_file:
         w.load_file(args.cif_file)
     w.show()
-    app.processEvents()
-    # w.showMaximized()
+    #app.processEvents()
+    w.showMaximized()
     app.exec()
