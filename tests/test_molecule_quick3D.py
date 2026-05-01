@@ -180,11 +180,14 @@ def test_geometry_dirty_after_open() -> None:
 def test_hydrogen_hidden_geometry() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
-    item.show_hydrogens(False)
-    # H1 should be excluded; sphere count must drop.
+    # H1 should be visible; record count with hydrogens.
     count_with_h = item._sphere_count
+    # Now hide hydrogens; sphere count must not increase.
     item.show_hydrogens(False)
     assert item._sphere_count <= count_with_h
+    # Show hydrogens again; count must be restored.
+    item.show_hydrogens(True)
+    assert item._sphere_count == count_with_h
 
 
 # ---------------------------------------------------------------------------
@@ -360,10 +363,11 @@ def test_label_positions_empty_when_no_atoms() -> None:
 def test_label_positions_populated_when_labels_on() -> None:
     item = _make_item()
     # Give the item a non-zero size so projection works.
+    # setWidth/setHeight may be no-ops outside a scene; that is acceptable.
     try:
         item.setWidth(640)
         item.setHeight(480)
-    except Exception:
+    except AttributeError:
         pass
     item.show_labels(True)
     item.open_molecule(_simple_atoms())
