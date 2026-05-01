@@ -37,6 +37,13 @@ pyqt6 = [
 gl3d = [
     "PyOpenGL>=3.1.7",
 ]
+# quickview: Qt Quick / QML support via QQuickFramebufferObject.
+# PySide6/PyQt6 Essentials already include QtQuick, so this extra is identical
+# to the 'pyside6' extra but documents the QtQuick requirement explicitly.
+# Also call setup_opengl_backend() before creating QGuiApplication.
+quickview = [
+    "pyside6-essentials>=6.11.0",
+]
 # cpp: build-time only — pybind11 must be present when running
 #   pip install -e . --no-build-isolation
 # macOS users also need:  brew install libomp

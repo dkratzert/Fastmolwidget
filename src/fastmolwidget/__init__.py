@@ -4,6 +4,7 @@ from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.viewer_widget3D import MoleculeViewer3DWidget
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
+from fastmolwidget.molecule_quick3D import MoleculeQuick3D, setup_opengl_backend
 
 __version__ = "0.6.3"
 
@@ -14,6 +15,8 @@ __all__ = [
     "MoleculeWidget3D",
     "MoleculeViewer3DWidget",
     "MoleculeWidgetProtocol",
+    "MoleculeQuick3D",
+    "setup_opengl_backend",
     "__version__",
 ]
 

@@ -36,6 +36,7 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 - **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) are plain `QWidget` subclasses; drop either into any layout
 - **Ready-to-use viewers** — `MoleculeViewerWidget` (2D) and `MoleculeViewer3DWidget` (3D) bundle the renderer with a full control bar
+- **Qt Quick / QML support** — `MoleculeQuick3D` is a `QQuickFramebufferObject` item that renders the same 3D scene inside a QML scene graph
 - **Common protocol** — `MoleculeWidgetProtocol` lets you write code that works with either widget interchangeably
 
 ## Supported File Formats
@@ -57,6 +58,9 @@ uv add "fastmolwidget[pyqt6]"
 
 # add 3D OpenGL support
 uv add "fastmolwidget[pyside6,gl3d]"
+
+# Qt Quick / QML support (uses the same pyside6 extra; QtQuick is included)
+uv add "fastmolwidget[quickview]"
 ```
 
 ### Optional C++ Acceleration (`sdm_cpp`)
@@ -111,7 +115,49 @@ mol.open_molecule(atoms, cell=cell, adps=adps)
 layout.addWidget(mol)
 ```
 
-### Embedding in your own layout (2D)
+### Qt Quick / QML integration
+
+```python
+import sys
+from qtpy.QtGui import QGuiApplication
+from qtpy.QtQml import QQmlApplicationEngine, qmlRegisterType
+from fastmolwidget import MoleculeQuick3D, MoleculeLoader, setup_opengl_backend
+
+# Must be called before creating QGuiApplication (especially on macOS).
+setup_opengl_backend()
+
+app = QGuiApplication(sys.argv)
+engine = QQmlApplicationEngine()
+qmlRegisterType(MoleculeQuick3D, "MolWidget", 1, 0, "MoleculeQuick3D")
+engine.load("main.qml")
+sys.exit(app.exec())
+```
+
+```qml
+// main.qml
+import QtQuick 2.15
+import MolWidget 1.0
+
+MoleculeQuick3D {
+    width: 800; height: 600
+    showAdps: true
+    showLabels: true
+
+    Repeater {
+        model: parent.labelPositions
+        delegate: Text {
+            required property var modelData
+            x: modelData.x + 4;  y: modelData.y - 4
+            text: modelData.text
+            color: modelData.kind === "hover_atom" ? "#1a6ecc" : "#6b3200"
+            font.pixelSize: parent.parent.labelFontSize
+            font.bold: modelData.kind !== "atom"
+        }
+    }
+}
+```
+
+
 
 ```python
 from fastmolwidget import MoleculeWidget, MoleculeLoader

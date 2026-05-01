@@ -124,6 +124,14 @@ class MoleculeWidgetProtocol(Protocol):
         """Reset zoom, rotation and pan to defaults."""
         ...
 
+    def reset_rotation_center(self) -> None:
+        """Restore the rotation pivot to the molecule's geometric centre.
+
+        Undoes any previous middle-click recentring so the scene re-centres
+        on the bounding-box centre of all atoms.
+        """
+        ...
+
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
         """Render the current view to an image file."""
         ...
