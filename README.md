@@ -36,7 +36,7 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 - **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) are plain `QWidget` subclasses; drop either into any layout
 - **Ready-to-use viewers** — `MoleculeViewerWidget` (2D) and `MoleculeViewer3DWidget` (3D) bundle the renderer with a full control bar
-- **Qt Quick / QML support** — `MoleculeQuick3D` is a `QQuickFramebufferObject` item that renders the same 3D scene inside a QML scene graph
+- **Qt Quick / QML support** — `MoleculeQuick3D` is a `QQuickRhiItem` (Qt ≥ 6.7) that renders the same 3D scene inside a QML scene graph
 - **Common protocol** — `MoleculeWidgetProtocol` lets you write code that works with either widget interchangeably
 
 ## Supported File Formats

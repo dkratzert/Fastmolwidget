@@ -492,16 +492,12 @@ void main() {
 _ORTHO_VIEW_MARGIN: float = 1.6
 
 
-# ---------------------------------------------------------------------------
-# Renderer (lives on the Qt Quick render thread)
-# ---------------------------------------------------------------------------
-
-_ORTHO_VIEW_MARGIN: float = 1.6
-
-
 def _make_glsl_shader(glsl_src: str, stage: object) -> object:
-    """Wrap a GLSL source string in a :class:`QShader` for the RHI backend."""
-    s = QShader()
+    """Wrap a GLSL source string in a :class:`QShader` for the RHI backend.
+
+    Only called when *_HAS_RHI* is True, so the RHI type aliases are valid.
+    """
+    s = QShader()  # type: ignore[call-arg]
     s.setStage(stage)  # type: ignore[arg-type]
     key = QShaderKey(  # type: ignore[call-arg]
         QShader.Source.GlslShader,  # type: ignore[union-attr]
