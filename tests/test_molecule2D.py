@@ -255,12 +255,19 @@ def test_set_bond_color_visible_in_rounded_mode():
 
     # Convert to numpy arrays for easy pixel comparison
     def img_to_array(img):
+        import ctypes
         img = img.convertToFormat(QtGui.QImage.Format.Format_RGB32)
         w, h = img.width(), img.height()
+        n_bytes = h * w * 4
         ptr = img.bits()
         if hasattr(ptr, 'setsize'):
-            ptr.setsize(h * w * 4)
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+            # PyQt5 / early PyQt6: sip.voidptr with setsize()
+            ptr.setsize(n_bytes)
+            arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+        else:
+            # PyQt6: sip.voidptr without setsize(); use ctypes via raw address
+            cbuf = (ctypes.c_uint8 * n_bytes).from_address(int(ptr))
+            arr = np.frombuffer(cbuf, dtype=np.uint8).reshape((h, w, 4))
         return arr[:, :, :3].copy()
 
     arr_grey = img_to_array(img_grey)
@@ -346,13 +353,19 @@ def test_hover_bond_distance_label_renders_in_paint():
     my = (a.screeny + b.screeny) / 2.0
 
     def grab_array() -> np.ndarray:
+        import ctypes
         app.processEvents()
         img = widget.grab().toImage().convertToFormat(QtGui.QImage.Format.Format_RGB32)
         w, h = img.width(), img.height()
+        n_bytes = h * w * 4
         ptr = img.bits()
         if hasattr(ptr, 'setsize'):
-            ptr.setsize(h * w * 4)
-        return np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))[:, :, :3].copy()
+            ptr.setsize(n_bytes)
+            arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+        else:
+            cbuf = (ctypes.c_uint8 * n_bytes).from_address(int(ptr))
+            arr = np.frombuffer(cbuf, dtype=np.uint8).reshape((h, w, 4))
+        return arr[:, :, :3].copy()
 
     # Baseline: no hover state at all.
     widget.hovered_atom = None
