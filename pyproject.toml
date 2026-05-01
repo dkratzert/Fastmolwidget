@@ -21,8 +21,6 @@ classifiers = [
 dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
-    "pyopengl>=3.1",
-    "pyopengl-accelerate>=3.1",
     "qtpy>=2.4.3",
     "shelxfile>=22",
 ]
@@ -36,13 +34,14 @@ pyqt6 = [
 ]
 gl3d = [
     "PyOpenGL>=3.1.7",
+    "pyopengl-accelerate>=3.1",
 ]
-# quickview: Qt Quick / QML support via QQuickFramebufferObject.
+# quickview: Qt Quick / QML support via QQuickRhiItem (requires Qt >= 6.7).
 # PySide6/PyQt6 Essentials already include QtQuick, so this extra is identical
-# to the 'pyside6' extra but documents the QtQuick requirement explicitly.
+# to the 'pyside6' extra but documents the QtQuick version requirement.
 # Also call setup_opengl_backend() before creating QGuiApplication.
 quickview = [
-    "pyside6-essentials>=6.11.0",
+    "pyside6-essentials>=6.7.0",
 ]
 # cpp: build-time only — pybind11 must be present when running
 #   pip install -e . --no-build-isolation

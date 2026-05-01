@@ -1,10 +1,10 @@
 """Tests for :class:`~fastmolwidget.molecule_quick3D.MoleculeQuick3D`.
 
-:class:`MoleculeQuick3D` requires ``QQuickFramebufferObject`` (PySide6 or
-PyQt6 with QtQuick) AND a real OpenGL context to render.  These tests focus on
-the pure-Python logic that can run without a display: molecule loading,
-geometry building, matrix computation, and hit testing.  Tests that need a
-live Qt Quick scene are skipped when the dependency is unavailable.
+:class:`MoleculeQuick3D` requires ``QQuickRhiItem`` (PySide6 ≥ 6.7 or
+PyQt6 ≥ 6.7 with QtQuick) to render.  These tests focus on the pure-Python
+logic that can run without a display: molecule loading, geometry building,
+matrix computation, and hit testing.  Tests that need a live Qt Quick scene
+are skipped when the dependency is unavailable.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from qtpy import QtWidgets
 
 from fastmolwidget.molecule_quick3D import (
     MoleculeQuick3D,
-    _HAS_QQFBO,
+    _HAS_RHI,
     setup_opengl_backend,
 )
 from fastmolwidget.sdm import Atomtuple
@@ -33,9 +33,9 @@ if not app:
 # Helpers
 # ---------------------------------------------------------------------------
 
-needs_qqfbo = pytest.mark.skipif(
-    not _HAS_QQFBO,
-    reason="QQuickFramebufferObject not available (install PySide6 with QtQuick)",
+needs_rhi = pytest.mark.skipif(
+    not _HAS_RHI,
+    reason="QQuickRhiItem not available (install PySide6 ≥ 6.7 with QtQuick)",
 )
 
 
@@ -63,7 +63,7 @@ def test_import_module() -> None:
 
     assert hasattr(m, "MoleculeQuick3D")
     assert hasattr(m, "setup_opengl_backend")
-    assert hasattr(m, "_HAS_QQFBO")
+    assert hasattr(m, "_HAS_RHI")
 
 
 def test_setup_opengl_backend_no_crash() -> None:
@@ -76,7 +76,7 @@ def test_setup_opengl_backend_no_crash() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_construction_defaults() -> None:
     item = _make_item()
     assert item.atoms == []
@@ -89,15 +89,15 @@ def test_construction_defaults() -> None:
     np.testing.assert_array_equal(item._rot_matrix, np.eye(3))
 
 
-@needs_qqfbo
+@needs_rhi
 def test_construction_raises_without_qqfbo(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When _HAS_QQFBO is False, __init__ must raise RuntimeError."""
+    """When _HAS_RHI is False, __init__ must raise RuntimeError."""
     import fastmolwidget.molecule_quick3D as m
 
-    monkeypatch.setattr(m, "_HAS_QQFBO", False)
-    # _QFBOBase is already set to QWidget so super().__init__ will succeed,
+    monkeypatch.setattr(m, "_HAS_RHI", False)
+    # _RhiItemBase is already set to QWidget so super().__init__ will succeed,
     # but the guard we added raises before calling super.
-    with pytest.raises(RuntimeError, match="QQuickFramebufferObject"):
+    with pytest.raises(RuntimeError, match="QQuickRhiItem"):
         m.MoleculeQuick3D()
 
 
@@ -106,7 +106,7 @@ def test_construction_raises_without_qqfbo(monkeypatch: pytest.MonkeyPatch) -> N
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_open_molecule_loads_atoms() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -115,7 +115,7 @@ def test_open_molecule_loads_atoms() -> None:
     assert item.atoms[1].type_ == "O"
 
 
-@needs_qqfbo
+@needs_rhi
 def test_open_molecule_resets_view() -> None:
     item = _make_item()
     item._zoom = 3.0
@@ -125,7 +125,7 @@ def test_open_molecule_resets_view() -> None:
     np.testing.assert_array_equal(item._pan, [0.0, 0.0])
 
 
-@needs_qqfbo
+@needs_rhi
 def test_open_molecule_keep_view() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -134,7 +134,7 @@ def test_open_molecule_keep_view() -> None:
     assert item._zoom == pytest.approx(2.5)
 
 
-@needs_qqfbo
+@needs_rhi
 def test_clear_removes_atoms() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -148,7 +148,7 @@ def test_clear_removes_atoms() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_sphere_geometry_built() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -158,7 +158,7 @@ def test_sphere_geometry_built() -> None:
     assert item._sphere_idx.size > 0
 
 
-@needs_qqfbo
+@needs_rhi
 def test_cylinder_geometry_built() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -166,7 +166,7 @@ def test_cylinder_geometry_built() -> None:
     assert item._cylinder_count >= 0  # bonds may or may not form depending on radii
 
 
-@needs_qqfbo
+@needs_rhi
 def test_geometry_dirty_after_open() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -176,7 +176,7 @@ def test_geometry_dirty_after_open() -> None:
     assert item._geometry_dirty is True
 
 
-@needs_qqfbo
+@needs_rhi
 def test_hydrogen_hidden_geometry() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -195,7 +195,7 @@ def test_hydrogen_hidden_geometry() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_show_adps_toggle() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -205,7 +205,7 @@ def test_show_adps_toggle() -> None:
     assert item._show_adps is True
 
 
-@needs_qqfbo
+@needs_rhi
 def test_show_labels_toggle() -> None:
     item = _make_item()
     item.show_labels(True)
@@ -214,7 +214,7 @@ def test_show_labels_toggle() -> None:
     assert item.labels is False
 
 
-@needs_qqfbo
+@needs_rhi
 def test_set_bond_width() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -222,7 +222,7 @@ def test_set_bond_width() -> None:
     assert item.bond_width == 8
 
 
-@needs_qqfbo
+@needs_rhi
 def test_set_bond_color_str() -> None:
     item = _make_item()
     item.set_bond_color("#ff0000")
@@ -232,7 +232,7 @@ def test_set_bond_color_str() -> None:
     assert b == pytest.approx(0.0, abs=0.01)
 
 
-@needs_qqfbo
+@needs_rhi
 def test_set_background_color() -> None:
     from qtpy import QtGui
 
@@ -246,7 +246,7 @@ def test_set_background_color() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_reset_view() -> None:
     item = _make_item()
     item._zoom = 3.0
@@ -258,7 +258,7 @@ def test_reset_view() -> None:
     np.testing.assert_array_almost_equal(item._rot_matrix, np.eye(3))
 
 
-@needs_qqfbo
+@needs_rhi
 def test_reset_rotation_center() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -272,7 +272,7 @@ def test_reset_rotation_center() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_compute_mv_matrix_shape() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -281,7 +281,7 @@ def test_compute_mv_matrix_shape() -> None:
     assert mv.dtype == np.float32
 
 
-@needs_qqfbo
+@needs_rhi
 def test_compute_proj_matrix_shape() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -289,7 +289,7 @@ def test_compute_proj_matrix_shape() -> None:
     assert proj.shape == (4, 4)
 
 
-@needs_qqfbo
+@needs_rhi
 def test_ortho_half_extents_positive() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -304,7 +304,7 @@ def test_ortho_half_extents_positive() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_pick_atom_at_miss() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -316,7 +316,7 @@ def test_pick_atom_at_miss() -> None:
     assert t >= 0.0
 
 
-@needs_qqfbo
+@needs_rhi
 def test_ray_sphere_hit() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())
@@ -338,28 +338,28 @@ def test_ray_sphere_hit() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_qml_property_bondColor_round_trip() -> None:
     item = _make_item()
     item.bondColor = "#123456"
     assert item.bondColor.lower() == "#123456"
 
 
-@needs_qqfbo
+@needs_rhi
 def test_qml_property_backgroundColor_round_trip() -> None:
     item = _make_item()
     item.backgroundColor = "#aabbcc"
     assert item.backgroundColor.lower() == "#aabbcc"
 
 
-@needs_qqfbo
+@needs_rhi
 def test_label_positions_empty_when_no_atoms() -> None:
     item = _make_item()
     item._recompute_label_positions()
     assert item._label_positions == []
 
 
-@needs_qqfbo
+@needs_rhi
 def test_label_positions_populated_when_labels_on() -> None:
     item = _make_item()
     # Give the item a non-zero size so projection works.
@@ -381,7 +381,7 @@ def test_label_positions_populated_when_labels_on() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_satisfies_protocol() -> None:
     """MoleculeQuick3D must implement all MoleculeWidgetProtocol methods."""
     from fastmolwidget.molecule_base import MoleculeWidgetProtocol
@@ -395,7 +395,7 @@ def test_satisfies_protocol() -> None:
 # ---------------------------------------------------------------------------
 
 
-@needs_qqfbo
+@needs_rhi
 def test_grow_molecule_keeps_view() -> None:
     item = _make_item()
     item.open_molecule(_simple_atoms())

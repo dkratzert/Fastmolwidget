@@ -126,8 +126,6 @@ source = { editable = "." }
 dependencies = [
     { name = "gemmi" },
     { name = "numpy" },
-    { name = "pyopengl" },
-    { name = "pyopengl-accelerate" },
     { name = "qtpy" },
     { name = "shelxfile" },
 ]
@@ -138,11 +136,15 @@ cpp = [
 ]
 gl3d = [
     { name = "pyopengl" },
+    { name = "pyopengl-accelerate" },
 ]
 pyqt6 = [
     { name = "pyqt6" },
 ]
 pyside6 = [
+    { name = "pyside6-essentials" },
+]
+quickview = [
     { name = "pyside6-essentials" },
 ]
 
@@ -164,15 +166,15 @@ requires-dist = [
     { name = "gemmi", specifier = ">=0.7.5" },
     { name = "numpy", specifier = ">=2.2.0" },
     { name = "pybind11", marker = "extra == 'cpp'", specifier = ">=2.13" },
-    { name = "pyopengl", specifier = ">=3.1" },
     { name = "pyopengl", marker = "extra == 'gl3d'", specifier = ">=3.1.7" },
-    { name = "pyopengl-accelerate", specifier = ">=3.1" },
+    { name = "pyopengl-accelerate", marker = "extra == 'gl3d'", specifier = ">=3.1" },
     { name = "pyqt6", marker = "extra == 'pyqt6'", specifier = ">=6.9.0" },
     { name = "pyside6-essentials", marker = "extra == 'pyside6'", specifier = ">=6.11.0" },
+    { name = "pyside6-essentials", marker = "extra == 'quickview'", specifier = ">=6.7.0" },
     { name = "qtpy", specifier = ">=2.4.3" },
     { name = "shelxfile", specifier = ">=22" },
 ]
-provides-extras = ["pyside6", "pyqt6", "gl3d", "cpp"]
+provides-extras = ["pyside6", "pyqt6", "gl3d", "quickview", "cpp"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,15 +1,12 @@
 """Qt Quick 3-D molecule display item.
 
 Provides :class:`MoleculeQuick3D`, a
-:class:`~PySide6.QtQuick.QQuickFramebufferObject` subclass that renders the
+:class:`~PySide6.QtQuick.QQuickRhiItem` subclass (Qt ≥ 6.7) that renders the
 same crystal-structure scene as
 :class:`~fastmolwidget.molecule3D.MoleculeWidget3D` but lives inside a Qt
 Quick scene graph, making it composable with QML.
 
-.. note::
-    :class:`QQuickFramebufferObject` is deprecated as of Qt 6.8 in favour of
-    ``QQuickRhiItem``.  Migration to the RHI API is planned when the minimum
-    supported Qt version is raised to ≥ 6.7.
+Requires Qt **6.7 or later** (``QQuickRhiItem`` was added in Qt 6.7).
 
 Quick-start
 -----------
@@ -55,8 +52,9 @@ Rendering overview
 ------------------
 The same sphere impostor, batched-ellipsoid impostor and tessellated cylinder
 pipeline used by :class:`~fastmolwidget.molecule3D.MoleculeWidget3D` is
-re-used here.  All GLSL shaders have been upgraded to ``#version 150 core``
-(OpenGL 3.2 Core Profile) to satisfy the Qt Quick surface format.
+re-used here.  All GLSL shaders target ``#version 150 core`` (OpenGL 3.2 Core
+Profile).  View matrices are passed via a std140 uniform buffer object (UBO),
+which is managed through the Qt RHI API.
 
 Mouse controls
 --------------
@@ -71,16 +69,16 @@ Mouse controls
 
 Threading model
 ---------------
-All Python state lives on the GUI thread.  The :class:`_MolRenderer` object is
-created by Qt once per item and used exclusively on the render thread.
-:meth:`_MolRenderer.synchronize` is called by Qt while the GUI thread is
+All Python state lives on the GUI thread.  The :class:`_MolRhiRenderer` object
+is created by Qt once per item and used exclusively on the render thread.
+:meth:`_MolRhiRenderer.synchronize` is called by Qt while the GUI thread is
 blocked; it copies the CPU-side geometry arrays and view matrices from the item
-to the renderer.  After ``synchronize`` returns, :meth:`_MolRenderer.render`
-performs all OpenGL calls.
+to the renderer.  After ``synchronize`` returns,
+:meth:`_MolRhiRenderer.render` records RHI draw commands.
 
-This module intentionally bypasses ``qtpy`` for ``QQuickFramebufferObject``
-because that class is not exposed uniformly by qtpy.  All other Qt types are
-imported through qtpy as per project convention.
+This module bypasses ``qtpy`` for ``QQuickRhiItem`` and ``QQuickRhiItemRenderer``
+because those classes are not exposed uniformly by qtpy.  All other Qt types
+are imported through qtpy as per project convention.
 
 Platform notes
 --------------
@@ -93,7 +91,6 @@ Platform notes
 
 from __future__ import annotations
 
-import ctypes
 from math import cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
@@ -115,61 +112,92 @@ from fastmolwidget.molecule3D import (
 from fastmolwidget.sdm import Atomtuple
 
 # ---------------------------------------------------------------------------
-# Optional: PyOpenGL
+# Optional: QQuickRhiItem / QQuickRhiItemRenderer (Qt ≥ 6.7, not in qtpy)
 # ---------------------------------------------------------------------------
+
+_HAS_RHI: bool = False
+_RhiItemBase: type
+_RhiRendererBase: type
+
+# RHI type aliases — populated in the try/except below; set to None as
+# fallback so that method bodies referencing them never raise NameError at
+# import time (they are guarded by the _HAS_RHI flag at runtime).
+QQuickRhiItem = None  # type: ignore[assignment]
+QQuickRhiItemRenderer = None  # type: ignore[assignment]
+QRhiBuffer = None  # type: ignore[assignment]
+QRhiGraphicsPipeline = None  # type: ignore[assignment]
+QRhiShaderStage = None  # type: ignore[assignment]
+QRhiVertexInputLayout = None  # type: ignore[assignment]
+QRhiVertexInputAttribute = None  # type: ignore[assignment]
+QRhiVertexInputBinding = None  # type: ignore[assignment]
+QRhiShaderResourceBinding = None  # type: ignore[assignment]
+QRhiCommandBuffer = None  # type: ignore[assignment]
+QRhiViewport = None  # type: ignore[assignment]
+QRhiDepthStencilClearValue = None  # type: ignore[assignment]
+QShader = None  # type: ignore[assignment]
+QShaderCode = None  # type: ignore[assignment]
+QShaderKey = None  # type: ignore[assignment]
+QShaderVersion = None  # type: ignore[assignment]
 
 try:
-    import OpenGL.GL as gl
-    import OpenGL.GL.shaders as _glshaders
-
-    _HAS_PYOPENGL: bool = True
-except Exception:
-    _HAS_PYOPENGL = False
-    gl = None  # type: ignore[assignment]
-    _glshaders = None  # type: ignore[assignment]
-
-# ---------------------------------------------------------------------------
-# Optional: QQuickFramebufferObject (not in qtpy)
-# ---------------------------------------------------------------------------
-
-_HAS_QQFBO: bool = False
-_QFBOBase: type | None = None
-_RendererBase: type | None = None
-_QOpenGLFBO: type | None = None
-_QOpenGLFBOFormat: type | None = None
-
-try:
-    from PySide6.QtQuick import QQuickFramebufferObject as _QFBO  # type: ignore[import-not-found]
-    from PySide6.QtOpenGL import (  # type: ignore[import-not-found]
-        QOpenGLFramebufferObject as _QOpenGLFBO,
-        QOpenGLFramebufferObjectFormat as _QOpenGLFBOFormat,
+    from PySide6.QtQuick import (  # type: ignore[import-not-found,no-redef]
+        QQuickRhiItem,
+        QQuickRhiItemRenderer,
+    )
+    from PySide6.QtGui import (  # type: ignore[import-not-found,no-redef]
+        QRhiBuffer,
+        QRhiCommandBuffer,
+        QRhiDepthStencilClearValue,
+        QRhiGraphicsPipeline,
+        QRhiShaderResourceBinding,
+        QRhiShaderStage,
+        QRhiVertexInputAttribute,
+        QRhiVertexInputBinding,
+        QRhiVertexInputLayout,
+        QRhiViewport,
+        QShader,
+        QShaderCode,
+        QShaderKey,
+        QShaderVersion,
     )
 
-    _QFBOBase = _QFBO
-    _RendererBase = _QFBO.Renderer
-    _HAS_QQFBO = True
+    _RhiItemBase = QQuickRhiItem
+    _RhiRendererBase = QQuickRhiItemRenderer
+    _HAS_RHI = True
 except ImportError:
     try:
-        from PyQt6.QtQuick import QQuickFramebufferObject as _QFBO  # type: ignore[import-not-found]
-        from PyQt6.QtOpenGL import (  # type: ignore[import-not-found]
-            QOpenGLFramebufferObject as _QOpenGLFBO,
-            QOpenGLFramebufferObjectFormat as _QOpenGLFBOFormat,
+        from PyQt6.QtQuick import (  # type: ignore[import-not-found,no-redef]
+            QQuickRhiItem,
+            QQuickRhiItemRenderer,
+        )
+        from PyQt6.QtGui import (  # type: ignore[import-not-found,no-redef]
+            QRhiBuffer,
+            QRhiCommandBuffer,
+            QRhiDepthStencilClearValue,
+            QRhiGraphicsPipeline,
+            QRhiShaderResourceBinding,
+            QRhiShaderStage,
+            QRhiVertexInputAttribute,
+            QRhiVertexInputBinding,
+            QRhiVertexInputLayout,
+            QRhiViewport,
+            QShader,
+            QShaderCode,
+            QShaderKey,
+            QShaderVersion,
         )
 
-        _QFBOBase = _QFBO
-        _RendererBase = _QFBO.Renderer
-        _HAS_QQFBO = True
+        _RhiItemBase = QQuickRhiItem
+        _RhiRendererBase = QQuickRhiItemRenderer
+        _HAS_RHI = True
     except ImportError:
         pass
 
-# When QQuickFramebufferObject is unavailable we still define the classes so
-# that importing this module never raises; instantiation will raise RuntimeError.
-if _QFBOBase is None:
+if not _HAS_RHI:
     from qtpy import QtWidgets as _QtWidgets
 
-    _QFBOBase = _QtWidgets.QWidget
-if _RendererBase is None:
-    _RendererBase = object
+    _RhiItemBase = _QtWidgets.QWidget
+    _RhiRendererBase = object
 
 __all__ = ["MoleculeQuick3D", "setup_opengl_backend"]
 
@@ -202,20 +230,21 @@ def setup_opengl_backend() -> None:
 
 
 # ---------------------------------------------------------------------------
-# GLSL 1.50 core-profile shaders
+# GLSL 1.50 core-profile shaders (view matrices passed via std140 UBO)
 # ---------------------------------------------------------------------------
 
 # ── Sphere impostor ──────────────────────────────────────────────────────────
 _SPHERE_VERT = """\
 #version 150 core
-in vec3  a_center;
-in vec3  a_color;
-in float a_radius;
-in vec2  a_corner;
-in float a_selected;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
+layout(std140) uniform Matrices {
+    mat4 u_mv;
+    mat4 u_proj;
+};
+layout(location = 0) in vec3  a_center;
+layout(location = 1) in vec3  a_color;
+layout(location = 2) in float a_radius;
+layout(location = 3) in vec2  a_corner;
+layout(location = 4) in float a_selected;
 
 out vec3  v_center_eye;
 out vec3  v_color;
@@ -240,13 +269,15 @@ void main() {
 
 _SPHERE_FRAG = """\
 #version 150 core
+layout(std140) uniform Matrices {
+    mat4 u_mv;
+    mat4 u_proj;
+};
 in vec3  v_center_eye;
 in vec3  v_color;
 in float v_radius;
 in vec2  v_corner;
 in float v_selected;
-
-uniform mat4 u_proj;
 
 out vec4 fragColor;
 
@@ -278,14 +309,15 @@ void main() {
 # ── Cylinder mesh ─────────────────────────────────────────────────────────────
 _CYLINDER_VERT = """\
 #version 150 core
-in vec3  a_position;
-in vec3  a_normal;
-in vec3  a_color;
-in float a_selected;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
-uniform mat3 u_normal_mat;
+layout(std140) uniform Matrices {
+    mat4 u_mv;
+    mat4 u_proj;
+    mat4 u_normal_mat;
+};
+layout(location = 0) in vec3  a_position;
+layout(location = 1) in vec3  a_normal;
+layout(location = 2) in vec3  a_color;
+layout(location = 3) in float a_selected;
 
 out vec3  v_normal_eye;
 out vec3  v_pos_eye;
@@ -297,7 +329,7 @@ void main() {
     v_selected   = a_selected;
     vec4 pos_e   = u_mv * vec4(a_position, 1.0);
     v_pos_eye    = pos_e.xyz;
-    v_normal_eye = normalize(u_normal_mat * a_normal);
+    v_normal_eye = normalize(mat3(u_normal_mat) * a_normal);
     gl_Position  = u_proj * pos_e;
 }
 """
@@ -330,20 +362,21 @@ void main() {
 # ── Batched ellipsoid impostor ────────────────────────────────────────────────
 _ELLIPSOID_BATCH_VERT = """\
 #version 150 core
-in vec2  a_corner;
-in vec3  a_center;
-in vec3  a_color;
-in float a_radius;
-in float a_selected;
-in vec3  a_A_col0;
-in vec3  a_A_col1;
-in vec3  a_A_col2;
-in vec3  a_evec0;
-in vec3  a_evec1;
-in vec3  a_evec2;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
+layout(std140) uniform Matrices {
+    mat4 u_mv;
+    mat4 u_proj;
+};
+layout(location =  0) in vec2  a_corner;
+layout(location =  1) in vec3  a_center;
+layout(location =  2) in vec3  a_color;
+layout(location =  3) in float a_radius;
+layout(location =  4) in float a_selected;
+layout(location =  5) in vec3  a_A_col0;
+layout(location =  6) in vec3  a_A_col1;
+layout(location =  7) in vec3  a_A_col2;
+layout(location =  8) in vec3  a_evec0;
+layout(location =  9) in vec3  a_evec1;
+layout(location = 10) in vec3  a_evec2;
 
 out vec3  v_center_eye;
 out vec3  v_color;
@@ -380,6 +413,10 @@ void main() {
 
 _ELLIPSOID_BATCH_FRAG = """\
 #version 150 core
+layout(std140) uniform Matrices {
+    mat4 u_mv;
+    mat4 u_proj;
+};
 in vec3  v_center_eye;
 in vec3  v_color;
 in float v_radius;
@@ -391,9 +428,6 @@ in vec3  v_A_col2;
 in vec3  v_evec0;
 in vec3  v_evec1;
 in vec3  v_evec2;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
 
 out vec4 fragColor;
 
@@ -458,33 +492,66 @@ void main() {
 _ORTHO_VIEW_MARGIN: float = 1.6
 
 
-class _MolRenderer(_RendererBase):  # type: ignore[valid-type,misc]
-    """Qt Quick FBO renderer for :class:`MoleculeQuick3D`.
+# ---------------------------------------------------------------------------
+# Renderer (lives on the Qt Quick render thread)
+# ---------------------------------------------------------------------------
 
-    All OpenGL calls are made here on the dedicated render thread.
-    CPU-side data is transferred from the item in :meth:`synchronize`.
+_ORTHO_VIEW_MARGIN: float = 1.6
+
+
+def _make_glsl_shader(glsl_src: str, stage: object) -> object:
+    """Wrap a GLSL source string in a :class:`QShader` for the RHI backend."""
+    s = QShader()
+    s.setStage(stage)  # type: ignore[arg-type]
+    key = QShaderKey(  # type: ignore[call-arg]
+        QShader.Source.GlslShader,  # type: ignore[union-attr]
+        QShaderVersion(150),  # type: ignore[call-arg]
+    )
+    s.setShader(key, QShaderCode(glsl_src.encode()))  # type: ignore[call-arg]
+    return s
+
+
+def _pack_mat4(mat: np.ndarray) -> bytes:
+    """Return the 64-byte column-major (std140) representation of *mat*."""
+    return mat.astype(np.float32).T.copy().tobytes()
+
+
+class _MolRhiRenderer(_RhiRendererBase):  # type: ignore[valid-type,misc]
+    """Qt RHI renderer for :class:`MoleculeQuick3D`.
+
+    Lives exclusively on the Qt Quick render thread.  All GPU resource
+    allocation happens in :meth:`initialize`; draw commands are recorded in
+    :meth:`render`.  CPU-side geometry and view-matrix data arrive via
+    :meth:`synchronize` while the GUI thread is blocked.
     """
 
     def __init__(self) -> None:
         super().__init__()
 
-        # ── GL object handles (allocated lazily in _initialize_gl) ──────────
         self._initialized: bool = False
-        self._sphere_prog: int = 0
-        self._ellipsoid_batch_prog: int = 0
-        self._cylinder_prog: int = 0
-        self._sphere_vbo: int = 0
-        self._sphere_ibo: int = 0
-        self._cylinder_vbo: int = 0
-        self._cylinder_ibo: int = 0
-        self._ellipsoid_batch_vbo: int = 0
-        self._ellipsoid_batch_ibo: int = 0
 
-        # ── Location caches (per-renderer GL context) ───────────────────────
-        self._uniform_cache: dict[tuple[int, bytes], int] = {}
-        self._attrib_cache: dict[tuple[int, bytes], int] = {}
+        # ── RHI resources (created in initialize()) ─────────────────────────
+        # Uniform buffer objects
+        self._sphere_ubo = None
+        self._cylinder_ubo = None
+        self._ellipsoid_ubo = None
+        # Geometry vertex / index buffers (resized as needed)
+        self._sphere_vbo = None
+        self._sphere_ibo = None
+        self._cylinder_vbo = None
+        self._cylinder_ibo = None
+        self._ellipsoid_vbo = None
+        self._ellipsoid_ibo = None
+        # Shader resource bindings
+        self._sphere_srb = None
+        self._cylinder_srb = None
+        self._ellipsoid_srb = None
+        # Graphics pipelines
+        self._sphere_pipeline = None
+        self._cylinder_pipeline = None
+        self._ellipsoid_pipeline = None
 
-        # ── Geometry arrays copied from item in synchronize() ───────────────
+        # ── Geometry arrays (copied from item in synchronize) ────────────────
         self._sphere_verts: np.ndarray = np.empty(0, dtype=np.float32)
         self._sphere_idx: np.ndarray = np.empty(0, dtype=np.uint32)
         self._sphere_count: int = 0
@@ -504,30 +571,34 @@ class _MolRenderer(_RendererBase):  # type: ignore[valid-type,misc]
         self._has_atoms: bool = False
 
     # ------------------------------------------------------------------
-    # QQuickFramebufferObject.Renderer interface
+    # QQuickRhiItemRenderer interface
     # ------------------------------------------------------------------
 
-    def createFramebufferObject(self, size: QtCore.QSize) -> object:  # type: ignore[override]
-        """Return an FBO with a depth attachment."""
-        if _HAS_QQFBO and _QOpenGLFBOFormat is not None and _QOpenGLFBO is not None:
-            try:
-                fmt = _QOpenGLFBOFormat()
-                # Depth24 attachment is mandatory for correct depth testing.
-                fmt.setAttachment(
-                    _QOpenGLFBO.Attachment.Depth  # type: ignore[attr-defined]
-                )
-                fmt.setSamples(4)
-                return _QOpenGLFBO(size, fmt)
-            except Exception:
-                # Fall back to a plain FBO without MSAA if format setup fails.
-                return _QOpenGLFBO(size)  # type: ignore[call-arg]
-        return super().createFramebufferObject(size)  # type: ignore[misc]
+    def initialize(self, cb: object) -> None:  # type: ignore[override]
+        """Create all RHI resources.
+
+        Called on the render thread when the renderer is first created (and
+        again if the underlying QRhi instance is replaced).
+        """
+        if not _HAS_RHI:
+            return
+
+        rhi = self.rhi()  # type: ignore[attr-defined]
+        if self._initialized:
+            # Guard against re-entry without a genuine QRhi change.
+            return
+
+        try:
+            self._create_resources(rhi)
+            self._initialized = True
+        except Exception as exc:
+            print(f"[MoleculeQuick3D] RHI init failed: {exc}")
+            self._initialized = False
 
     def synchronize(self, item: object) -> None:  # type: ignore[override]
         """Copy state from *item* (GUI thread, which is blocked right now)."""
         mol: MoleculeQuick3D = item  # type: ignore[assignment]
 
-        # Copy geometry arrays if they have changed since the last frame.
         if mol._geometry_dirty:
             self._sphere_verts = mol._sphere_verts.copy()
             self._sphere_idx = mol._sphere_idx.copy()
@@ -547,259 +618,282 @@ class _MolRenderer(_RendererBase):  # type: ignore[valid-type,misc]
         self._show_adps = mol._show_adps
         self._has_atoms = bool(mol.atoms)
 
-    def render(self) -> None:  # type: ignore[override]
-        """Render the molecule scene into the FBO."""
-        if not _HAS_PYOPENGL or not _HAS_QQFBO:
+    def render(self, cb: object) -> None:  # type: ignore[override]
+        """Record draw commands into *cb*."""
+        if not _HAS_RHI or not self._initialized:
             return
 
-        if not self._initialized:
-            try:
-                self._initialize_gl()
-                self._initialized = True
-            except Exception as exc:
-                print(f"[MoleculeQuick3D] GL init failed: {exc}")
-                return
+        rhi = self.rhi()  # type: ignore[attr-defined]
+        rub = rhi.nextResourceUpdateBatch()  # type: ignore[union-attr]
 
         if self._geometry_dirty:
-            self._upload_geometry()
+            self._upload_geometry(rub)
+            self._geometry_dirty = False
+
+        self._upload_ubos(rub)
 
         r, g, b = self._bg_rgb
-        gl.glClearColor(r, g, b, 1.0)
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+        clear_color = QtGui.QColor(int(r * 255), int(g * 255), int(b * 255))
+        clear_ds = QRhiDepthStencilClearValue()  # type: ignore[call-arg]
+        clear_ds.setDepthClearValue(1.0)
+        clear_ds.setStencilClearValue(0)
 
-        if not self._has_atoms:
+        rt = self.renderTarget()  # type: ignore[attr-defined]
+        cb.beginPass(rt, clear_color, clear_ds, rub)  # type: ignore[union-attr]
+
+        sz = rt.pixelSize()
+        w, h = float(sz.width()), float(sz.height())
+        viewport = QRhiViewport()  # type: ignore[call-arg]
+        viewport.setViewport(0.0, 0.0, w, h)
+
+        if self._has_atoms:
+            if self._cylinder_count > 0:
+                cb.setGraphicsPipeline(self._cylinder_pipeline)  # type: ignore[union-attr]
+                cb.setViewport(viewport)  # type: ignore[union-attr]
+                cb.setShaderResources(self._cylinder_srb)  # type: ignore[union-attr]
+                cb.setVertexInput(  # type: ignore[union-attr]
+                    0, [(self._cylinder_vbo, 0)],
+                    self._cylinder_ibo, 0,
+                    QRhiCommandBuffer.IndexFormat.IndexUInt32,  # type: ignore[union-attr]
+                )
+                cb.drawIndexed(self._cylinder_count)  # type: ignore[union-attr]
+
+            if self._sphere_count > 0:
+                cb.setGraphicsPipeline(self._sphere_pipeline)  # type: ignore[union-attr]
+                cb.setViewport(viewport)  # type: ignore[union-attr]
+                cb.setShaderResources(self._sphere_srb)  # type: ignore[union-attr]
+                cb.setVertexInput(  # type: ignore[union-attr]
+                    0, [(self._sphere_vbo, 0)],
+                    self._sphere_ibo, 0,
+                    QRhiCommandBuffer.IndexFormat.IndexUInt32,  # type: ignore[union-attr]
+                )
+                cb.drawIndexed(self._sphere_count)  # type: ignore[union-attr]
+
+            if self._show_adps and self._ellipsoid_count > 0:
+                cb.setGraphicsPipeline(self._ellipsoid_pipeline)  # type: ignore[union-attr]
+                cb.setViewport(viewport)  # type: ignore[union-attr]
+                cb.setShaderResources(self._ellipsoid_srb)  # type: ignore[union-attr]
+                cb.setVertexInput(  # type: ignore[union-attr]
+                    0, [(self._ellipsoid_vbo, 0)],
+                    self._ellipsoid_ibo, 0,
+                    QRhiCommandBuffer.IndexFormat.IndexUInt32,  # type: ignore[union-attr]
+                )
+                cb.drawIndexed(self._ellipsoid_count)  # type: ignore[union-attr]
+
+        cb.endPass()  # type: ignore[union-attr]
+
+    # ------------------------------------------------------------------
+    # Resource creation helpers
+    # ------------------------------------------------------------------
+
+    def _create_resources(self, rhi: object) -> None:
+        """Allocate all GPU resources (UBOs, geometry buffers, SRBs, pipelines)."""
+        rpd = self.renderTarget().renderPassDescriptor()  # type: ignore[union-attr]
+
+        BufType = QRhiBuffer.Type  # type: ignore[union-attr]
+        BufUsage = QRhiBuffer.UsageFlag  # type: ignore[union-attr]
+
+        # ── Uniform buffer objects ───────────────────────────────────────────
+        # Sphere / ellipsoid UBO: u_mv (64) + u_proj (64) = 128 bytes
+        self._sphere_ubo = rhi.newBuffer(BufType.Dynamic, BufUsage.UniformBuffer, 128)  # type: ignore[union-attr]
+        self._sphere_ubo.create()
+        self._ellipsoid_ubo = rhi.newBuffer(BufType.Dynamic, BufUsage.UniformBuffer, 128)  # type: ignore[union-attr]
+        self._ellipsoid_ubo.create()
+        # Cylinder UBO: u_mv (64) + u_proj (64) + u_normal_mat as mat4 (64) = 192 bytes
+        self._cylinder_ubo = rhi.newBuffer(BufType.Dynamic, BufUsage.UniformBuffer, 192)  # type: ignore[union-attr]
+        self._cylinder_ubo.create()
+
+        # ── Geometry buffers (placeholder minimum size) ──────────────────────
+        self._sphere_vbo = rhi.newBuffer(BufType.Dynamic, BufUsage.VertexBuffer, 4)  # type: ignore[union-attr]
+        self._sphere_vbo.create()
+        self._sphere_ibo = rhi.newBuffer(BufType.Dynamic, BufUsage.IndexBuffer, 4)  # type: ignore[union-attr]
+        self._sphere_ibo.create()
+        self._cylinder_vbo = rhi.newBuffer(BufType.Dynamic, BufUsage.VertexBuffer, 4)  # type: ignore[union-attr]
+        self._cylinder_vbo.create()
+        self._cylinder_ibo = rhi.newBuffer(BufType.Dynamic, BufUsage.IndexBuffer, 4)  # type: ignore[union-attr]
+        self._cylinder_ibo.create()
+        self._ellipsoid_vbo = rhi.newBuffer(BufType.Dynamic, BufUsage.VertexBuffer, 4)  # type: ignore[union-attr]
+        self._ellipsoid_vbo.create()
+        self._ellipsoid_ibo = rhi.newBuffer(BufType.Dynamic, BufUsage.IndexBuffer, 4)  # type: ignore[union-attr]
+        self._ellipsoid_ibo.create()
+
+        # ── Shader resource bindings ─────────────────────────────────────────
+        stages = (
+            QRhiShaderResourceBinding.StageFlag.VertexStage  # type: ignore[union-attr]
+            | QRhiShaderResourceBinding.StageFlag.FragmentStage  # type: ignore[union-attr]
+        )
+
+        def make_srb(ubo: object) -> object:
+            srb = rhi.newShaderResourceBindings()  # type: ignore[union-attr]
+            srb.setBindings([
+                QRhiShaderResourceBinding.uniformBuffer(0, stages, ubo)  # type: ignore[union-attr]
+            ])
+            if not srb.create():
+                raise RuntimeError("SRB creation failed")
+            return srb
+
+        self._sphere_srb = make_srb(self._sphere_ubo)
+        self._cylinder_srb = make_srb(self._cylinder_ubo)
+        self._ellipsoid_srb = make_srb(self._ellipsoid_ubo)
+
+        # ── Graphics pipelines ───────────────────────────────────────────────
+        self._sphere_pipeline = self._make_pipeline(
+            rhi, rpd, _SPHERE_VERT, _SPHERE_FRAG,
+            self._sphere_srb,
+            stride=10 * 4,
+            attributes=[
+                (0, QRhiVertexInputAttribute.Format.Float3, 0),   # a_center  # type: ignore[union-attr]
+                (1, QRhiVertexInputAttribute.Format.Float3, 12),  # a_color   # type: ignore[union-attr]
+                (2, QRhiVertexInputAttribute.Format.Float,  24),  # a_radius  # type: ignore[union-attr]
+                (3, QRhiVertexInputAttribute.Format.Float2, 28),  # a_corner  # type: ignore[union-attr]
+                (4, QRhiVertexInputAttribute.Format.Float,  36),  # a_selected# type: ignore[union-attr]
+            ],
+        )
+        self._cylinder_pipeline = self._make_pipeline(
+            rhi, rpd, _CYLINDER_VERT, _CYLINDER_FRAG,
+            self._cylinder_srb,
+            stride=10 * 4,
+            attributes=[
+                (0, QRhiVertexInputAttribute.Format.Float3,  0),  # a_position# type: ignore[union-attr]
+                (1, QRhiVertexInputAttribute.Format.Float3, 12),  # a_normal  # type: ignore[union-attr]
+                (2, QRhiVertexInputAttribute.Format.Float3, 24),  # a_color   # type: ignore[union-attr]
+                (3, QRhiVertexInputAttribute.Format.Float,  36),  # a_selected# type: ignore[union-attr]
+            ],
+        )
+        self._ellipsoid_pipeline = self._make_pipeline(
+            rhi, rpd, _ELLIPSOID_BATCH_VERT, _ELLIPSOID_BATCH_FRAG,
+            self._ellipsoid_srb,
+            stride=28 * 4,
+            attributes=[
+                (0,  QRhiVertexInputAttribute.Format.Float2,   0),  # a_corner  # type: ignore[union-attr]
+                (1,  QRhiVertexInputAttribute.Format.Float3,   8),  # a_center  # type: ignore[union-attr]
+                (2,  QRhiVertexInputAttribute.Format.Float3,  20),  # a_color   # type: ignore[union-attr]
+                (3,  QRhiVertexInputAttribute.Format.Float,   32),  # a_radius  # type: ignore[union-attr]
+                (4,  QRhiVertexInputAttribute.Format.Float,   36),  # a_selected# type: ignore[union-attr]
+                (5,  QRhiVertexInputAttribute.Format.Float3,  40),  # a_A_col0  # type: ignore[union-attr]
+                (6,  QRhiVertexInputAttribute.Format.Float3,  52),  # a_A_col1  # type: ignore[union-attr]
+                (7,  QRhiVertexInputAttribute.Format.Float3,  64),  # a_A_col2  # type: ignore[union-attr]
+                (8,  QRhiVertexInputAttribute.Format.Float3,  76),  # a_evec0   # type: ignore[union-attr]
+                (9,  QRhiVertexInputAttribute.Format.Float3,  88),  # a_evec1   # type: ignore[union-attr]
+                (10, QRhiVertexInputAttribute.Format.Float3, 100),  # a_evec2   # type: ignore[union-attr]
+            ],
+        )
+
+    def _make_pipeline(
+        self,
+        rhi: object,
+        rpd: object,
+        vert_src: str,
+        frag_src: str,
+        srb: object,
+        stride: int,
+        attributes: list[tuple[int, object, int]],
+    ) -> object:
+        """Create and return a :class:`QRhiGraphicsPipeline`."""
+        vs = _make_glsl_shader(vert_src, QShader.Stage.VertexStage)    # type: ignore[union-attr]
+        fs = _make_glsl_shader(frag_src, QShader.Stage.FragmentStage)  # type: ignore[union-attr]
+        if not vs.isValid() or not fs.isValid():
+            raise RuntimeError("Shader creation failed")
+
+        vs_stage = QRhiShaderStage()  # type: ignore[call-arg]
+        vs_stage.setType(QRhiShaderStage.Type.Vertex)  # type: ignore[union-attr]
+        vs_stage.setShader(vs)
+        fs_stage = QRhiShaderStage()  # type: ignore[call-arg]
+        fs_stage.setType(QRhiShaderStage.Type.Fragment)  # type: ignore[union-attr]
+        fs_stage.setShader(fs)
+
+        binding = QRhiVertexInputBinding()  # type: ignore[call-arg]
+        binding.setStride(stride)
+
+        attrs = []
+        for loc, fmt, offset in attributes:
+            a = QRhiVertexInputAttribute()  # type: ignore[call-arg]
+            a.setLocation(loc)
+            a.setBinding(0)
+            a.setFormat(fmt)
+            a.setOffset(offset)
+            attrs.append(a)
+
+        layout = QRhiVertexInputLayout()  # type: ignore[call-arg]
+        layout.setBindings([binding])
+        layout.setAttributes(attrs)
+
+        blend = QRhiGraphicsPipeline.TargetBlend()  # type: ignore[union-attr]
+
+        pipeline = rhi.newGraphicsPipeline()  # type: ignore[union-attr]
+        pipeline.setShaderStages([vs_stage, fs_stage])
+        pipeline.setVertexInputLayout(layout)
+        pipeline.setShaderResourceBindings(srb)
+        pipeline.setRenderPassDescriptor(rpd)
+        pipeline.setTopology(QRhiGraphicsPipeline.Topology.Triangles)  # type: ignore[union-attr]
+        pipeline.setDepthTest(True)
+        pipeline.setDepthWrite(True)
+        pipeline.setDepthOp(QRhiGraphicsPipeline.CompareOp.LessOrEqual)  # type: ignore[union-attr]
+        pipeline.setCullMode(QRhiGraphicsPipeline.CullMode.None_)  # type: ignore[union-attr]
+        pipeline.setTargetBlends([blend])
+        if not pipeline.create():
+            raise RuntimeError(f"Pipeline creation failed for {vert_src[:30]!r}")
+        return pipeline
+
+    # ------------------------------------------------------------------
+    # Per-frame resource upload helpers
+    # ------------------------------------------------------------------
+
+    def _resize_and_upload(self, buf: object, data: bytes, rub: object) -> None:
+        """Ensure *buf* is large enough for *data* and upload it."""
+        n = len(data)
+        if n == 0:
             return
+        if buf.size() < n:  # type: ignore[union-attr]
+            buf.setSize(n)  # type: ignore[union-attr]
+            if not buf.create():  # type: ignore[union-attr]
+                raise RuntimeError("Buffer resize failed")
+        rub.updateDynamicBuffer(buf, 0, n, data)  # type: ignore[union-attr]
 
-        gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glDepthFunc(gl.GL_LEQUAL)
-
-        mv = self._mv
-        proj = self._proj
-
-        if self._cylinder_count > 0:
-            self._render_cylinders(mv, proj)
-
-        if self._sphere_count > 0:
-            self._render_spheres(mv, proj)
-
-        if self._show_adps and self._ellipsoid_count > 0:
-            self._render_ellipsoids_batched(mv, proj)
-
-    # ------------------------------------------------------------------
-    # GL initialisation
-    # ------------------------------------------------------------------
-
-    def _initialize_gl(self) -> None:
-        gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glDepthFunc(gl.GL_LEQUAL)
-        try:
-            gl.glEnable(gl.GL_MULTISAMPLE)
-        except Exception:
-            pass
-
-        self._sphere_prog = self._compile_program(_SPHERE_VERT, _SPHERE_FRAG, "sphere")
-        self._ellipsoid_batch_prog = self._compile_program(
-            _ELLIPSOID_BATCH_VERT, _ELLIPSOID_BATCH_FRAG, "ellipsoid_batch"
-        )
-        self._cylinder_prog = self._compile_program(
-            _CYLINDER_VERT, _CYLINDER_FRAG, "cylinder"
-        )
-
-        buffers = gl.glGenBuffers(6)
-        (
-            self._sphere_vbo, self._sphere_ibo,
-            self._cylinder_vbo, self._cylinder_ibo,
-            self._ellipsoid_batch_vbo, self._ellipsoid_batch_ibo,
-        ) = buffers
-
-    def _compile_program(self, vert_src: str, frag_src: str, name: str) -> int:
-        try:
-            vert = _glshaders.compileShader(vert_src, gl.GL_VERTEX_SHADER)
-            frag = _glshaders.compileShader(frag_src, gl.GL_FRAGMENT_SHADER)
-            try:
-                prog = _glshaders.compileProgram(vert, frag, validate=False)
-            except TypeError:
-                prog = _glshaders.compileProgram(vert, frag)
-            return int(prog)
-        except Exception as exc:
-            raise RuntimeError(f"Failed to compile '{name}' shaders: {exc}") from exc
-
-    # ------------------------------------------------------------------
-    # Geometry upload
-    # ------------------------------------------------------------------
-
-    def _upload_geometry(self) -> None:
+    def _upload_geometry(self, rub: object) -> None:
+        """Upload CPU-side geometry arrays to the GPU buffers."""
         if self._sphere_verts.size > 0:
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._sphere_vbo)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, self._sphere_verts.nbytes,
-                            self._sphere_verts, gl.GL_DYNAMIC_DRAW)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._sphere_ibo)
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self._sphere_idx.nbytes,
-                            self._sphere_idx, gl.GL_DYNAMIC_DRAW)
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-
+            self._resize_and_upload(
+                self._sphere_vbo, self._sphere_verts.tobytes(), rub)
+            self._resize_and_upload(
+                self._sphere_ibo, self._sphere_idx.tobytes(), rub)
         if self._cylinder_verts.size > 0:
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._cylinder_vbo)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, self._cylinder_verts.nbytes,
-                            self._cylinder_verts, gl.GL_DYNAMIC_DRAW)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._cylinder_ibo)
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self._cylinder_idx.nbytes,
-                            self._cylinder_idx, gl.GL_DYNAMIC_DRAW)
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-
+            self._resize_and_upload(
+                self._cylinder_vbo, self._cylinder_verts.tobytes(), rub)
+            self._resize_and_upload(
+                self._cylinder_ibo, self._cylinder_idx.tobytes(), rub)
         if self._ellipsoid_verts.size > 0:
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._ellipsoid_batch_vbo)
-            gl.glBufferData(gl.GL_ARRAY_BUFFER, self._ellipsoid_verts.nbytes,
-                            self._ellipsoid_verts, gl.GL_DYNAMIC_DRAW)
-            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+            self._resize_and_upload(
+                self._ellipsoid_vbo, self._ellipsoid_verts.tobytes(), rub)
+            self._resize_and_upload(
+                self._ellipsoid_ibo, self._ellipsoid_idx.tobytes(), rub)
 
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._ellipsoid_batch_ibo)
-            gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, self._ellipsoid_idx.nbytes,
-                            self._ellipsoid_idx, gl.GL_DYNAMIC_DRAW)
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+    def _upload_ubos(self, rub: object) -> None:
+        """Upload view matrices to the uniform buffer objects."""
+        mv_bytes = _pack_mat4(self._mv)
+        proj_bytes = _pack_mat4(self._proj)
+        sphere_data = mv_bytes + proj_bytes  # 128 bytes
 
-        self._geometry_dirty = False
+        rub.updateDynamicBuffer(self._sphere_ubo, 0, 128, sphere_data)  # type: ignore[union-attr]
+        rub.updateDynamicBuffer(self._ellipsoid_ubo, 0, 128, sphere_data)  # type: ignore[union-attr]
 
-    # ------------------------------------------------------------------
-    # Draw calls
-    # ------------------------------------------------------------------
-
-    def _render_spheres(self, mv: np.ndarray, proj: np.ndarray) -> None:
-        prog = self._sphere_prog
-        gl.glUseProgram(prog)
-        self._set_mat4(prog, b"u_mv", mv)
-        self._set_mat4(prog, b"u_proj", proj)
-
-        stride = 10 * 4
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._sphere_vbo)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._sphere_ibo)
-
-        self._bind_attrib(prog, b"a_center",   3, stride,  0)
-        self._bind_attrib(prog, b"a_color",    3, stride, 12)
-        self._bind_attrib(prog, b"a_radius",   1, stride, 24)
-        self._bind_attrib(prog, b"a_corner",   2, stride, 28)
-        self._bind_attrib(prog, b"a_selected", 1, stride, 36)
-
-        gl.glDrawElements(gl.GL_TRIANGLES, self._sphere_count,
-                          gl.GL_UNSIGNED_INT, ctypes.c_void_p(0))
-
-        self._unbind_attribs(prog, [b"a_center", b"a_color", b"a_radius",
-                                    b"a_corner", b"a_selected"])
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-        gl.glUseProgram(0)
-
-    def _render_cylinders(self, mv: np.ndarray, proj: np.ndarray) -> None:
-        prog = self._cylinder_prog
-        gl.glUseProgram(prog)
-        self._set_mat4(prog, b"u_mv", mv)
-        self._set_mat4(prog, b"u_proj", proj)
-
+        # Normal matrix for cylinder lighting (mat4 storing 3×3 in top-left).
         try:
-            nm = np.linalg.inv(mv[:3, :3]).T.astype(np.float32)
+            nm3 = np.linalg.inv(self._mv[:3, :3]).T.astype(np.float32)
         except np.linalg.LinAlgError:
-            nm = np.eye(3, dtype=np.float32)
-        loc_nm = gl.glGetUniformLocation(prog, b"u_normal_mat")
-        if loc_nm >= 0:
-            gl.glUniformMatrix3fv(loc_nm, 1, False, nm.T.copy())
-
-        stride = 10 * 4
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._cylinder_vbo)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._cylinder_ibo)
-
-        self._bind_attrib(prog, b"a_position", 3, stride,  0)
-        self._bind_attrib(prog, b"a_normal",   3, stride, 12)
-        self._bind_attrib(prog, b"a_color",    3, stride, 24)
-        self._bind_attrib(prog, b"a_selected", 1, stride, 36)
-
-        gl.glDrawElements(gl.GL_TRIANGLES, self._cylinder_count,
-                          gl.GL_UNSIGNED_INT, ctypes.c_void_p(0))
-
-        self._unbind_attribs(prog, [b"a_position", b"a_normal",
-                                    b"a_color", b"a_selected"])
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-        gl.glUseProgram(0)
-
-    def _render_ellipsoids_batched(self, mv: np.ndarray, proj: np.ndarray) -> None:
-        prog = self._ellipsoid_batch_prog
-        gl.glUseProgram(prog)
-        self._set_mat4(prog, b"u_mv", mv)
-        self._set_mat4(prog, b"u_proj", proj)
-
-        stride = 28 * 4
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._ellipsoid_batch_vbo)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._ellipsoid_batch_ibo)
-
-        self._bind_attrib(prog, b"a_corner",   2, stride,   0)
-        self._bind_attrib(prog, b"a_center",   3, stride,   8)
-        self._bind_attrib(prog, b"a_color",    3, stride,  20)
-        self._bind_attrib(prog, b"a_radius",   1, stride,  32)
-        self._bind_attrib(prog, b"a_selected", 1, stride,  36)
-        self._bind_attrib(prog, b"a_A_col0",   3, stride,  40)
-        self._bind_attrib(prog, b"a_A_col1",   3, stride,  52)
-        self._bind_attrib(prog, b"a_A_col2",   3, stride,  64)
-        self._bind_attrib(prog, b"a_evec0",    3, stride,  76)
-        self._bind_attrib(prog, b"a_evec1",    3, stride,  88)
-        self._bind_attrib(prog, b"a_evec2",    3, stride, 100)
-
-        gl.glDrawElements(gl.GL_TRIANGLES, self._ellipsoid_count,
-                          gl.GL_UNSIGNED_INT, ctypes.c_void_p(0))
-
-        self._unbind_attribs(prog, [
-            b"a_corner", b"a_center", b"a_color", b"a_radius", b"a_selected",
-            b"a_A_col0", b"a_A_col1", b"a_A_col2",
-            b"a_evec0", b"a_evec1", b"a_evec2",
-        ])
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
-        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
-        gl.glUseProgram(0)
-
-    # ------------------------------------------------------------------
-    # GL helper utilities (local caches per GL context)
-    # ------------------------------------------------------------------
-
-    def _set_mat4(self, prog: int, name: bytes, mat: np.ndarray) -> None:
-        key = (prog, name)
-        loc = self._uniform_cache.get(key)
-        if loc is None:
-            loc = gl.glGetUniformLocation(prog, name)
-            self._uniform_cache[key] = loc
-        if loc >= 0:
-            gl.glUniformMatrix4fv(loc, 1, False, mat.T.astype(np.float32).copy())
-
-    def _bind_attrib(self, prog: int, name: bytes, size: int,
-                     stride: int, offset: int) -> None:
-        key = (prog, name)
-        loc = self._attrib_cache.get(key)
-        if loc is None:
-            loc = gl.glGetAttribLocation(prog, name)
-            self._attrib_cache[key] = loc
-        if loc >= 0:
-            gl.glEnableVertexAttribArray(loc)
-            gl.glVertexAttribPointer(loc, size, gl.GL_FLOAT, False, stride,
-                                     ctypes.c_void_p(offset))
-
-    def _unbind_attribs(self, prog: int, names: list[bytes]) -> None:
-        for name in names:
-            key = (prog, name)
-            loc = self._attrib_cache.get(key)
-            if loc is None:
-                loc = gl.glGetAttribLocation(prog, name)
-                self._attrib_cache[key] = loc
-            if loc >= 0:
-                gl.glDisableVertexAttribArray(loc)
+            nm3 = np.eye(3, dtype=np.float32)
+        nm4 = np.eye(4, dtype=np.float32)
+        nm4[:3, :3] = nm3
+        nm_bytes = _pack_mat4(nm4)  # 64 bytes
+        rub.updateDynamicBuffer(  # type: ignore[union-attr]
+            self._cylinder_ubo, 0, 192, sphere_data + nm_bytes)
 
 
 # ---------------------------------------------------------------------------
 # Qt Quick item (lives on the GUI thread)
 # ---------------------------------------------------------------------------
 
-class MoleculeQuick3D(_QFBOBase):  # type: ignore[valid-type,misc]
+class MoleculeQuick3D(_RhiItemBase):  # type: ignore[valid-type,misc]
     """3-D molecule display item for Qt Quick / QML.
 
     Provides the same crystal-structure rendering as
@@ -853,11 +947,11 @@ class MoleculeQuick3D(_QFBOBase):  # type: ignore[valid-type,misc]
     _ORTHO_VIEW_MARGIN: float = _ORTHO_VIEW_MARGIN
 
     def __init__(self, parent: object = None) -> None:
-        if not _HAS_QQFBO:
+        if not _HAS_RHI:
             raise RuntimeError(
-                "MoleculeQuick3D requires QQuickFramebufferObject which is not "
-                "available in the current Qt installation.  Install PySide6 or "
-                "PyQt6 with QtQuick support."
+                "MoleculeQuick3D requires QQuickRhiItem (Qt ≥ 6.7) which is not "
+                "available in the current Qt installation.  Install PySide6 ≥ 6.7 "
+                "or PyQt6 ≥ 6.7 with QtQuick support."
             )
         super().__init__(parent)  # type: ignore[call-arg]
 
@@ -930,12 +1024,12 @@ class MoleculeQuick3D(_QFBOBase):  # type: ignore[valid-type,misc]
         self.bondClicked.connect(lambda _x, _y: None)
 
     # ------------------------------------------------------------------
-    # QQuickFramebufferObject interface
+    # QQuickRhiItem interface
     # ------------------------------------------------------------------
 
-    def createRenderer(self) -> _MolRenderer:  # type: ignore[override]
+    def createRenderer(self) -> _MolRhiRenderer:  # type: ignore[override]
         """Return the render-thread renderer object."""
-        return _MolRenderer()
+        return _MolRhiRenderer()
 
     # ------------------------------------------------------------------
     # QML properties
