@@ -21,7 +21,7 @@ from pathlib import Path
 from qtpy import QtGui, QtWidgets
 
 from fastmolwidget.loader import MoleculeLoader
-from fastmolwidget.molecule3D import MoleculeWidget3D, configure_opengl_format
+from fastmolwidget.molecule3D import MoleculeWidget3D
 
 """
 TODO:
@@ -186,9 +186,6 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
 if __name__ == "__main__":
     app = QtWidgets.QApplication.instance()
     if not app:
-        # MUST be called before QApplication is created so the default
-        # QSurfaceFormat (incl. 4× MSAA) is honoured by every GL context.
-        # configure_opengl_format()
         app = QtWidgets.QApplication([])
 
     parse = ArgumentParser(description="Test the 3-D molecule viewer widget with a sample CIF file.")

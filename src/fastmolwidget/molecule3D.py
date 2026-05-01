@@ -27,12 +27,6 @@ Rendering overview
 All GLSL shaders target ``#version 120`` (OpenGL 2.1 / GLSL 1.20 compatibility
 profile) for the widest possible hardware support.
 
-Module-level helpers
---------------------
-Call :func:`configure_opengl_format` **before** creating
-:class:`~qtpy.QtWidgets.QApplication` to enable multi-sample anti-aliasing
-on all platforms (required for macOS).
-
 Mouse controls
 --------------
 * **Left drag**  – rotate.
@@ -91,37 +85,8 @@ _IS_GL_WIDGET: bool = _QOGLBase is not None
 # Public helpers
 # ---------------------------------------------------------------------------
 
-__all__ = ["MoleculeWidget3D", "configure_opengl_format"]
+__all__ = ["MoleculeWidget3D"]
 
-
-def configure_opengl_format() -> None:
-    """Set a sensible default :class:`~qtpy.QtGui.QSurfaceFormat`.
-
-    Call this **before** creating :class:`~qtpy.QtWidgets.QApplication` to
-    request depth buffer, double-buffering and 4× MSAA on all platforms
-    (including macOS where the format must be set as the default before any
-    context is created).
-
-    Example::
-
-        from fastmolwidget.molecule3D import configure_opengl_format
-        from qtpy import QtWidgets
-
-        configure_opengl_format()
-        app = QtWidgets.QApplication([])
-    """
-    try:
-        fmt = QtGui.QSurfaceFormat()
-        # GLSL 1.20 shaders require a compatibility context on macOS.
-        fmt.setRenderableType(QtGui.QSurfaceFormat.RenderableType.OpenGL)
-        fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
-        fmt.setVersion(2, 1)
-        fmt.setDepthBufferSize(24)
-        fmt.setSwapBehavior(QtGui.QSurfaceFormat.SwapBehavior.DoubleBuffer)
-        fmt.setSamples(4)
-        QtGui.QSurfaceFormat.setDefaultFormat(fmt)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -910,8 +875,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         ) = buffers
 
         # One-shot MSAA diagnostic: warn when the actual sample count is < 2,
-        # which usually means configure_opengl_format() was not called before
-        # QApplication(...) and the driver fell back to a single-sample format.
+        # which usually means the driver fell back to a single-sample format.
         try:
             samples = int(self.format().samples())
             if samples < 2:

@@ -1,7 +1,7 @@
 from fastmolwidget.viewer_widget import MoleculeViewerWidget
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.loader import MoleculeLoader
-from fastmolwidget.molecule3D import MoleculeWidget3D, configure_opengl_format
+from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.viewer_widget3D import MoleculeViewer3DWidget
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
 
@@ -14,7 +14,6 @@ __all__ = [
     "MoleculeWidget3D",
     "MoleculeViewer3DWidget",
     "MoleculeWidgetProtocol",
-    "configure_opengl_format",
     "__version__",
 ]
 
@@ -28,9 +27,6 @@ def main() -> None:
     parser.add_argument("mode", choices=["2D", "3D", "2d", "3d"], type=str.upper, help="Display mode: 2D or 3D")
     parser.add_argument("file", type=str, help="Path to a molecule file (CIF, RES, XYZ, etc.)")
     args = parser.parse_args()
-
-    if args.mode == "3D":
-        configure_opengl_format()
 
     app = QApplication.instance() or QApplication(sys.argv)
 

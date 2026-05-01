@@ -118,10 +118,7 @@ app.exec()
 
 ```python
 from qtpy.QtWidgets import QApplication
-from fastmolwidget import MoleculeViewer3DWidget, configure_opengl_format
-
-# Must be called before QApplication is created
-configure_opengl_format()
+from fastmolwidget import MoleculeViewer3DWidget
 
 app = QApplication([])
 viewer = MoleculeViewer3DWidget()
@@ -133,9 +130,7 @@ app.exec()
 ### Embedding the 3D widget in your own layout
 
 ```python
-from fastmolwidget import MoleculeWidget3D, configure_opengl_format
-
-configure_opengl_format()  # before QApplication
+from fastmolwidget import MoleculeWidget3D
 
 mol = MoleculeWidget3D(parent=self)
 mol.open_molecule(atoms, cell=cell, adps=adps)
@@ -204,17 +199,6 @@ Both viewers expose the same control bar:
 
 ## API Overview
 
-### `configure_opengl_format()`
-
-```python
-from fastmolwidget import configure_opengl_format
-
-configure_opengl_format()  # call before QApplication(...)
-```
-
-Sets a sensible `QSurfaceFormat` default (24-bit depth, double-buffer, 4× MSAA) for all platforms, including macOS where the format **must** be configured before any GL context is
-created. Safe to call multiple times; any platform error is silently swallowed.
-
 ### `MoleculeViewer3DWidget(parent=None)`
 
 A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
@@ -277,10 +261,8 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 #### Example — feeding atom data directly to `MoleculeWidget3D`
 
 ```python
-from fastmolwidget import MoleculeWidget3D, configure_opengl_format
+from fastmolwidget import MoleculeWidget3D
 from fastmolwidget.sdm import Atomtuple
-
-configure_opengl_format()  # before QApplication
 
 mol = MoleculeWidget3D(parent=self)
 
@@ -395,50 +377,74 @@ mol.atomClicked.connect(lambda label: print(f"Selected: {label}"))
 layout.addWidget(mol)
 ```
 
+## Advanced API
+
 ### `MoleculeWidgetProtocol`
 
-```python
-from fastmolwidget import MoleculeWidgetProtocol
-```
-
-A `typing.Protocol` (runtime-checkable) that captures the common public API of both `MoleculeWidget` and `MoleculeWidget3D`. Use it to write renderer-agnostic code:
+The core rendering interface is defined by `MoleculeWidgetProtocol`. Both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) satisfy this protocol, making them drop-in replacements for each other.
 
 ```python
-from fastmolwidget import MoleculeWidgetProtocol
+from fastmolwidget.molecule_base import MoleculeWidgetProtocol
+from fastmolwidget import MoleculeWidget3D
 
-
-def load_into(widget: MoleculeWidgetProtocol, atoms, cell, adps) -> None:
-    widget.open_molecule(atoms, cell=cell, adps=adps)
-    widget.show_labels(True)
+def do_something_with_widget(widget: MoleculeWidgetProtocol):
+    ...
 ```
 
-Any class that implements `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `set_background_color`,
-`setLabelFont`, `reset_view`, and `save_image` satisfies the protocol.
+### 3D Application Example
 
-### `MoleculeLoader(widget)`
+```python
+import sys
+from qtpy.QtWidgets import QApplication
+from fastmolwidget import MoleculeViewer3DWidget
 
-Format-aware loader that populates any widget satisfying `MoleculeWidgetProtocol`.
+app = QApplication(sys.argv)
+viewer = MoleculeViewer3DWidget()
+viewer.load_file("examples/test_molecule.res")
+viewer.show()
+sys.exit(app.exec_())
+```
 
-- `load_file(path, keep_view=False)` — parse file and call `open_molecule` / `grow_molecule`
-- `set_grow(value: bool)` — toggle automatic molecule growing (expand asymmetric unit)
+### 3D Generic Widget Example
 
-## License
+```python
+import sys
+from qtpy.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+from fastmolwidget import MoleculeWidget3D
+from fastmolwidget.loader import MoleculeLoader
 
-BSD 2-Clause License — see [LICENSE](LICENSE) for details.
+app = QApplication(sys.argv)
 
-© 2026 Daniel Kratzert
+main_window = QMainWindow()
+central_widget = QWidget(main_window)
+layout = QVBoxLayout(central_widget)
 
-## Maintainer Release Workflow
+# Create and configure the 3D molecule widget
+molecule_widget = MoleculeWidget3D()
+molecule_widget.set_bond_color("#FF5733")  # Example: set bond color to a shade of orange
 
-The release workflow is tag-driven.
+# Load a molecule file (CIF, RES, or XYZ format)
+loader = MoleculeLoader(molecule_widget)
+loader.load_file("examples/test_molecule.res")
 
-1. Ensure `project.version` in `pyproject.toml` is the version to publish.
-2. Create and push a matching tag in the format `version-X.Y.Z`.
-3. GitHub Actions builds sdist/wheel and uploads to TestPyPI.
+layout.addWidget(molecule_widget)
+main_window.setCentralWidget(central_widget)
 
-Example:
+main_window.show()
+sys.exit(app.exec_())
+```
+
+## Running the Examples
+
+To run the provided examples, you can use the following commands:
 
 ```bash
-git tag version-0.1.0
-git push origin version-0.1.0
+# 2D Viewer example
+python -m fastmolwidget.examples.viewer_2d_example
+
+# 3D Viewer example
+python -m fastmolwidget.examples.viewer_3d_example
+
+# Generic 3D Widget example
+python -m fastmolwidget.examples.generic_3d_widget_example
 ```
