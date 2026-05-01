@@ -11,9 +11,10 @@
 // imported (HAS_CPP = False).
 //
 // Build:
-//   macOS : brew install libomp  &&  pip install -e . --no-build-isolation
-//   Linux : pip install -e . --no-build-isolation
-//   Windows: pip install -e . --no-build-isolation
+//   macOS  : uv pip install pybind11 && uv pip install -e . --no-build-isolation
+//            (optionally: brew install libomp  for multi-threaded acceleration)
+//   Linux  : uv pip install pybind11 && uv pip install -e . --no-build-isolation
+//   Windows: uv pip install pybind11 && uv pip install -e . --no-build-isolation
 //
 // Interface (mirrors the Python call in sdm.py):
 //
@@ -183,7 +184,7 @@ PYBIND11_MODULE(sdm_cpp, m) {
 Fast C++ implementation of the Shortest-Distance-Matrix (SDM) algorithm
 used by fastmolwidget to grow crystal structures.
 
-Compiled with OpenMP support when libomp is available (macOS: brew install libomp).
+Compiled with OpenMP support when libomp is available (macOS: optionally brew install libomp).
 Falls back gracefully to single-threaded execution when OpenMP is absent.
 )doc";
 

@@ -64,9 +64,11 @@ uv add "fastmolwidget[pyside6,gl3d]"
 The symmetry-growing step (SDM) has an optional C++ extension that uses **pybind11** and **OpenMP** for a significant speed-up on large structures. The pure-Python fallback is always available.
 
 ```bash
-brew install libomp   # macOS only — enables OpenMP; safe to skip
 uv pip install pybind11
 uv pip install -e . --no-build-isolation
+
+# macOS: optionally install libomp for multi-threaded acceleration
+brew install libomp
 ```
 
 **Requirements**: Python ≥ 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
