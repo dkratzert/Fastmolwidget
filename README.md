@@ -49,55 +49,27 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 ## Installation
 
 ```bash
-pip install fastmolwidget
-```
+# with PySide6 (recommended)
+uv add "fastmolwidget[pyside6]"
 
-By default, `fastmolwidget` installs **without a concrete Qt binding**.
-Install one binding explicitly via extras:
+# or PyQt6
+uv add "fastmolwidget[pyqt6]"
 
-```bash
-pip install "fastmolwidget[pyside6]"
-pip install "fastmolwidget[pyqt6]"
-```
-
-For **3D OpenGL rendering**, also install PyOpenGL:
-
-```bash
-pip install pyopengl
+# add 3D OpenGL support
+uv add "fastmolwidget[pyside6,gl3d]"
 ```
 
 ### Optional C++ Acceleration (`sdm_cpp`)
 
-The symmetry-growing step (Shortest-Distance-Matrix, SDM) has an optional
-C++ extension (`sdm_cpp`) that uses **pybind11** and **OpenMP** for a significant
-speed-up on large structures. The pure-Python fallback is always active when
-the extension is not installed.
-
-**macOS**
+The symmetry-growing step (SDM) has an optional C++ extension that uses **pybind11** and **OpenMP** for a significant speed-up on large structures. The pure-Python fallback is always available.
 
 ```bash
-brew install libomp          # needed for OpenMP; skip if you don't want parallelism
-pip install pybind11
-pip install -e . --no-build-isolation
+brew install libomp   # macOS only — enables OpenMP; safe to skip
+uv pip install pybind11
+uv pip install -e . --no-build-isolation
 ```
 
-**Linux / Windows**
-
-```bash
-pip install pybind11
-pip install -e . --no-build-isolation
-```
-
-If `libomp` is not found on macOS the module still builds and works, just
-single-threaded. You can verify whether OpenMP was compiled in:
-
-```python
-import sdm_cpp
-
-print(sdm_cpp.has_openmp)  # True / False
-```
-
-**Requirements**: Python >= 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
+**Requirements**: Python ≥ 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
 
 ## Quick Start
 
