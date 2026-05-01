@@ -20,4 +20,29 @@ __all__ = [
 
 
 def main() -> None:
-    print("Hello from fastmolwidget!")
+    import argparse
+    import sys
+    from qtpy.QtWidgets import QApplication
+
+    parser = argparse.ArgumentParser(description="Fastmolwidget crystal structure viewer.")
+    parser.add_argument("mode", choices=["2D", "3D", "2d", "3d"], type=str.upper, help="Display mode: 2D or 3D")
+    parser.add_argument("file", type=str, help="Path to a molecule file (CIF, RES, XYZ, etc.)")
+    args = parser.parse_args()
+
+    if args.mode == "3D":
+        configure_opengl_format()
+
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    if args.mode == "2D":
+        viewer = MoleculeViewerWidget()
+    else:
+        viewer = MoleculeViewer3DWidget()
+
+    viewer.load_file(args.file)
+    viewer.show()
+
+    if hasattr(app, "exec"):
+        sys.exit(app.exec())
+    else:
+        sys.exit(app.exec_())
