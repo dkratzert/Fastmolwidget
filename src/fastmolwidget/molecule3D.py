@@ -957,28 +957,35 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if self._show_adps and self._ellipsoid_count > 0:
             self._render_ellipsoids_batched(mv, proj)
 
-        # Construct QPainter *after* every raw GL draw is done.  Always
-        # creating it (even when no labels/hover are active) keeps the
-        # GL→QPainter transition state identical on every frame, so the
-        # very first time a label appears no longer triggers a visible
-        # state-change regression.
-        painter = QtGui.QPainter(self)
-        try:
-            # painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            # painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
-            self._draw_labels_with_painter(painter, mv, proj)
-            if self._is_packed:
-                self._draw_axis_indicator(painter)
-        finally:
-            painter.end()
+        # Only construct a QPainter when there is actually something to
+        # overlay.  GL state is already fully restored by _reassert_gl_state()
+        # above, so we no longer need the "dummy painter every frame" trick.
+        need_overlay = (
+            bool(self.atoms) and (
+                self.labels
+                or self._hover_atom_label is not None
+                or self._hover_bond is not None
+            )
+        ) or self._is_packed
+        if need_overlay:
+            painter = QtGui.QPainter(self)
+            try:
+                # painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+                # painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+                self._draw_labels_with_painter(painter, mv, proj)
+                if self._is_packed:
+                    self._draw_axis_indicator(painter)
+            finally:
+                painter.end()
 
     def _reassert_gl_state(self) -> None:
         """Restore the raw-GL state we depend on.
 
-        QPainter (used for atom-label / bond-distance overlays) silently
-        toggles GL_DEPTH_TEST, GL_BLEND, GL_SCISSOR_TEST, GL_MULTISAMPLE and
-        the viewport.  Re-assert everything we rely on at the top of every
-        paintGL so a previous frame's overlay cannot poison this one.
+        When a QPainter overlay ran in the previous frame (atom labels,
+        bond-distance hover, axis indicator) Qt's paint engine silently toggles
+        GL_DEPTH_TEST, GL_BLEND, GL_SCISSOR_TEST, GL_MULTISAMPLE and the
+        viewport.  Re-asserting everything unconditionally at the top of every
+        paintGL ensures a clean slate regardless of what the previous frame did.
         """
         try:
             gl.glEnable(gl.GL_DEPTH_TEST)
