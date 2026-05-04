@@ -845,16 +845,16 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def zoom_molecule(self, event: QMouseEvent):
         """Adjust the zoom / scale factor based on the right-button drag delta."""
-        self._factor -= (self._lastPos.y() - event.position().y()) / 350
+        self._factor -= (self._lastPos.y() - event.position().y()) / 400
         self._factor = max(0.005, self._factor)
-        self.zoom += (self._lastPos.y() - event.position().y()) / 350
+        self.zoom += (self._lastPos.y() - event.position().y()) / 400
         self.atoms_size = abs(self._factor * 70)
         self.update()
 
     def rotate_molecule(self, event: QMouseEvent):
         """Rotate the molecule around X and Y axes using the left-button drag delta."""
-        self.y_angle = -(event.position().x() - self._lastPos.x()) / 80
-        self.x_angle = (event.position().y() - self._lastPos.y()) / 80
+        self.y_angle = -(event.position().x() - self._lastPos.x()) / 100
+        self.x_angle = (event.position().y() - self._lastPos.y()) / 100
         R_y = self.rotate_y()
         R_x = self.rotate_x()
         R = np.dot(R_x, R_y)
