@@ -48,16 +48,15 @@ apt-get install -y libegl1
 ```bash
 uv sync --extra pyside6 --extra gl3d   # install with 3D + Qt binding
 uv run pytest                          # run all tests (cwd must be repo root — tests use Path('tests/test-data'))
-uv run pytest tests/test_molecule2D.py::test_calc_volume
 uv run ruff check src tests
 uv run ty check                        # type checker configured in dev group
 ```
 
 Tests instantiate a process-wide `QApplication` at module import (see top of `tests/test_molecule2D.py`). Tests requiring real OpenGL are skipped on headless CI — pattern shown in `tests/test_viewer_widget3D.py`. Test data lives in `tests/test-data/` (CIF, SHELX `.res`, `.xyz`); reuse those files instead of generating new fixtures.
 
-## Release
-
-Tag-driven via GitHub Actions to **TestPyPI** only. Bump `project.version` in `pyproject.toml`, then `git tag version-X.Y.Z && git push origin version-X.Y.Z`.
+## Comminication
+- Keep sentences short and to the point. Use bullet points, numbered lists, and tables where appropriate. Avoid long paragraphs.
+- When asking for clarification, be specific about what information is missing and why it is needed.
 
 ## Per-user rules (from `global-copilot-instructions`)
 
