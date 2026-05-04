@@ -432,11 +432,11 @@ class SDM:
                     # be duplicates of each other.
                     if ex[5] != 0 and part != 0 and ex[5] != part:
                         continue
-                    ddx = px - ex[2];
+                    ddx = px - ex[2]
                     ddx -= round(ddx)
-                    ddy = py - ex[3];
+                    ddy = py - ex[3]
                     ddy -= round(ddy)
-                    ddz = pz - ex[4];
+                    ddz = pz - ex[4]
                     ddz -= round(ddz)
                     if self.vector_length(ddx, ddy, ddz) < cart_tolerance:
                         is_dup = True
