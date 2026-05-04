@@ -153,23 +153,44 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 | Hover over atom         | Show the atom label (enlarged when persistent labels are on)                                                                              |
 | Hover over bond         | Show the bond distance (Å) in a rounded tooltip near the cursor                                                                           |
 
+## Keyboard Shortcuts
+
+The widget must have keyboard focus (click on it once) for these shortcuts to work.
+
+| Key | Effect                                                                                          |
+|-----|-------------------------------------------------------------------------------------------------|
+| F1  | Align the view so that the reciprocal axis **a\*** points towards the viewer (requires a unit cell) |
+| F2  | Align the view so that the reciprocal axis **b\*** points towards the viewer (requires a unit cell) |
+| F3  | Align the view so that the reciprocal axis **c\*** points towards the viewer (requires a unit cell) |
+
+> **Note:** The F-key shortcuts are available in both the 2D (`MoleculeWidget`) and 3D (`MoleculeWidget3D`) renderers. They have no effect when no unit cell is loaded (e.g. plain XYZ files).
+
 ## Control Bar Options
 
 ### `MoleculeViewerWidget` (2D) and `MoleculeViewer3DWidget` (3D)
 
-Both viewers expose the same control bar:
+Both viewers expose the same two-row control bar:
+
+**Row 1 — structure toggles**
 
 | Control               | Default | Description                                                                                    |
 |-----------------------|---------|------------------------------------------------------------------------------------------------|
-| Grow                  | ✗       | Expand the asymmetric unit to complete molecules                                               |
+| Open File…            | —       | Opens a file dialog to load a structure file                                                   |
+| Grow                  | ✗       | Expand the asymmetric unit to complete molecules (mutually exclusive with Pack Unit Cell)       |
 | Pack Unit Cell        | ✗       | Generate all symmetry-equivalent positions within one unit cell (mutually exclusive with Grow) |
 | Show ADP              | ✓       | Toggle ORTEP ellipsoid / isotropic sphere rendering                                            |
 | Show Labels           | ✗       | Toggle non-hydrogen atom labels                                                                |
-| Round Bonds           | ✓       | Switch between round cylinder and flat bond drawing                                            |
-| Show Hydrogens        | ✓       | Show or hide hydrogen atoms and their bonds                                                    |
-| Bond Width            | 3       | Stroke width / cylinder radius for bonds (1–15)                                                |
+| Hide Hydrogens        | ✗       | When checked, hydrogen atoms and their bonds are hidden                                        |
+
+**Row 2 — bond and view controls**
+
+| Control               | Default | Description                                                                                    |
+|-----------------------|---------|------------------------------------------------------------------------------------------------|
+| Bond Width            | 3       | Stroke width / cylinder radius for bonds (2D: 1–15, 3D: 0–15)                                 |
 | Bond Color            | —       | Opens a colour picker to change the default bond colour                                        |
-| Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (3D only)                       |
+| Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)                |
+
+> When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
 
 ## API Overview
 
