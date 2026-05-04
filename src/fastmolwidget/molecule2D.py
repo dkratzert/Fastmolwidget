@@ -836,9 +836,9 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def zoom_molecule(self, event: QMouseEvent):
         """Adjust the zoom / scale factor based on the right-button drag delta."""
-        self._factor += (self._lastPos.y() - event.position().y()) / 350
+        self._factor -= (self._lastPos.y() - event.position().y()) / 350
         self._factor = max(0.005, self._factor)
-        self.zoom -= (self._lastPos.y() - event.position().y()) / 350
+        self.zoom += (self._lastPos.y() - event.position().y()) / 350
         self.atoms_size = abs(self._factor * 70)
         self.update()
 
