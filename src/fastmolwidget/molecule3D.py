@@ -1876,6 +1876,50 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._pan = np.zeros(2, dtype=np.float32)
         self.update()
 
+    def _align_to_reciprocal_axis(self, axis_index: int) -> None:
+        """Align the view so that the reciprocal axis *axis_index* (0=a*, 1=b*, 2=c*) points towards the viewer.
+
+        Does nothing if no unit cell is available.
+        """
+        if self._amatrix is None or self._cell is None:
+            return
+
+        # Reciprocal lattice vectors in Cartesian are rows of M^{-1}
+        M_inv = np.linalg.inv(self._amatrix)
+        recip_vec = M_inv[axis_index]
+        recip_vec = recip_vec / np.linalg.norm(recip_vec)
+
+        # Build rotation that maps recip_vec → +Z (screen normal, towards viewer)
+        z_axis = recip_vec.astype(np.float32)
+
+        # Choose an initial "up" vector; avoid degeneracy if z_axis is parallel to Y
+        up_candidate = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        if abs(np.dot(z_axis, up_candidate)) > 0.99:
+            up_candidate = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+        x_axis = np.cross(up_candidate, z_axis)
+        x_axis /= np.linalg.norm(x_axis)
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis /= np.linalg.norm(y_axis)
+
+        # Target rotation: rows are the new basis vectors expressed in the original frame
+        target_R = np.array([x_axis, y_axis, z_axis], dtype=np.float32)
+
+        self._rot_matrix = target_R
+        self.cumulative_R = target_R
+        self.update()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        """Handle key-press events for reciprocal-axis alignment."""
+        if event.key() == Qt.Key.Key_F1:
+            self._align_to_reciprocal_axis(0)
+        elif event.key() == Qt.Key.Key_F2:
+            self._align_to_reciprocal_axis(1)
+        elif event.key() == Qt.Key.Key_F3:
+            self._align_to_reciprocal_axis(2)
+        else:
+            super().keyPressEvent(event)
+
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
         """Save the current view to an image file."""
         pixmap = self.grab()

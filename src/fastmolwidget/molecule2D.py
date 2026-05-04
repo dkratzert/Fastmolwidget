@@ -843,6 +843,70 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.get_center_and_radius()
         self.update()
 
+    def _align_to_reciprocal_axis(self, axis_index: int) -> None:
+        """Align the view so that the reciprocal axis *axis_index* (0=a*, 1=b*, 2=c*) points towards the viewer.
+
+        Does nothing if no unit cell is available.
+        """
+        if self._amatrix is None or self._cell is None:
+            return
+
+        # Reciprocal lattice vectors in Cartesian are rows of M^{-1}
+        M_inv = np.linalg.inv(self._amatrix)
+        recip_vec = M_inv[axis_index]
+        recip_vec = recip_vec / np.linalg.norm(recip_vec)
+
+        # Build rotation that maps recip_vec → +Z (screen normal, towards viewer)
+        z_axis = recip_vec.astype(np.float32)
+
+        # Choose an initial "up" vector; avoid degeneracy if z_axis is parallel to Y
+        up_candidate = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        if abs(np.dot(z_axis, up_candidate)) > 0.99:
+            up_candidate = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+        x_axis = np.cross(up_candidate, z_axis)
+        x_axis /= np.linalg.norm(x_axis)
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis /= np.linalg.norm(y_axis)
+
+        # Target rotation: rows are the new basis vectors expressed in the original frame
+        target_R = np.array([x_axis, y_axis, z_axis], dtype=np.float32)
+
+        # Apply the delta rotation to go from current cumulative_R to target_R
+        delta_R = target_R @ np.linalg.inv(self.cumulative_R)
+
+        if self.atoms:
+            self._coords_array = np.dot(
+                self._coords_array - self.molecule_center, delta_R.T
+            ) + self.molecule_center
+
+            if np.any(self._has_adp):
+                self._ucart_array = np.matmul(delta_R, np.matmul(self._ucart_array, delta_R.T))
+                self._eigenvectors_array = np.matmul(delta_R, self._eigenvectors_array)
+                self._u_inv_array = np.matmul(delta_R, np.matmul(self._u_inv_array, delta_R.T))
+
+            for i, at in enumerate(self.atoms):
+                at.coordinate = self._coords_array[i]
+                at.z = at.coordinate[2]
+                if self._has_adp[i]:
+                    at.u_cart = self._ucart_array[i]
+                    at.u_eigvecs = self._eigenvectors_array[i]
+                    at.u_inv = self._u_inv_array[i]
+
+        self.cumulative_R = target_R
+        self.update()
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        """Handle key-press events for reciprocal-axis alignment."""
+        if event.key() == Qt.Key.Key_F1:
+            self._align_to_reciprocal_axis(0)
+        elif event.key() == Qt.Key.Key_F2:
+            self._align_to_reciprocal_axis(1)
+        elif event.key() == Qt.Key.Key_F3:
+            self._align_to_reciprocal_axis(2)
+        else:
+            super().keyPressEvent(event)
+
     def zoom_molecule(self, event: QMouseEvent):
         """Adjust the zoom / scale factor based on the right-button drag delta."""
         self._factor -= (self._lastPos.y() - event.position().y()) / 400
