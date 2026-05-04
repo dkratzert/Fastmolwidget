@@ -260,7 +260,10 @@ def test_set_bond_color_visible_in_rounded_mode():
         w, h = img.width(), img.height()
         n_bytes = h * w * 4
         ptr = img.bits()
-        if hasattr(ptr, 'setsize'):
+        if isinstance(ptr, (bytes, memoryview)):
+            # PySide6: bits() returns a memoryview or bytes directly
+            arr = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape((h, w, 4))
+        elif hasattr(ptr, 'setsize'):
             # PyQt5 / early PyQt6: sip.voidptr with setsize()
             ptr.setsize(n_bytes)
             arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
@@ -359,7 +362,9 @@ def test_hover_bond_distance_label_renders_in_paint():
         w, h = img.width(), img.height()
         n_bytes = h * w * 4
         ptr = img.bits()
-        if hasattr(ptr, 'setsize'):
+        if isinstance(ptr, (bytes, memoryview)):
+            arr = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape((h, w, 4))
+        elif hasattr(ptr, 'setsize'):
             ptr.setsize(n_bytes)
             arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
         else:
