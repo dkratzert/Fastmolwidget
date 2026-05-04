@@ -809,6 +809,82 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._painter.restore()
         self._painter.setFont(font)
 
+    def _draw_axis_indicator(self) -> None:
+        """Draw unit-cell axis arrows (a=red, b=green, c=blue) in the bottom-left corner.
+
+        The arrows are rotated by the current cumulative rotation so they
+        track the molecule orientation.  Does nothing if no unit cell is loaded.
+        """
+        if self._amatrix is None or self._cell is None:
+            return
+
+        # Unit cell vectors in Cartesian (columns of _amatrix)
+        axes = [self._amatrix[:, i].astype(np.float64) for i in range(3)]
+        # Normalise for display
+        axes = [v / np.linalg.norm(v) for v in axes]
+
+        # Rotate by current view rotation
+        R = self.cumulative_R.astype(np.float64)
+        axes = [R @ v for v in axes]
+
+        # Indicator placement: bottom-left corner with some padding
+        arrow_len = 40.0
+        origin_x = 55.0
+        origin_y = self.height() - 55.0
+
+        colors = [QColor(220, 30, 30), QColor(30, 160, 30), QColor(30, 30, 220)]
+        labels = ['a', 'b', 'c']
+
+        self._painter.save()
+        self._painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        font = QtGui.QFont()
+        font.setPixelSize(12)
+        font.setBold(True)
+        self._painter.setFont(font)
+
+        for i in range(3):
+            vx, vy = float(axes[i][0]), float(axes[i][1])
+            tip_x = origin_x + vx * arrow_len
+            tip_y = origin_y - vy * arrow_len  # screen Y is inverted
+
+            pen = QPen(colors[i], 2.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            self._painter.setPen(pen)
+            self._painter.drawLine(
+                QtCore.QPointF(origin_x, origin_y),
+                QtCore.QPointF(tip_x, tip_y),
+            )
+
+            # Arrowhead
+            dx, dy = tip_x - origin_x, tip_y - origin_y
+            length = sqrt(dx * dx + dy * dy)
+            if length > 1e-6:
+                ux, uy = dx / length, dy / length
+                px, py = -uy, ux  # perpendicular
+                head_len = 8.0
+                head_w = 3.5
+                self._painter.drawLine(
+                    QtCore.QPointF(tip_x, tip_y),
+                    QtCore.QPointF(tip_x - ux * head_len + px * head_w,
+                                   tip_y - uy * head_len + py * head_w),
+                )
+                self._painter.drawLine(
+                    QtCore.QPointF(tip_x, tip_y),
+                    QtCore.QPointF(tip_x - ux * head_len - px * head_w,
+                                   tip_y - uy * head_len - py * head_w),
+                )
+
+            # Label at the tip
+            self._painter.setPen(colors[i])
+            self._painter.drawText(
+                QtCore.QPointF(tip_x + 4 * (1 if vx >= 0 else -2),
+                               tip_y + 4 * (-1 if vy >= 0 else 2)),
+                labels[i],
+            )
+
+        self._painter.restore()
+
     def pan_molecule(self, event):
         """Translate the molecule center based on the middle-button drag delta."""
         self.molecule_center[0] += (self._lastPos.x() - event.position().x()) / 50
@@ -1054,6 +1130,10 @@ class MoleculeWidget(QtWidgets.QWidget):
                 self._hover_cursor.x(),
                 self._hover_cursor.y(),
             )
+
+        # Unit-cell axis indicator (bottom-left corner)
+        self._draw_axis_indicator()
+
         self._painter.end()
 
     def calculate_z_order(self):

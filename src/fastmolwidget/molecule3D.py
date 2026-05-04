@@ -966,6 +966,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             # painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             # painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
             self._draw_labels_with_painter(painter, mv, proj)
+            self._draw_axis_indicator(painter)
         finally:
             painter.end()
 
@@ -2131,6 +2132,84 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             int(QtCore.Qt.AlignmentFlag.AlignCenter),
             text,
         )
+        painter.restore()
+
+    def _draw_axis_indicator(self, painter: QtGui.QPainter) -> None:
+        """Draw unit-cell axis arrows (a=red, b=green, c=blue) in the bottom-left corner.
+
+        The arrows are rotated by the current view rotation so they track the
+        molecule orientation.  Does nothing if no unit cell is loaded.
+        """
+        if self._cell is None or self._amatrix is None:
+            return
+
+        # Unit cell vectors in Cartesian (columns of _amatrix), normalised
+        axes = [self._amatrix[:, i].astype(np.float64) for i in range(3)]
+        axes = [v / np.linalg.norm(v) for v in axes]
+
+        # Rotate by current view rotation
+        R = self._rot_matrix.astype(np.float64)
+        axes = [R @ v for v in axes]
+
+        arrow_len = 40.0
+        origin_x = 55.0
+        origin_y = float(self.height()) - 55.0
+
+        colors = [
+            QtGui.QColor(220, 30, 30),
+            QtGui.QColor(30, 160, 30),
+            QtGui.QColor(30, 30, 220),
+        ]
+        labels = ['a', 'b', 'c']
+
+        painter.save()
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+
+        font = QtGui.QFont()
+        font.setPixelSize(12)
+        font.setBold(True)
+        painter.setFont(font)
+
+        for i in range(3):
+            vx, vy = float(axes[i][0]), float(axes[i][1])
+            tip_x = origin_x + vx * arrow_len
+            tip_y = origin_y - vy * arrow_len  # screen Y is inverted
+
+            pen = QtGui.QPen(colors[i], 2.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(
+                QtCore.QPointF(origin_x, origin_y),
+                QtCore.QPointF(tip_x, tip_y),
+            )
+
+            # Arrowhead
+            dx, dy = tip_x - origin_x, tip_y - origin_y
+            length = sqrt(dx * dx + dy * dy)
+            if length > 1e-6:
+                ux, uy = dx / length, dy / length
+                px, py = -uy, ux  # perpendicular
+                head_len = 8.0
+                head_w = 3.5
+                painter.drawLine(
+                    QtCore.QPointF(tip_x, tip_y),
+                    QtCore.QPointF(tip_x - ux * head_len + px * head_w,
+                                   tip_y - uy * head_len + py * head_w),
+                )
+                painter.drawLine(
+                    QtCore.QPointF(tip_x, tip_y),
+                    QtCore.QPointF(tip_x - ux * head_len - px * head_w,
+                                   tip_y - uy * head_len - py * head_w),
+                )
+
+            # Label at the tip
+            painter.setPen(colors[i])
+            painter.drawText(
+                QtCore.QPointF(tip_x + 4 * (1 if vx >= 0 else -2),
+                               tip_y + 4 * (-1 if vy >= 0 else 2)),
+                labels[i],
+            )
+
         painter.restore()
 
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
