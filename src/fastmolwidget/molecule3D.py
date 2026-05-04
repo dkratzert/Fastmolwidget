@@ -1927,8 +1927,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         if event.buttons() == Qt.MouseButton.LeftButton:
             # Arcball-style rotation
-            angle_y = dx / 80.0
-            angle_x = dy / 80.0
+            angle_y = dx / 100.0
+            angle_x = dy / 100.0
             Ry = np.array(
                 [
                     [cos(angle_y), 0.0, sin(angle_y)],
@@ -1951,12 +1951,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         elif event.buttons() == Qt.MouseButton.RightButton:
             # Zoom
-            self._zoom += dy / 100.0
+            self._zoom += dy / 250.0
             self._zoom = max(0.01, self._zoom)
 
         elif event.buttons() == Qt.MouseButton.MiddleButton:
             # Pan
-            pan_scale = self._molecule_radius * 0.005
+            pan_scale = self._molecule_radius * 0.001
             self._pan[0] += dx * pan_scale
             self._pan[1] -= dy * pan_scale
 
