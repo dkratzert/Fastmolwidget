@@ -683,6 +683,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.atoms: list[_Atom3D] = []
         self.connections: tuple = ()
         self._cell: tuple[float, ...] | None = None
+        self._is_packed: bool = False
         self._adp_map: dict = {}
         self._astar: float = 0.0
         self._bstar: float = 0.0
@@ -966,7 +967,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             # painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             # painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
             self._draw_labels_with_painter(painter, mv, proj)
-            self._draw_axis_indicator(painter)
+            if self._is_packed:
+                self._draw_axis_indicator(painter)
         finally:
             painter.end()
 
@@ -1623,6 +1625,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         keep_view: bool = False,
     ) -> None:
         """Load a new molecule and (unless *keep_view*) reset the view."""
+        self._is_packed = False
         self._load_molecule(atoms, cell, adps, keep_view=keep_view)
 
     def grow_molecule(

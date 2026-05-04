@@ -147,6 +147,7 @@ class MoleculeLoader:
             adps=self._load_adps_from_cif(cif.displacement_parameters()),
             keep_view=keep_view,
         )
+        self._widget._is_packed = self._pack_enabled
 
     @staticmethod
     def _compute_packed_atoms_cif(
@@ -227,6 +228,7 @@ class MoleculeLoader:
             atoms = self._compute_grown_atoms_shelx(path)
         self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
                                    keep_view=keep_view)
+        self._widget._is_packed = self._pack_enabled
 
     @staticmethod
     def _compute_grown_atoms_shelx(path: Path) -> list:

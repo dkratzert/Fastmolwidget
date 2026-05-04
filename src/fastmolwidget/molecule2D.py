@@ -88,6 +88,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._amatrix = None
         self._adp_map = None
         self._cell = None
+        self._is_packed = False
         self._factor = 1.0
         self.atoms_size = 12
         self.fontsize = 13
@@ -298,6 +299,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         """
         Loads a new molecule and completely resets the view (zoom, pan, rotation).
         """
+        self._is_packed = False
         self._load_molecule(atoms, cell, adps, keep_view=keep_view)
 
     def grow_molecule(self,
@@ -1131,8 +1133,9 @@ class MoleculeWidget(QtWidgets.QWidget):
                 self._hover_cursor.y(),
             )
 
-        # Unit-cell axis indicator (bottom-left corner)
-        self._draw_axis_indicator()
+        # Unit-cell axis indicator (bottom-left corner, grown structures only)
+        if self._is_packed:
+            self._draw_axis_indicator()
 
         self._painter.end()
 
