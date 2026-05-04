@@ -399,9 +399,48 @@ class SDM:
 
         cell = self.cell[:6]
 
-        # packed entries: [label, type, fx, fy, fz, part, cx, cy, cz, matrix]
-        # cx/cy/cz are Cartesian Å (for fast distance checks)
-        packed: list[list] = []
+        # Pre-compute metric tensor coefficients for inlined distance calc
+        aga = self.aga
+        bbe = self.bbe
+        cal = self.cal
+        asq = self.asq
+        bsq = self.bsq
+        csq = self.csq
+        tol_sq = cart_tolerance * cart_tolerance
+
+        # Pre-compute the frac→cart transformation matrix once
+        a, b, c, alpha, beta, gamma = cell
+        _alpha = radians(alpha)
+        _beta = radians(beta)
+        _gamma = radians(gamma)
+        _cos_gamma = cos(_gamma)
+        _sin_gamma = sin(_gamma)
+        _cos_beta = cos(_beta)
+        _sin_beta = sin(_beta)
+        _cosastar = (_cos_beta * _cos_gamma - cos(_alpha)) / (_sin_beta * _sin_gamma)
+        _sinastar = sqrt(1.0 - _cosastar * _cosastar)
+        # Transformation coefficients: x_cart = m00*fx + m01*fy + m02*fz, etc.
+        m00 = a
+        m01 = b * _cos_gamma
+        m02 = c * _cos_beta
+        m11 = b * _sin_gamma
+        m12 = -c * _sin_beta * _cosastar
+        m22 = c * _sin_beta * _sinastar
+
+        # Spatial grid for O(1) average-case duplicate detection.
+        # Grid divides [0,1)^3 into bins; only neighbouring bins are checked.
+        # Choose grid size so each bin spans ~tolerance in each fractional axis.
+        # Minimum 3 bins per axis so the 3×3×3 neighbourhood is correct.
+        grid_nx = max(3, int(a / cart_tolerance))
+        grid_ny = max(3, int(b / cart_tolerance))
+        grid_nz = max(3, int(c / cart_tolerance))
+
+        # grid maps (ix, iy, iz) → list of (fx, fy, fz, part, packed_index)
+        grid: dict[tuple[int, int, int], list[tuple[float, float, float, int, int]]] = {}
+
+        # packed entries: (label, elem, fx, fy, fz, part, cx, cy, cz, matrix)
+        packed: list[tuple] = []
+        packed_append = packed.append
 
         for at in self.atoms:
             x1, y1, z1 = at[2], at[3], at[4]
@@ -414,46 +453,76 @@ class SDM:
                 t = symm_t[idx]
 
                 # Apply symmetry operation (column-major, matching packer())
-                px = x1 * m[0][0] + y1 * m[1][0] + z1 * m[2][0] + t[0]
-                py = x1 * m[0][1] + y1 * m[1][1] + z1 * m[2][1] + t[1]
-                pz = x1 * m[0][2] + y1 * m[1][2] + z1 * m[2][2] + t[2]
+                px = (x1 * m[0][0] + y1 * m[1][0] + z1 * m[2][0] + t[0]) % 1.0
+                py = (x1 * m[0][1] + y1 * m[1][1] + z1 * m[2][1] + t[1]) % 1.0
+                pz = (x1 * m[0][2] + y1 * m[1][2] + z1 * m[2][2] + t[2]) % 1.0
 
-                # Fold into [0, 1)
-                px %= 1.0
-                py %= 1.0
-                pz %= 1.0
+                # Determine grid bin
+                ix = int(px * grid_nx) % grid_nx
+                iy = int(py * grid_ny) % grid_ny
+                iz = int(pz * grid_nz) % grid_nz
 
-                # Duplicate check using Cartesian distances with PBCs.
-                # Fractional difference folded to [−0.5, 0.5] → then
-                # converted to Å via vector_length() — same as packer().
+                # Check only 3×3×3 neighbouring bins for duplicates
                 is_dup = False
-                for ex in packed:
-                    # Atoms in different (non-zero) disorder parts cannot
-                    # be duplicates of each other.
-                    if ex[5] != 0 and part != 0 and ex[5] != part:
-                        continue
-                    ddx = px - ex[2]
-                    ddx -= round(ddx)
-                    ddy = py - ex[3]
-                    ddy -= round(ddy)
-                    ddz = pz - ex[4]
-                    ddz -= round(ddz)
-                    if self.vector_length(ddx, ddy, ddz) < cart_tolerance:
-                        is_dup = True
+                for dix in (-1, 0, 1):
+                    if is_dup:
                         break
+                    nix = (ix + dix) % grid_nx
+                    for diy in (-1, 0, 1):
+                        if is_dup:
+                            break
+                        niy = (iy + diy) % grid_ny
+                        for diz in (-1, 0, 1):
+                            if is_dup:
+                                break
+                            niz = (iz + diz) % grid_nz
+                            bucket = grid.get((nix, niy, niz))
+                            if bucket is None:
+                                continue
+                            for (efx, efy, efz, epart, _) in bucket:
+                                # Atoms in different (non-zero) disorder parts
+                                # cannot be duplicates of each other.
+                                if epart != 0 and part != 0 and epart != part:
+                                    continue
+                                # Fractional difference folded to [-0.5, 0.5]
+                                ddx = px - efx
+                                ddx = ddx - int(ddx + (0.5 if ddx >= 0.0 else -0.5))
+                                ddy = py - efy
+                                ddy = ddy - int(ddy + (0.5 if ddy >= 0.0 else -0.5))
+                                ddz = pz - efz
+                                ddz = ddz - int(ddz + (0.5 if ddz >= 0.0 else -0.5))
+                                # Inlined squared metric distance
+                                d2 = (ddx * ddx * asq + ddy * ddy * bsq
+                                      + ddz * ddz * csq
+                                      + 2.0 * (ddx * ddy * aga
+                                               + ddx * ddz * bbe
+                                               + ddy * ddz * cal))
+                                if d2 < tol_sq:
+                                    is_dup = True
+                                    break
 
                 if not is_dup:
-                    cx, cy, cz = frac_to_cart([px, py, pz], cell)
-                    packed.append([label, elem, px, py, pz, part, cx, cy, cz, m])
+                    # Inline frac_to_cart
+                    cx = m00 * px + m01 * py + m02 * pz
+                    cy = m11 * py + m12 * pz
+                    cz = m22 * pz
+                    idx_packed = len(packed)
+                    packed_append((label, elem, px, py, pz, part, cx, cy, cz, m))
+                    # Insert into grid
+                    key = (ix, iy, iz)
+                    bucket = grid.get(key)
+                    if bucket is None:
+                        grid[key] = [(px, py, pz, part, idx_packed)]
+                    else:
+                        bucket.append((px, py, pz, part, idx_packed))
 
-        cart_atoms: list[Atomtuple] = []
-        for at in packed:
-            cart_atoms.append(
-                Atomtuple(
-                    label=at[0], type=at[1], x=at[6], y=at[7], z=at[8],
-                    part=at[5], symm_matrix=at[9],
-                )
+        cart_atoms: list[Atomtuple] = [
+            Atomtuple(
+                label=at[0], type=at[1], x=at[6], y=at[7], z=at[8],
+                part=at[5], symm_matrix=at[9],
             )
+            for at in packed
+        ]
         return cart_atoms
 
     def vector_length(self, x: float, y: float, z: float) -> float:

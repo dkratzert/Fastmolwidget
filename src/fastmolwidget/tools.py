@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Sequence
 
 import numpy as np
 
 from fastmolwidget.atoms import get_radius_from_element
 
 
-def to_float(st) -> float | list[float] | None:
-    if isinstance(st, list):
-        try:
-            return [float(x) for x in st[-2:]]
-        except ValueError:
-            return None
-    else:
-        try:
-            return float(st.split('(')[0])
-        except ValueError:
-            return None
+def to_float(st: str) -> float | None:
+    try:
+        return float(st.split('(')[0])
+    except ValueError:
+        return None
+
+
+def to_float_list(st: Sequence[str]) -> list[float] | None:
+    try:
+        return [float(x) for x in st[-2:]]
+    except ValueError:
+        return None
 
 
 def get_error_from_value(value: str) -> tuple[float, float]:
@@ -63,12 +65,12 @@ def grouper(inputs, n, fillvalue=None):
 
 
 def build_conntable(
-    coords: np.ndarray,
-    types: list[str],
-    parts: list[int],
-    radii: np.ndarray | None = None,
-    extra_param: float = 1.2,
-    symmgen: list[bool] | np.ndarray | None = None,
+        coords: np.ndarray,
+        types: list[str],
+        parts: list[int],
+        radii: np.ndarray | None = None,
+        extra_param: float = 1.2,
+        symmgen: list[bool] | np.ndarray | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Vectorised connectivity-table builder (shared by 2D and 3D widgets).
 
@@ -100,7 +102,7 @@ def build_conntable(
 
     # ── pairwise distance matrix ─────────────────────────────────────────
     diff = coords[:, None, :] - coords[None, :, :]  # (N, N, 3)
-    dists = np.linalg.norm(diff, axis=2)             # (N, N)
+    dists = np.linalg.norm(diff, axis=2)  # (N, N)
 
     # ── per-pair bond-distance thresholds ────────────────────────────────
     if radii is None:
@@ -123,9 +125,9 @@ def build_conntable(
     # Part filter: forbidden when both parts are non-zero and differ
     parts_arr = np.array(parts, dtype=np.int32)
     bond_mask &= ~(
-        (parts_arr[:, None] != 0)
-        & (parts_arr[None, :] != 0)
-        & (parts_arr[:, None] != parts_arr[None, :])
+            (parts_arr[:, None] != 0)
+            & (parts_arr[None, :] != 0)
+            & (parts_arr[:, None] != parts_arr[None, :])
     )
 
     # Negative-part filter: if an atom has a negative part number, bonds
