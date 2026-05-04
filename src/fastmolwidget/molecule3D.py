@@ -227,11 +227,15 @@ class _Atom3D:
         hex_color = element2color.get(type_, "#808080")
         self.color_f: tuple[float, float, float] = _hex_to_rgb_float(hex_color)
 
-        # World-space visual radius for sphere rendering (Å)
-        self.display_radius: float = 0.1
+        # World-space visual radius for sphere rendering (Å) – covalent radius
+        try:
+            self.display_radius: float = get_radius_from_element(type_)
+        except (KeyError, Exception):
+            self.display_radius: float = 0.5
 
         self.u_cart: np.ndarray | None = None
-        self.u_iso: float | None = u_eq * 10 if not type_ in ('H', 'D') else self.display_radius
+        # Store the isotropic U value (Å²); radius = sqrt(u_iso) * _ADP_SCALE
+        self.u_iso: float | None = u_eq if type_ not in ('H', 'D') else None
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
         self.u_eigvecs: np.ndarray | None = None
@@ -1085,7 +1089,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             is_selected = atom.label in self.selected_atoms
             col = _SEL_COLOR if is_selected else atom.color_f
             sel_flag = 1.0 if is_selected else 0.0
-            r = atom.u_iso or atom.display_radius
+            r = (sqrt(atom.u_iso) * _ADP_SCALE) if atom.u_iso is not None else atom.display_radius
             for j in range(4):
                 vi = i * 4 + j
                 verts[vi, 0:3] = c
@@ -2354,7 +2358,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
                 )
             else:
-                radius = float(atom.u_iso or atom.display_radius)
+                radius = (sqrt(float(atom.u_iso)) * _ADP_SCALE) if atom.u_iso is not None else atom.display_radius
                 t = self._ray_sphere_hit_viewspace(
                     ray_origin, ray_dir, atom.center, radius, mv
                 )
