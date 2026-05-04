@@ -26,7 +26,6 @@ Embeddable PyQt/PySide6 widget for crystal-structure display. Two parallel rende
 ## Conventions
 
 - **Qt binding-agnostic**: always `from qtpy import ...`; never import `PySide6` / `PyQt6` directly. Stubs use `pyside6-stubs`.
-- **OpenGL setup**: callers must invoke `configure_opengl_format()` *before* `QApplication(...)` (mandatory on macOS). It silently swallows platform errors — keep that behaviour.
 - **3D fallback path**: any code path in `molecule3D.py` that touches `gl.*` must be guarded so the widget reverts to a `QWidget` text overlay instead of raising.
 - **Growing structures**: enabled via `MoleculeLoader.set_grow(True)`; reloads the last file in-place with `keep_view=True`. XYZ has no symmetry → grow is a no-op.
 - **Packing structures**: enabled via `MoleculeLoader.set_pack(True)`; applies all (or selected) symmetry operations and folds atoms into one unit cell. Pack takes priority over grow when both are active.
@@ -63,4 +62,3 @@ Tag-driven via GitHub Actions to **TestPyPI** only. Bump `project.version` in `p
 ## Per-user rules (from `global-copilot-instructions`)
 
 If information or code is missing, **ask** — do not guess or invent. Refuse rather than fabricate. Before writing new code, request a detailed specification.
-

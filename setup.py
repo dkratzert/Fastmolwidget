@@ -6,6 +6,7 @@ OpenMP detection
 ----------------
 macOS  : looks for libomp via `brew --prefix libomp`; silently omits OpenMP
          flags when libomp is not found (build still succeeds, single-threaded).
+         Install libomp optionally with:  brew install libomp
 Linux  : uses -fopenmp (GCC/Clang link flag).
 Windows: uses /openmp (MSVC).
 """
@@ -35,22 +36,28 @@ def _find_openmp() -> tuple[list[str], list[str]]:
     if sys.platform == "darwin":
         # Require libomp from Homebrew.  If not present, skip OpenMP silently.
         try:
+            import os
             result = subprocess.run(
                 ["brew", "--prefix", "libomp"],
                 capture_output=True, text=True, timeout=15,
             )
             if result.returncode == 0:
                 prefix = result.stdout.strip()
-                compile_flags = [
-                    "-Xpreprocessor", "-fopenmp",
-                    f"-I{prefix}/include",
-                ]
-                link_flags = [
-                    f"-L{prefix}/lib",
-                    "-lomp",
-                ]
-                print(f"[sdm_cpp] OpenMP found via Homebrew libomp: {prefix}")
-                return compile_flags, link_flags
+                omp_header = os.path.join(prefix, "include", "omp.h")
+                omp_lib = os.path.join(prefix, "lib", "libomp.dylib")
+                if os.path.isfile(omp_header) and os.path.isfile(omp_lib):
+                    compile_flags = [
+                        "-Xpreprocessor", "-fopenmp",
+                        f"-I{prefix}/include",
+                    ]
+                    link_flags = [
+                        f"-L{prefix}/lib",
+                        "-lomp",
+                    ]
+                    print(f"[sdm_cpp] OpenMP found via Homebrew libomp: {prefix}")
+                    return compile_flags, link_flags
+                else:
+                    print(f"[sdm_cpp] brew prefix {prefix!r} exists but omp.h / libomp.dylib missing — skipping OpenMP.")
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         print("[sdm_cpp] libomp not found — building without OpenMP (single-threaded).")

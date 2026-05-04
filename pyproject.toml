@@ -1,6 +1,6 @@
 [project]
 name = "fastmolwidget"
-version = "0.6.1"
+dynamic = ["version"]
 description = "A PyQt widget to display crystal structures"
 readme = "README.md"
 license = "MIT"
@@ -21,6 +21,8 @@ classifiers = [
 dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
+    "pyopengl>=3.1",
+    "pyopengl-accelerate>=3.1",
     "qtpy>=2.4.3",
     "shelxfile>=22",
 ]
@@ -74,6 +76,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.dynamic]
+version = {attr = "fastmolwidget.__version__"}
+
 [tool.cibuildwheel]
 # Build wheels for Python 3.12, 3.13, and 3.14 on Windows, macOS, and Linux
 skip = ["*-win32", "*-manylinux_i686"]
@@ -81,5 +86,3 @@ build = ["cp312-*", "cp313-*", "cp314-*"]
 # Skip per-wheel testing — the dedicated `tests` job (needs: tests) already
 # validates the code before release-build runs.
 test-skip = "*"
-
-

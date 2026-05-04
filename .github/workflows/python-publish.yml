@@ -66,10 +66,11 @@ jobs:
 
           project_version=$(python - <<'PY'
           import pathlib, re
-          content = pathlib.Path('pyproject.toml').read_text(encoding='utf-8')
-          m = re.search(r'^version\s*=\s*"([^"]+)"', content, flags=re.MULTILINE)
+          # pyproject.toml uses dynamic versioning; the canonical version is in __init__.py
+          content = pathlib.Path('src/fastmolwidget/__init__.py').read_text(encoding='utf-8')
+          m = re.search(r'^__version__\s*=\s*"([^"]+)"', content, flags=re.MULTILINE)
           if not m:
-              raise SystemExit('Could not find project.version in pyproject.toml')
+              raise SystemExit('Could not find __version__ in src/fastmolwidget/__init__.py')
           print(m.group(1))
           PY
           )

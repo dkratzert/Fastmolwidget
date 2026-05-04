@@ -21,14 +21,10 @@ from pathlib import Path
 from qtpy import QtGui, QtWidgets
 
 from fastmolwidget.loader import MoleculeLoader
-from fastmolwidget.molecule3D import MoleculeWidget3D, configure_opengl_format
+from fastmolwidget.molecule3D import MoleculeWidget3D
 
 """
 TODO:
-
-* Make labels of 2D widget always on top when hovering over an atom.
-* Make negative parts bind correctly.
-* Check if it makes sense to support later OpenGl versions (e.g. 3.3 core).
 
 """
 
@@ -190,9 +186,6 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
 if __name__ == "__main__":
     app = QtWidgets.QApplication.instance()
     if not app:
-        # MUST be called before QApplication is created so the default
-        # QSurfaceFormat (incl. 4× MSAA) is honoured by every GL context.
-        configure_opengl_format()
         app = QtWidgets.QApplication([])
 
     parse = ArgumentParser(description="Test the 3-D molecule viewer widget with a sample CIF file.")
@@ -202,7 +195,7 @@ if __name__ == "__main__":
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup
     # w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
-    #w.load_file('../../tests/test-data/p21c.cif')
+    w.load_file('../../tests/test-data/p21c.cif')
     # w.load_file('../../tests/test-data/1000007.cif')
     # w.load_file('../../tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('../../tests/test-data/4060314.cif'))
@@ -216,6 +209,6 @@ if __name__ == "__main__":
     if args.cif_file:
         w.load_file(args.cif_file)
     w.show()
-    app.processEvents()
+    #app.processEvents()
     w.showMaximized()
     app.exec()
