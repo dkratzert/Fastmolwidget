@@ -5,7 +5,7 @@ from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.viewer_widget3D import MoleculeViewer3DWidget
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 __all__ = [
     "MoleculeViewerWidget",
