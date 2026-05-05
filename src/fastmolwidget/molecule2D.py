@@ -475,7 +475,7 @@ class MoleculeWidget(QtWidgets.QWidget):
             self._painter = QPainter(self)
             self._painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             font = self._painter.font()
-            font.setPixelSize(self.fontsize)
+            font.setPixelSize(max(1, int(self.fontsize * self.zoom*2)))
             self._painter.setFont(font)
             try:
                 self.draw()
@@ -802,7 +802,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         """
         font = self._painter.font()
         hover_font = QtGui.QFont(font)
-        hover_font.setPixelSize(max(1, self.fontsize))
+        hover_font.setPixelSize(max(1, int(self.fontsize * self.zoom*2)))
         hover_font.setBold(True)
         self._painter.setFont(hover_font)
         metrics = QtGui.QFontMetrics(hover_font)
@@ -1497,7 +1497,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         if enlarged:
             base_font = self._painter.font()
             hover_font = QtGui.QFont(base_font)
-            hover_font.setPixelSize(max(1, self.fontsize + 4))
+            hover_font.setPixelSize(max(1, int((self.fontsize + 4) * self.zoom*2)))
             hover_font.setBold(True)
             self._painter.setFont(hover_font)
             self._painter.drawText(int(atom.screenx + r_pix + 2), int(atom.screeny - r_pix - 2), atom.name)

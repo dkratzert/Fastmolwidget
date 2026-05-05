@@ -1314,7 +1314,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         h = max(1, self.height())
         hydrogens = ("H", "D")
 
-        base_size = max(1, self.fontsize)
+        base_size = max(1, int(self.fontsize * self._zoom))
         hover_size = base_size + 4  # enlarge hovered label
 
         font = QtGui.QFont()
@@ -1950,7 +1950,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         transparency; the border is a thin neutral grey.
         """
         font = QtGui.QFont()
-        font.setPixelSize(max(1, self.fontsize))
+        font.setPixelSize(max(1, int(self.fontsize * self._zoom)))
         font.setBold(True)
         painter.setFont(font)
         metrics = QtGui.QFontMetrics(font)
