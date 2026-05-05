@@ -273,10 +273,10 @@ def test_atom_shader_uses_brighter_low_shadow_lighting():
 
 
 def test_ellipsoid_shader_matches_brighter_atom_lighting_profile():
-    assert "Orthographic projection: solve the local +Z intersection." in molecule3d._ELLIPSOID_FRAG
-    assert "vec3 q0 = vec3(local_xy, 0.0)" in molecule3d._ELLIPSOID_FRAG
-    assert "base_color = clamp(v_color * 1.08, 0.0, 1.0)" in molecule3d._ELLIPSOID_FRAG
-    assert "vec3(0.14) * spec" in molecule3d._ELLIPSOID_FRAG
+    assert "Orthographic projection: solve the local +Z intersection." in molecule3d._ELLIPSOID_BATCH_FRAG
+    assert "vec3 q0 = vec3(local_xy, 0.0)" in molecule3d._ELLIPSOID_BATCH_FRAG
+    assert "base_color = clamp(v_color * 1.08, 0.0, 1.0)" in molecule3d._ELLIPSOID_BATCH_FRAG
+    assert "vec3(0.14) * spec" in molecule3d._ELLIPSOID_BATCH_FRAG
 
 
 def test_bond_geometry_uses_single_uniform_color():
