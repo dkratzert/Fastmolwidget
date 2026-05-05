@@ -6,7 +6,7 @@
 # separate terms of service, privacy policy, and support
 # documentation.
 
-name: Publish Python package (TestPyPI)
+name: Publish package Pypi
 
 on:
   push:
