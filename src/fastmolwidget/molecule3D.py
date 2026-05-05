@@ -24,12 +24,13 @@ Rendering overview
 * **Labels** – rendered with :class:`~qtpy.QtGui.QPainter` as an overlay after
   the OpenGL pass.
 
-All GLSL shaders target ``#version 140`` (OpenGL 3.1+ / GLSL 1.40).
-The widget requests an OpenGL 3.2 compatibility-profile context: compatibility
-is required so Qt's ``QPainter`` GL paint engine (used for the label overlay)
-keeps working alongside the modern molecule shaders.  A persistent scratch
-Vertex Array Object is bound for the lifetime of the widget so the same draw
-code would also work in a Core profile if QPainter were not involved.
+All GLSL shaders target ``#version 120`` on macOS (OpenGL 2.1 / GLSL 1.20,
+the maximum available in a macOS compatibility-profile context) and
+``#version 140`` on Windows/Linux (OpenGL 3.1+ / GLSL 1.40).
+See :mod:`fastmolwidget.shaders` for the shader templates.
+The widget always requests a compatibility-profile context so that Qt's
+``QPainter`` GL paint engine (used for the label overlay) keeps working
+alongside the molecule shaders.
 
 Mouse controls
 --------------
@@ -57,6 +58,7 @@ from qtpy.QtCore import Qt
 from fastmolwidget.atoms import element2color, get_radius_from_element
 from fastmolwidget.molecule2D import calc_volume
 from fastmolwidget.sdm import Atomtuple
+from fastmolwidget import shaders as _shaders
 
 # ---------------------------------------------------------------------------
 # Optional dependencies
@@ -256,280 +258,16 @@ class _Atom3D:
 
 
 # ---------------------------------------------------------------------------
-# GLSL 1.20 shader sources
+# GLSL shader sources  (see fastmolwidget/shaders.py for the templates)
 # ---------------------------------------------------------------------------
 
-# ── Sphere impostor ──────────────────────────────────────────────────────────
-_SPHERE_VERT = """\
-#version 140
-// Per-vertex attributes (one quad per atom)
-in vec3 a_center;
-in vec3 a_color;
-in float a_radius;
-in vec2 a_corner;
-in float a_selected;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
-
-out vec3 v_center_eye;
-out vec3 v_color;
-out float v_radius;
-out vec2 v_corner;
-out float v_selected;
-
-void main() {
-    v_color    = a_color;
-    v_radius   = a_radius;
-    v_corner   = a_corner;
-    v_selected = a_selected;
-
-    vec4 c_eye    = u_mv * vec4(a_center, 1.0);
-    v_center_eye  = c_eye.xyz;
-
-    // Billboard: extend by sphere radius in eye-space X/Y.
-    // A 5 % safety margin ensures full sphere coverage at any view angle.
-    vec4 pos = c_eye;
-    pos.xy  += a_corner * a_radius * 1.05;
-    gl_Position = u_proj * pos;
-}
-"""
-
-_SPHERE_FRAG = """\
-#version 140
-in vec3  v_center_eye;
-in vec3  v_color;
-in float v_radius;
-in vec2  v_corner;
-in float v_selected;
-
-uniform mat4 u_proj;
-
-out vec4 fragColor;
-
-void main() {
-    // Orthographic projection: all rays are parallel to -Z.
-    vec2 local_xy = v_corner * v_radius * 1.05;
-    float xy2 = dot(local_xy, local_xy);
-    float r2 = v_radius * v_radius;
-    if (xy2 > r2) discard;
-
-    float z_hit = sqrt(r2 - xy2);
-    vec3 local_hit = vec3(local_xy, z_hit);
-    vec3 hit    = v_center_eye + local_hit;
-    vec3 normal = normalize(local_hit);
-
-    // Bright, low-shadow lighting for crisp atom colours.
-    // Selected atoms are coloured via v_color upstream, so no branch needed.
-    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
-    float diff      = max(dot(normal, light), 0.0);
-    float soft_diff = 0.25 + 0.75 * diff;
-    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
-
-    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-    vec3 color      = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
-    fragColor       = vec4(clamp(color, 0.0, 1.0), 1.0);
-
-    // Write corrected depth so atoms occlude bonds and each other properly
-    vec4 clip_pos = u_proj * vec4(hit, 1.0);
-    gl_FragDepth  = (clip_pos.z / clip_pos.w + 1.0) * 0.5;
-}
-"""
-
-# ── Cylinder mesh ────────────────────────────────────────────────────────────
-_CYLINDER_VERT = """\
-#version 140
-in vec3 a_position;
-in vec3 a_normal;
-in vec3 a_color;
-in float a_selected;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
-uniform mat3 u_normal_mat;   // inverse-transpose of MV upper 3x3
-
-out vec3 v_normal_eye;
-out vec3 v_pos_eye;
-out vec3 v_color;
-out float v_selected;
-
-void main() {
-    v_color      = a_color;
-    v_selected   = a_selected;
-    vec4 pos_e   = u_mv * vec4(a_position, 1.0);
-    v_pos_eye    = pos_e.xyz;
-    v_normal_eye = normalize(u_normal_mat * a_normal);
-    gl_Position  = u_proj * pos_e;
-}
-"""
-
-_CYLINDER_FRAG = """\
-#version 140
-in vec3 v_normal_eye;
-in vec3 v_pos_eye;
-in vec3 v_color;
-in float v_selected;
-
-out vec4 fragColor;
-
-void main() {
-    vec3 color;
-    if (v_selected > 0.5) {
-        // Selected bonds render perfectly flat — no diffuse/specular shading
-        color = v_color;
-    } else {
-        vec3  normal = normalize(v_normal_eye);
-        vec3  light  = normalize(vec3(1.0, 1.5, 2.0));
-        float diff   = max(dot(normal, light), 0.0);
-        float spec   = pow(max(dot(reflect(-light, normal),
-                                   normalize(-v_pos_eye)), 0.0), 32.0);
-
-        color = v_color * (0.45 + 0.55 * diff) + vec3(0.30) * spec;
-    }
-    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
-}
-"""
-
-# ── Batched ellipsoid impostor ────────────────────────────────────────────────
-# All per-atom data (center, A-matrix, eigenvectors, …) are packed as vertex
-# attributes so that every ellipsoid can be drawn with a single glDrawElements
-# call instead of one call per atom.
-#
-# Vertex layout (28 floats = 112 bytes, stride):
-#   offset  0 ( 0 B) – a_corner   vec2
-#   offset  2 ( 8 B) – a_center   vec3
-#   offset  5 (20 B) – a_color    vec3
-#   offset  8 (32 B) – a_radius   float
-#   offset  9 (36 B) – a_selected float
-#   offset 10 (40 B) – a_A_col0   vec3  (column 0 of the A-matrix)
-#   offset 13 (52 B) – a_A_col1   vec3
-#   offset 16 (64 B) – a_A_col2   vec3
-#   offset 19 (76 B) – a_evec0    vec3  (column 0 of the eigenvector matrix)
-#   offset 22 (88 B) – a_evec1    vec3
-#   offset 25 (100 B)– a_evec2    vec3
-_ELLIPSOID_BATCH_VERT = """\
-#version 140
-in vec2  a_corner;
-in vec3  a_center;
-in vec3  a_color;
-in float a_radius;
-in float a_selected;
-in vec3  a_A_col0;
-in vec3  a_A_col1;
-in vec3  a_A_col2;
-in vec3  a_evec0;
-in vec3  a_evec1;
-in vec3  a_evec2;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
-
-out vec3  v_center_eye;
-out vec3  v_color;
-out float v_radius;
-out vec2  v_corner;
-out float v_selected;
-out vec3  v_A_col0;
-out vec3  v_A_col1;
-out vec3  v_A_col2;
-out vec3  v_evec0;
-out vec3  v_evec1;
-out vec3  v_evec2;
-
-void main() {
-    v_color    = a_color;
-    v_radius   = a_radius;
-    v_corner   = a_corner;
-    v_selected = a_selected;
-    v_A_col0   = a_A_col0;
-    v_A_col1   = a_A_col1;
-    v_A_col2   = a_A_col2;
-    v_evec0    = a_evec0;
-    v_evec1    = a_evec1;
-    v_evec2    = a_evec2;
-
-    vec4 c_eye   = u_mv * vec4(a_center, 1.0);
-    v_center_eye = c_eye.xyz;
-
-    vec4 pos = c_eye;
-    pos.xy  += a_corner * a_radius * 1.05;
-    gl_Position = u_proj * pos;
-}
-"""
-
-_ELLIPSOID_BATCH_FRAG = """\
-#version 140
-in vec3  v_center_eye;
-in vec3  v_color;
-in float v_radius;
-in vec2  v_corner;
-in float v_selected;
-in vec3  v_A_col0;
-in vec3  v_A_col1;
-in vec3  v_A_col2;
-in vec3  v_evec0;
-in vec3  v_evec1;
-in vec3  v_evec2;
-
-uniform mat4 u_mv;
-uniform mat4 u_proj;
-
-out vec4 fragColor;
-
-void main() {
-    mat3 A     = mat3(v_A_col0, v_A_col1, v_A_col2);
-    mat3 evecs = mat3(v_evec0,  v_evec1,  v_evec2);
-
-    vec2 local_xy = v_corner * v_radius * 1.05;
-    // Orthographic projection: solve the local +Z intersection.
-    vec3 q0 = vec3(local_xy, 0.0);
-    vec3 ez = vec3(0.0, 0.0, 1.0);
-
-    mat3 inv_mv = transpose(mat3(u_mv));
-    vec3 ray_o  = inv_mv * q0;
-    vec3 ray_d  = inv_mv * ez;
-
-    vec3 Aq0 = A * ray_o;
-    vec3 Aez = A * ray_d;
-
-    float a_c  = dot(ray_d, Aez);
-    float b_c  = 2.0 * dot(ray_o, Aez);
-    float cc   = dot(ray_o, Aq0) - 1.0;
-    float disc = b_c * b_c - 4.0 * a_c * cc;
-
-    if (disc < 0.0 || a_c < 1e-10) discard;
-
-    float t_hit    = (-b_c + sqrt(disc)) / (2.0 * a_c);
-    vec3 hit_world = ray_o + t_hit * ray_d;
-    vec3 local_hit = q0 + vec3(0.0, 0.0, t_hit);
-    vec3 hit       = v_center_eye + local_hit;
-
-    vec3 normal_world = normalize(A * hit_world);
-    vec3 normal       = normalize(mat3(u_mv) * normal_world);
-
-    vec3  light     = v_selected > 0.5
-                        ? normalize(vec3(2.0, 1.5, 2.0))
-                        : normalize(vec3(1.0, 1.5, 2.0));
-    float diff      = max(dot(normal, light), 0.0);
-    float soft_diff = 0.25 + 0.75 * diff;
-    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
-
-    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
-
-    float lw = v_radius * 0.04;
-    if (abs(dot(hit_world, evecs[0])) < lw ||
-        abs(dot(hit_world, evecs[1])) < lw ||
-        abs(dot(hit_world, evecs[2])) < lw) {
-        color *= 0.15;
-    }
-
-    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
-
-    vec4 clip_pos = u_proj * vec4(hit, 1.0);
-    gl_FragDepth  = (clip_pos.z / clip_pos.w + 1.0) * 0.5;
-}
-"""
+# Platform-selected at import time: GLSL 1.20 on macOS, 1.40 elsewhere.
+_SPHERE_VERT          = _shaders.SPHERE_VERT
+_SPHERE_FRAG          = _shaders.SPHERE_FRAG
+_CYLINDER_VERT        = _shaders.CYLINDER_VERT
+_CYLINDER_FRAG        = _shaders.CYLINDER_FRAG
+_ELLIPSOID_BATCH_VERT = _shaders.ELLIPSOID_BATCH_VERT
+_ELLIPSOID_BATCH_FRAG = _shaders.ELLIPSOID_BATCH_FRAG
 
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
@@ -628,7 +366,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._sphere_prog: int = 0
         self._ellipsoid_batch_prog: int = 0  # draws all ellipsoids in one call
         self._cylinder_prog: int = 0
-        self._vao: int = 0  # scratch VAO required by GL 3.1 Core
+        self._vao: int = 0  # scratch VAO (GL 3.0+; skipped gracefully on macOS 2.1)
         self._sphere_vbo: int = 0
         self._sphere_ibo: int = 0
         self._cylinder_vbo: int = 0
@@ -720,21 +458,27 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     # ------------------------------------------------------------------
 
     def _setup_surface_format(self) -> None:
-        """Request an OpenGL 3.2 compatibility context with depth buffer and 4× MSAA.
+        """Request an OpenGL compatibility context with depth buffer and 4× MSAA.
 
         Compatibility profile is required because Qt's ``QPainter`` GL paint
         engine — used here for the atom-label / hover-distance overlay — emits
-        legacy GLSL 1.10 (``attribute``, ``varying``, ``gl_FragColor``) which
-        a Core profile context refuses to compile.  The compatibility profile
-        keeps the legacy pipeline alive while still exposing GLSL 1.40
-        (``in``/``out``/``fragColor``) used by the molecule shaders, and is
-        supported by every GPU/driver shipped from ~2010 onwards.
+        legacy GLSL 1.10 (``attribute``/``varying``/``gl_FragColor``) which a
+        Core-profile context refuses to compile.
+
+        Version strategy:
+        * **macOS** — requests OpenGL 2.1 (compatibility profile tops out here;
+          Core Profile goes higher but breaks QPainter).  Shaders use GLSL 1.20.
+        * **Other** — requests OpenGL 3.2 (widely available since ~2010).
+          Shaders use GLSL 1.40 (``in``/``out``/``fragColor``).
         """
         try:
             fmt = QtGui.QSurfaceFormat()
             fmt.setRenderableType(QtGui.QSurfaceFormat.RenderableType.OpenGL)
             fmt.setProfile(QtGui.QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
-            fmt.setVersion(3, 2)
+            if _shaders.MACOS:
+                fmt.setVersion(2, 1)
+            else:
+                fmt.setVersion(3, 2)
             fmt.setDepthBufferSize(24)
             fmt.setSwapBehavior(QtGui.QSurfaceFormat.SwapBehavior.DoubleBuffer)
             fmt.setSamples(4)
@@ -775,8 +519,15 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # widget's lifetime.  The compatibility profile permits using the
         # default VAO 0 too, but binding our own keeps the code Core-ready
         # and avoids cross-talk with QPainter's paint-engine VAO state.
-        self._vao = int(gl.glGenVertexArrays(1))
-        gl.glBindVertexArray(self._vao)
+        # On macOS the default context is OpenGL 2.1 (compatibility profile),
+        # where glGenVertexArrays raises GL_INVALID_OPERATION (err=1282).
+        # Fall back to VAO 0 gracefully; the if-guard in paintGL handles it.
+        try:
+            self._vao = int(gl.glGenVertexArrays(1))
+            gl.glBindVertexArray(self._vao)
+        except Exception as vao_exc:
+            self._vao = 0
+            print(f"[MoleculeWidget3D] VAO unavailable, using default VAO 0: {vao_exc}")
 
         # Compile shaders
         self._sphere_prog = self._compile_program(
@@ -971,6 +722,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         painter.drawText(
             self.rect(), Qt.AlignmentFlag.AlignCenter, msg
         )
+        print(self._gl_fail_reason)
 
     # ------------------------------------------------------------------
     # Geometry building

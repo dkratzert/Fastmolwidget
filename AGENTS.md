@@ -7,7 +7,7 @@ Embeddable PyQt/PySide6 widget for crystal-structure display. Two parallel rende
 - `src/fastmolwidget/__init__.py` — the *only* public surface; everything re-exported here is API.
 - `molecule_base.py` — `MoleculeWidgetProtocol` (`@runtime_checkable`). Every renderer must satisfy it. New display methods MUST be added here too.
 - `molecule2D.py` (`MoleculeWidget`) — pure-Python QPainter renderer; ORTEP ellipsoids, no OpenGL.
-- `molecule3D.py` (`MoleculeWidget3D`) — `QOpenGLWidget` with sphere/ellipsoid impostors and tessellated cylinder bonds. GLSL targets `#version 120`. Must degrade gracefully when `PyOpenGL` is missing or context creation fails — see the `_HAS_PYOPENGL` guard at module top; never let the host app crash.
+- `molecule3D.py` (`MoleculeWidget3D`) — `QOpenGLWidget` with sphere/ellipsoid impostors and tessellated cylinder bonds. GLSL targets `#version 140`. Must degrade gracefully when `PyOpenGL` is missing or context creation fails — see the `_HAS_PYOPENGL` guard at module top; never let the host app crash.
 - `molecule3D.py` has priority now.
 - `viewer_widget.py` / `viewer_widget3D.py` — `MoleculeViewerWidget` / `MoleculeViewer3DWidget` bundle a renderer + two-row control bar. Both expose `.render_widget` and `.load_file(path)`.
   - **Row 1** (both): Open File… button, Grow, Pack Unit Cell, Show ADP, Show Labels, Hide Hydrogens (`checked` → `show_hydrogens(False)`). Grow and Pack are mutually exclusive (toggling one unchecks the other).
