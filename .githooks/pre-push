@@ -7,17 +7,9 @@
 
 INIT_FILE="src/fastmolwidget/__init__.py"
 
-# Extract __version__ from source
+# Extract __version__ from source (pure shell, no Python dependency)
 get_source_version() {
-    python -c "
-import re, sys
-with open('${INIT_FILE}') as f:
-    m = re.search(r'^__version__\s*=\s*[\"\\']([^\"\\']+)[\"\\']', f.read(), re.M)
-if m:
-    print(m.group(1))
-else:
-    sys.exit(1)
-"
+    grep -m1 '^__version__' "$INIT_FILE" | sed 's/^__version__[[:space:]]*=[[:space:]]*["'\'']\([^"'\'']*\)["'\''].*/\1/'
 }
 
 # Read stdin for refs being pushed
