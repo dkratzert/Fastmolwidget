@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# pre-push hook: rejects pushing a version tag (v*) whose version
+# does not match __version__ in src/fastmolwidget/__init__.py.
+#
+# Activate with:
+#   git config core.hooksPath .githooks
+
+INIT_FILE="src/fastmolwidget/__init__.py"
+
+# Extract __version__ from source
+get_source_version() {
+    python -c "
+import re, sys
+with open('${INIT_FILE}') as f:
+    m = re.search(r'^__version__\s*=\s*[\"\\']([^\"\\']+)[\"\\']', f.read(), re.M)
+if m:
+    print(m.group(1))
+else:
+    sys.exit(1)
+"
+}
+
+# Read stdin for refs being pushed
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Only check version tags (refs/tags/v*)
+    if [[ "$local_ref" == refs/tags/v* ]]; then
+        tag_version="${local_ref#refs/tags/v}"
+        source_version=$(get_source_version)
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Could not extract __version__ from ${INIT_FILE}" >&2
+            exit 1
+        fi
+        if [ "$tag_version" != "$source_version" ]; then
+            echo "ERROR: Tag v${tag_version} does not match __version__ = \"${source_version}\" in ${INIT_FILE}" >&2
+            echo "Update __version__ before tagging, or fix the tag name." >&2
+            exit 1
+        fi
+    fi
+done
+
+exit 0
+
