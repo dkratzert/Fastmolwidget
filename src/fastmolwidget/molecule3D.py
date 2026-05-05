@@ -1325,6 +1325,42 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         hover_label = self._hover_atom_label
         hover_atom = None
 
+        # Compute pixels-per-Ångström so label offsets scale with zoom.
+        _, half_h = self._ortho_half_extents()
+        px_per_angstrom = (h * 0.5) / half_h if half_h > 1e-8 else 1.0
+
+        # Rotation portion of the model-view matrix; used to project the
+        # ADP covariance into view-space for directional radius computation.
+        R_view = np.asarray(mv[:3, :3], dtype=np.float64)
+
+        # Label offset direction in view-space xy.  Screen-space points
+        # diagonally up-right (+x, -y); view-space y is flipped, giving
+        # the unit vector (1, 1) / sqrt(2).  The quadratic form is
+        # symmetric so the sign convention does not matter.
+        _label_dir2 = np.array([1.0, 1.0], dtype=np.float64) / sqrt(2.0)
+
+        def _atom_screen_radius(atom: _Atom3D) -> float:
+            """Return the screen-space radius (pixels) of *atom* in the label-offset direction.
+
+            For anisotropic ADPs the on-screen silhouette is an ellipse, so
+            the offset must shrink along short axes and grow along long ones.
+            """
+            if self._show_adps and atom.u_cart is not None and atom.adp_valid:
+                # Covariance of the 50 % ORTEP ellipsoid in world space.
+                C_world = np.asarray(atom.u_cart, dtype=np.float64)
+                # Rotate into view space, then take the 2x2 marginal —
+                # which is the silhouette of an orthographically projected
+                # ellipsoid.
+                C_view = R_view @ C_world @ R_view.T
+                C2 = C_view[:2, :2]
+                quad = float(_label_dir2 @ C2 @ _label_dir2)
+                r = sqrt(max(quad, 0.0))
+            elif atom.u_iso is not None:
+                r = sqrt(atom.u_iso)
+            else:
+                r = atom.display_radius
+            return r * px_per_angstrom
+
         def project(atom: _Atom3D) -> tuple[int, int] | None:
             pos4 = np.array([*atom.center, 1.0], dtype=np.float32)
             eye = mv @ pos4
@@ -1356,7 +1392,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 pt = project(atom)
                 if pt is None:
                     continue
-                painter.drawText(pt[0] + 4, pt[1] - 4, atom.label)
+                offset = int(_atom_screen_radius(atom))
+                painter.drawText(pt[0] + offset, pt[1] - offset, atom.label)
         elif hover_label is not None:
             for atom in self.atoms:
                 if atom.label == hover_label:
@@ -1376,7 +1413,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             hover_font.setPixelSize(hover_size)
             hover_font.setBold(True)
             painter.setFont(hover_font)
-            painter.drawText(pt[0] + 4, pt[1] - 4, hover_atom.label)
+            offset = int(_atom_screen_radius(hover_atom))
+            painter.drawText(pt[0] + offset, pt[1] - offset, hover_atom.label)
 
         # Bond-distance hover label (only when no atom is hovered).
         if (
@@ -1526,9 +1564,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     else:
                         a3d.adp_valid = True
                         # Billboard radius for the ellipsoid impostor quad
-                        a3d.adp_billboard_r = float(
-                            _ADP_SCALE * np.sqrt(np.max(evals)) * 1.2
-                        )
+                        a3d.adp_billboard_r = float(_ADP_SCALE * np.sqrt(np.max(evals)) * 1.2)
                         A = np.linalg.inv(_ADP_SCALE ** 2 * a3d.u_cart)
                         a3d.adp_A_matrix = A.astype(np.float32)
                 except Exception:
