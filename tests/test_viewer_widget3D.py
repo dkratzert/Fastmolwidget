@@ -880,3 +880,140 @@ def test_hover_state_default_values_3d():
     # Mouse tracking must be enabled so hover events fire without a button.
     assert widget.hasMouseTracking() is True
 
+
+# ------------------------------------------------------------------
+# Save-image button (3D viewer)
+# ------------------------------------------------------------------
+
+def test_save_image_button_exists_3d():
+    """MoleculeViewer3DWidget must have a Save Image button."""
+    w = MoleculeViewer3DWidget()
+    assert hasattr(w, '_save_image_button')
+    assert isinstance(w._save_image_button, QtWidgets.QPushButton)
+
+
+def test_save_image_preserves_labels_off_3d(tmp_path, monkeypatch):
+    """Labels must remain off during and after saving when they were off."""
+    w = MoleculeViewer3DWidget()
+    w.load_file(data / 'test_molecule.xyz')
+    w.render_widget.show_labels(False)
+
+    labels_during: list[bool] = []
+
+    def _mock_save(path, **kwargs):
+        labels_during.append(w.render_widget.labels)
+
+    monkeypatch.setattr(w.render_widget, 'save_image', _mock_save)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        'getSaveFileName',
+        staticmethod(lambda *a, **kw: (str(tmp_path / 'out.png'), 'PNG Image (*.png)')),
+    )
+
+    w._save_image_button.click()
+
+    assert labels_during == [False], "Labels must stay False during save_image()"
+    assert w.render_widget.labels is False, "Labels must still be False after save"
+
+
+def test_save_image_preserves_labels_on_3d(tmp_path, monkeypatch):
+    """Labels must remain on during and after saving when they were on."""
+    w = MoleculeViewer3DWidget()
+    w.load_file(data / 'test_molecule.xyz')
+    w.render_widget.show_labels(True)
+
+    labels_during: list[bool] = []
+
+    def _mock_save(path, **kwargs):
+        labels_during.append(w.render_widget.labels)
+
+    monkeypatch.setattr(w.render_widget, 'save_image', _mock_save)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        'getSaveFileName',
+        staticmethod(lambda *a, **kw: (str(tmp_path / 'out.png'), 'PNG Image (*.png)')),
+    )
+
+    w._save_image_button.click()
+
+    assert labels_during == [True], "Labels must stay True during save_image()"
+    assert w.render_widget.labels is True, "Labels must still be True after save"
+
+
+def test_save_image_cancelled_does_not_call_save_3d(monkeypatch):
+    """Cancelling the file dialog must not trigger save_image at all."""
+    w = MoleculeViewer3DWidget()
+    called = []
+
+    monkeypatch.setattr(w.render_widget, 'save_image', lambda *a, **kw: called.append(1))
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        'getSaveFileName',
+        staticmethod(lambda *a, **kw: ('', '')),  # user cancelled
+    )
+
+    w._save_image_button.click()
+
+    assert called == [], "save_image must not be called when dialog is cancelled"
+
+
+def test_save_image_3d_labels_appear_in_file(tmp_path):
+    """Labels must be visible in the saved PNG when labels are enabled (3D).
+
+    Uses grabFramebuffer() + QPainter overlay path.  Skipped on headless CI
+    where no real OpenGL context is available.
+
+    Saves the same scene twice (labels off / on), then counts pixels that
+    differ between the two images.  Text glyphs produce a visible difference,
+    regardless of the specific label colour value.
+    """
+    import numpy as np
+    from PIL import Image
+
+    if not molecule3d._HAS_PYOPENGL or not molecule3d._IS_GL_WIDGET:
+        pytest.skip("requires real OpenGL context")
+
+    widget = MoleculeWidget3D()
+    widget.resize(400, 300)
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+
+    if widget._gl_failed:
+        pytest.skip("OpenGL context creation failed in this environment")
+    if not hasattr(widget, "grabFramebuffer"):
+        pytest.skip("QOpenGLWidget.grabFramebuffer() unavailable")
+
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 0),
+    ])
+    QtWidgets.QApplication.processEvents()
+
+    # Verify grabFramebuffer returns something useful (not a blank/zero image).
+    fb = widget.grabFramebuffer()
+    fb_arr = np.frombuffer(fb.bits(), dtype=np.uint8).reshape(fb.height(), fb.width(), 4)
+    if fb_arr.max() < 10:
+        pytest.skip("grabFramebuffer returned a blank image — GL not rendering")
+
+    path_off = tmp_path / 'labels_off_3d.png'
+    path_on  = tmp_path / 'labels_on_3d.png'
+
+    widget.show_labels(False)
+    widget.save_image(path_off, image_scale=1.0)
+
+    widget.show_labels(True)
+    widget.save_image(path_on,  image_scale=1.0)
+
+    arr_off = np.array(Image.open(path_off).convert('RGB'))
+    arr_on  = np.array(Image.open(path_on).convert('RGB'))
+
+    diff = np.abs(arr_on.astype(int) - arr_off.astype(int)).sum(axis=2)
+    n_changed = int((diff > 5).sum())
+
+    assert n_changed > 50, (
+        f"Expected significant pixel differences when labels are ON "
+        f"(only {n_changed} pixels changed — labels may not be rendered "
+        f"into the saved 3D image)."
+    )
+
+

@@ -105,3 +105,124 @@ def test_set_bond_color_with_float_tuple():
     expected = QtGui.QColor(int(0.5 * 255), int(0.4 * 255), int(0.3 * 255))
     assert widget.render_widget.bond_color == expected
 
+
+# ------------------------------------------------------------------
+# Save-image button
+# ------------------------------------------------------------------
+
+def test_save_image_button_exists():
+    """MoleculeViewerWidget must have a Save Image button."""
+    w = MoleculeViewerWidget()
+    assert hasattr(w, '_save_image_button')
+    assert isinstance(w._save_image_button, QtWidgets.QPushButton)
+
+
+def test_save_image_preserves_labels_off(tmp_path, monkeypatch):
+    """Labels must remain off after saving when they were off before."""
+    w = MoleculeViewerWidget()
+    w.load_file(data / 'test_molecule.xyz')
+    w.render_widget.show_labels(False)
+
+    labels_during: list[bool] = []
+
+    def _mock_save(path, **kwargs):
+        labels_during.append(w.render_widget.labels)
+
+    monkeypatch.setattr(w.render_widget, 'save_image', _mock_save)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        'getSaveFileName',
+        staticmethod(lambda *a, **kw: (str(tmp_path / 'out.png'), 'PNG Image (*.png)')),
+    )
+
+    w._save_image_button.click()
+
+    assert labels_during == [False], "Labels must stay False during save_image()"
+    assert w.render_widget.labels is False, "Labels must still be False after save"
+
+
+def test_save_image_preserves_labels_on(tmp_path, monkeypatch):
+    """Labels must remain on after saving when they were on before."""
+    w = MoleculeViewerWidget()
+    w.load_file(data / 'test_molecule.xyz')
+    w.render_widget.show_labels(True)
+
+    labels_during: list[bool] = []
+
+    def _mock_save(path, **kwargs):
+        labels_during.append(w.render_widget.labels)
+
+    monkeypatch.setattr(w.render_widget, 'save_image', _mock_save)
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        'getSaveFileName',
+        staticmethod(lambda *a, **kw: (str(tmp_path / 'out.png'), 'PNG Image (*.png)')),
+    )
+
+    w._save_image_button.click()
+
+    assert labels_during == [True], "Labels must stay True during save_image()"
+    assert w.render_widget.labels is True, "Labels must still be True after save"
+
+
+def test_save_image_cancelled_does_not_call_save(monkeypatch):
+    """Cancelling the file dialog must not trigger save_image at all."""
+    w = MoleculeViewerWidget()
+    called = []
+
+    monkeypatch.setattr(w.render_widget, 'save_image', lambda *a, **kw: called.append(1))
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        'getSaveFileName',
+        staticmethod(lambda *a, **kw: ('', '')),  # user cancelled
+    )
+
+    w._save_image_button.click()
+
+    assert called == [], "save_image must not be called when dialog is cancelled"
+
+
+def test_save_image_2d_labels_appear_in_file(tmp_path):
+    """Labels must be visible in the saved PNG when labels are enabled (2D).
+
+    Uses :class:`MoleculeWidget` directly (no viewer wrapper) so the widget
+    widget size stays stable between the two saves.  Saves the same scene
+    twice (labels off / on), then counts pixels that differ between the two
+    images.  Text glyphs produce a visible difference that must exceed a
+    small noise floor.
+    """
+    import numpy as np
+    from PIL import Image
+    from fastmolwidget.molecule2D import MoleculeWidget
+    from fastmolwidget.loader import MoleculeLoader
+
+    widget = MoleculeWidget()
+    widget.resize(400, 300)
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / 'test_molecule.xyz')
+
+    path_off = tmp_path / 'labels_off_2d.png'
+    path_on  = tmp_path / 'labels_on_2d.png'
+
+    widget.show_labels(False)
+    widget.save_image(path_off, image_scale=1.0)
+
+    widget.show_labels(True)
+    widget.save_image(path_on,  image_scale=1.0)
+
+    arr_off = np.array(Image.open(path_off).convert('RGB'))
+    arr_on  = np.array(Image.open(path_on).convert('RGB'))
+
+    assert arr_off.shape == arr_on.shape, (
+        f"Image sizes differ: {arr_off.shape} vs {arr_on.shape}"
+    )
+
+    diff = np.abs(arr_on.astype(int) - arr_off.astype(int)).sum(axis=2)
+    n_changed = int((diff > 5).sum())
+
+    assert n_changed > 50, (
+        f"Expected significant pixel differences when labels are ON "
+        f"(only {n_changed} pixels changed — labels may not be rendered)."
+    )
+
+

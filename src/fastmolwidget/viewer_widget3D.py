@@ -74,6 +74,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
         self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
+        self._save_image_button = QtWidgets.QPushButton("Save Image…")
 
         # Initial checked state matches the renderer defaults
         # "Hide Hydrogens" unchecked → hydrogens are visible by default
@@ -90,6 +91,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._reset_center_button.clicked.connect(self._render_widget.reset_rotation_center)
         self._open_file_button.clicked.connect(self._open_file_dialog)
+        self._save_image_button.clicked.connect(self._save_image_dialog)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
@@ -114,6 +116,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._bond_width_spinbox)
         control_bar2.addWidget(self._bond_color_button)
         control_bar2.addWidget(self._reset_center_button)
+        control_bar2.addWidget(self._save_image_button)
         control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
@@ -181,6 +184,21 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         )
         if path:
             self.load_file(path)
+
+    def _save_image_dialog(self) -> None:
+        """Open a file dialog and save a screenshot via :meth:`save_image`.
+
+        The current label visibility state is preserved as-is; labels appear
+        in the screenshot only if they are active at the time of saving.
+        """
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Image",
+            "",
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg);;All Files (*)",
+        )
+        if path:
+            self._render_widget.save_image(Path(path))
 
 
 if __name__ == "__main__":

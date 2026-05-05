@@ -1929,18 +1929,23 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             super().keyPressEvent(event)
 
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
-        """Save the current view to an image file."""
-        pixmap = self.grab()
+        """Save the current view to an image file.
+
+        For *GL* contexts :meth:`QOpenGLWidget.grabFramebuffer` is used to
+        capture the raw scene pixels with atom labels.
+        """
+        image: QtGui.QImage = self.grabFramebuffer()
+
         if image_scale != 1.0:
-            new_w = int(pixmap.width() * image_scale)
-            new_h = int(pixmap.height() * image_scale)
-            pixmap = pixmap.scaled(
+            new_w = int(image.width() * image_scale)
+            new_h = int(image.height() * image_scale)
+            image = image.scaled(
                 new_w,
                 new_h,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
-        pixmap.save(str(Path(filename).resolve()))
+        image.save(str(Path(filename).resolve()))
 
     # ------------------------------------------------------------------
     # Mouse interaction
