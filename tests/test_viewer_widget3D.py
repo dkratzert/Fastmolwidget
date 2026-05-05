@@ -1109,11 +1109,16 @@ def test_atom_labels_render_readable_glyphs_3d():
         widget.show_labels(labels_on)
         widget.update()
         QtWidgets.QApplication.processEvents()
-        img = widget.grabFramebuffer().convertToFormat(
+        img = widget.grabFramebuffer()
+        if img is None or img.isNull():
+            pytest.skip("grabFramebuffer() returned a null image (no GL context)")
+        img = img.convertToFormat(
             QtGui.QImage.Format.Format_RGB32
         )
         h, w = img.height(), img.width()
         buf = img.constBits()
+        if buf is None:
+            pytest.skip("constBits() returned None (GL context unavailable)")
         if hasattr(buf, "setsize"):
             buf.setsize(img.sizeInBytes())  # PyQt5/6 path
         arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)
