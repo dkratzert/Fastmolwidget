@@ -87,3 +87,8 @@ build = ["cp312-*", "cp313-*", "cp314-*"]
 # Skip per-wheel testing — the dedicated `tests` job (needs: tests) already
 # validates the code before release-build runs.
 test-skip = "*"
+
+[tool.cibuildwheel.macos]
+# universal2 covers both arm64 and x86_64 — no separate Intel runner needed.
+archs = ["universal2"]
+

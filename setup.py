@@ -34,9 +34,16 @@ def _find_openmp() -> tuple[list[str], list[str]]:
     """Return (extra_compile_args, extra_link_args) for OpenMP, or ([], [])."""
 
     if sys.platform == "darwin":
-        # Require libomp from Homebrew.  If not present, skip OpenMP silently.
+        import os
+        # universal2 / cross-compile: ARCHFLAGS contains x86_64, but Homebrew on
+        # Apple Silicon only provides arm64 libomp → skip OpenMP to avoid a
+        # broken binary.  The build succeeds in single-threaded mode.
+        archflags = os.environ.get("ARCHFLAGS", "")
+        if "x86_64" in archflags:
+            print("[sdm_cpp] Cross-compilation/universal2 detected (ARCHFLAGS contains x86_64) — skipping OpenMP.")
+            return [], []
+
         try:
-            import os
             result = subprocess.run(
                 ["brew", "--prefix", "libomp"],
                 capture_output=True, text=True, timeout=15,
