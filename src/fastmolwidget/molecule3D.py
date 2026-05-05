@@ -884,18 +884,18 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if self._show_adps and self._ellipsoid_count > 0:
             self._render_ellipsoids_batched(mv, proj)
 
-        # Construct QPainter *after* every raw GL draw is done.  Always
-        # creating it (even when no labels/hover are active) keeps the
-        # GL→QPainter transition state identical on every frame, so the
-        # very first time a label appears no longer triggers a visible
-        # state-change regression.
+        # Build the full 2-D overlay (atom labels, hover tooltip, axis arrows)
+        # on an *off-screen* QImage using Qt's raster paint engine, then blit
+        # the image onto the GL widget.  Qt's OpenGL paint engine cannot
+        # rasterise glyphs reliably on Windows — it falls back to drawing the
+        # ".notdef" rectangle ("tofu") for every character — so building the
+        # overlay in raster and uploading the result as a texture is the only
+        # portable way to get readable text on top of a QOpenGLWidget.
+        overlay = self._compose_overlay_image(mv, proj)
         painter = QtGui.QPainter(self)
         try:
-            # painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            # painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
-            self._draw_labels_with_painter(painter, mv, proj)
-            if self._is_packed:
-                self._draw_axis_indicator(painter)
+            if overlay is not None:
+                painter.drawImage(0, 0, overlay)
         finally:
             painter.end()
 
@@ -1484,13 +1484,69 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """
         if not self.atoms:
             return
+        overlay = self._compose_overlay_image(mv, proj)
+        if overlay is None:
+            return
         painter = QtGui.QPainter(self)
         try:
-            #painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
-            #painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
-            self._draw_labels_with_painter(painter, mv, proj)
+            painter.drawImage(0, 0, overlay)
         finally:
             painter.end()
+
+    def _compose_overlay_image(
+        self,
+        mv: np.ndarray,
+        proj: np.ndarray,
+    ) -> QtGui.QImage | None:
+        """Render the full 2-D overlay onto a transparent QImage.
+
+        Atom labels, the hover tooltip and the unit-cell axis indicator are
+        all drawn through Qt's raster paint engine here, which — unlike the
+        OpenGL paint engine on Windows — can rasterise glyphs reliably.  The
+        returned image is meant to be blitted onto the GL widget with
+        ``painter.drawImage(0, 0, overlay)``.
+
+        Returns ``None`` when the widget has no size yet so the caller can
+        skip the draw entirely.
+        """
+        w = max(1, int(self.width()))
+        h = max(1, int(self.height()))
+        if w <= 0 or h <= 0:
+            return None
+
+        # Render at the *device* pixel resolution so high-DPI displays get
+        # crisp glyphs.  Without this the QImage is created at logical
+        # (CSS) pixel size, then up-scaled 1.25× / 1.5× / 2× by Qt when
+        # composited onto the GL framebuffer, which softens every stroke
+        # and is what made the labels look pixelated after the move from
+        # direct GL-painter text to the offscreen raster overlay.
+        dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
+        if dpr <= 0.0:
+            dpr = 1.0
+        pw = max(1, int(round(w * dpr)))
+        ph = max(1, int(round(h * dpr)))
+
+        # ARGB32_Premultiplied is the recommended format for compositing —
+        # it avoids per-pixel un-premultiply during drawImage on the GL side.
+        image = QtGui.QImage(pw, ph, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
+        image.setDevicePixelRatio(dpr)
+        image.fill(QtCore.Qt.GlobalColor.transparent)
+
+        painter = QtGui.QPainter(image)
+        try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+            # The painter works in logical coordinates because the image
+            # carries a devicePixelRatio; all our existing draw helpers
+            # use logical (self.width() / self.height()) coordinates and
+            # therefore need no changes.
+            self._draw_labels_with_painter(painter, mv, proj)
+            if self._is_packed:
+                self._draw_axis_indicator(painter)
+        finally:
+            painter.end()
+        return image
 
     def _draw_labels_with_painter(
         self,
@@ -1531,8 +1587,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             ):
                 return None
             return (
-                int((ndc[0] + 1.0) * 0.5 * w),
-                int((1.0 - ndc[1]) * 0.5 * h),
+                int((ndc[0] + 1.01) * 0.5 * w),
+                int((1.01 - ndc[1]) * 0.5 * h),
             )
 
         # Persistent labels (only when "Show Labels" is on). Hidden hydrogens

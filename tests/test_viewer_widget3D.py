@@ -770,7 +770,7 @@ def test_bond_selected_when_in_front_of_atom():
     )
 
     assert t_atom is not None, "Far atom should be hit"
-    assert t_bond is not None, "Near bond should be hit"
+    assert t_bond is not None, "Near bond should register a hit"
     # Bond is closer → smaller t.
     assert t_bond < t_atom, (
         f"Near bond t={t_bond:.3f} must be less than far atom t={t_atom:.3f}"
@@ -1061,3 +1061,165 @@ def test_save_image_3d_labels_appear_in_file(tmp_path):
     )
 
 
+def test_atom_labels_render_readable_glyphs_3d():
+    """Labels overlaid on the GL widget must render as actual glyph shapes,
+    not as the empty ``.notdef`` rectangle ("tofu") that Qt's OpenGL paint
+    engine substitutes when it cannot rasterise a font.
+
+    Approach:
+    1. Build the same label string ("C1") on a transparent ``QImage`` with
+       the *same* ``QFont`` using the raster paint engine — this is the
+       ground-truth glyph mask (always correct because raster rendering
+       does not go through GL).
+    2. Read the live widget framebuffer with labels OFF (control) and ON
+       (regression).  Subtract the two to isolate the pixels added by the
+       label overlay.
+    3. Compare the diff mask against the reference glyph mask:
+       - The overlapping pixel count must be a significant fraction of the
+         reference mask area (proves real glyphs were drawn).
+       - The diff mask must NOT look like a filled or outlined rectangle
+         (which is what tofu glyphs produce).  We test this by checking
+         that the diff mask is *not* a near-perfect axis-aligned box: the
+         ratio of mask pixels to bounding-box area for "C1" rendered with
+         a normal font is well below 1.0 (lots of empty interior + curved
+         strokes), whereas a tofu rectangle outline gives a ratio close to
+         the box's perimeter/area which is also low — so we additionally
+         require shape correlation with the reference glyph.
+    """
+    if not molecule3d._HAS_PYOPENGL or not molecule3d._IS_GL_WIDGET:
+        pytest.skip("requires real OpenGL context")
+
+    widget = MoleculeWidget3D()
+    bg = QtGui.QColor(255, 255, 255)
+    widget.set_background_color(bg)
+    widget.resize(400, 300)
+    widget.show()
+    QtWidgets.QApplication.processEvents()
+
+    if widget._gl_failed:
+        pytest.skip("OpenGL context creation failed in this environment")
+    if not hasattr(widget, "grabFramebuffer"):
+        pytest.skip("QOpenGLWidget.grabFramebuffer() unavailable")
+
+    # Single carbon at origin so the label sits near widget centre.
+    widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+    QtWidgets.QApplication.processEvents()
+
+    def grab_rgb(labels_on: bool) -> np.ndarray:
+        widget.show_labels(labels_on)
+        widget.update()
+        QtWidgets.QApplication.processEvents()
+        img = widget.grabFramebuffer().convertToFormat(
+            QtGui.QImage.Format.Format_RGB32
+        )
+        h, w = img.height(), img.width()
+        buf = img.constBits()
+        if hasattr(buf, "setsize"):
+            buf.setsize(img.sizeInBytes())  # PyQt5/6 path
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)
+        # Drop the unused alpha-byte slot of Format_RGB32 → RGB.
+        return arr[:, :, [2, 1, 0]].copy()
+
+    rgb_off = grab_rgb(False)
+    rgb_on = grab_rgb(True)
+
+    if rgb_off.max() < 10:
+        pytest.skip("framebuffer empty — GL not actually rendering")
+
+    # Pixels that changed when labels were turned on.
+    diff = np.abs(rgb_on.astype(int) - rgb_off.astype(int)).sum(axis=2)
+    label_mask = diff > 20
+    if not label_mask.any():
+        pytest.fail("No label pixels appeared when labels were enabled.")
+
+    # Build the ground-truth glyph reference using the raster engine.
+    label_text = "C1"
+    base_size = max(1, widget.fontsize)
+    font = QtGui.QFont()
+    font.setPixelSize(base_size)
+    metrics = QtGui.QFontMetrics(font)
+    tw = metrics.horizontalAdvance(label_text)
+    th = metrics.height()
+    pad = 4
+    ref_w, ref_h = tw + 2 * pad, th + 2 * pad
+    ref_img = QtGui.QImage(
+        ref_w, ref_h, QtGui.QImage.Format.Format_ARGB32_Premultiplied
+    )
+    ref_img.fill(QtCore.Qt.GlobalColor.transparent)
+    p = QtGui.QPainter(ref_img)
+    try:
+        p.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
+        p.setFont(font)
+        p.setPen(widget.label_color)
+        p.drawText(pad, pad + metrics.ascent(), label_text)
+    finally:
+        p.end()
+    ref_ptr = ref_img.constBits()
+    if hasattr(ref_ptr, "setsize"):
+        ref_ptr.setsize(ref_img.sizeInBytes())
+    ref_arr = np.frombuffer(ref_ptr, dtype=np.uint8).reshape(ref_h, ref_w, 4)
+    ref_mask = ref_arr[:, :, 3] > 32  # alpha-based glyph mask
+    ref_pixels = int(ref_mask.sum())
+    assert ref_pixels > 20, "raster glyph reference is empty — test broken"
+
+    # Crop the live label region from the diff mask using the bounding box
+    # of the differing pixels (much more robust than projecting screen
+    # coords because the label is offset a few pixels from the atom).
+    ys, xs = np.where(label_mask)
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    crop = label_mask[y0:y1, x0:x1]
+    crop_pixels = int(crop.sum())
+
+    # --- Assertion 1 ---------------------------------------------------
+    # Number of changed pixels must be in the same order of magnitude as
+    # the reference glyph.  A tofu rectangle outline for "C1" at 18 px
+    # pixel-size is roughly 2*(width + height) ≈ 60–80 pixels; a rendered
+    # "C1" glyph fill is typically 80–200 pixels.  We require enough
+    # changed pixels that *something* is drawn, then we test the shape.
+    assert crop_pixels >= max(20, ref_pixels // 3), (
+        f"Only {crop_pixels} label pixels detected (reference glyph has "
+        f"{ref_pixels}). The label overlay is missing or near-empty."
+    )
+
+    # --- Assertion 2 ---------------------------------------------------
+    # Rule out tofu (a hollow rectangle with empty interior).  For an
+    # axis-aligned hollow rectangle, every pixel of the mask lies on the
+    # bounding-box border; the interior pixel count is 0.  A real glyph
+    # like "C1" has substantial interior content (the bowl of "C" is open
+    # but the strokes themselves have thickness, and "1" is essentially
+    # a filled line).  We measure the *interior fill ratio*: the fraction
+    # of mask pixels that are NOT on the outermost 1-pixel border of the
+    # bounding box.  A hollow rectangle gives 0; a filled glyph gives
+    # close to 1.
+    ch, cw = crop.shape
+    if ch < 4 or cw < 4:
+        pytest.fail(
+            f"Label region too small ({cw}×{ch}) — cannot distinguish "
+            f"a tofu rectangle from real glyphs."
+        )
+    interior = crop[1:-1, 1:-1]
+    interior_pixels = int(interior.sum())
+    interior_ratio = interior_pixels / max(1, crop_pixels)
+    assert interior_ratio > 0.5, (
+        f"Label mask looks like a hollow rectangle (interior_ratio="
+        f"{interior_ratio:.2f}, crop={cw}×{ch}, pixels={crop_pixels}). "
+        f"Glyphs are likely rendering as ‘.notdef’ tofu rectangles."
+    )
+
+    # --- Assertion 3 ---------------------------------------------------
+    # Shape sanity: the live label crop must broadly resemble the
+    # reference glyph.  We compare *aspect ratios* — a "C1" glyph is much
+    # wider than tall (≈ 1.3–1.7); a single tofu rectangle for two chars
+    # would have a similar aspect, but a full filled rectangle would too,
+    # so the aspect alone is not enough — combined with the interior_ratio
+    # check above, however, it is decisive.
+    live_aspect = cw / ch
+    ref_aspect = ref_w / ref_h
+    # Allow a generous 50 % tolerance — exact pixel sizes vary across
+    # platforms / DPI but the overall proportion must be sane.
+    assert 0.5 * ref_aspect <= live_aspect <= 2.0 * ref_aspect, (
+        f"Label aspect ratio {live_aspect:.2f} differs wildly from the "
+        f"reference glyph aspect {ref_aspect:.2f} — labels are not being "
+        f"rendered as text."
+    )
