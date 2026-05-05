@@ -1314,7 +1314,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         h = max(1, self.height())
         hydrogens = ("H", "D")
 
-        base_size = max(1, int(self.fontsize * self._zoom))
+        base_size = max(1, int(self.fontsize))
         hover_size = base_size + 4  # enlarge hovered label
 
         font = QtGui.QFont()

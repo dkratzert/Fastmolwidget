@@ -475,7 +475,7 @@ class MoleculeWidget(QtWidgets.QWidget):
             self._painter = QPainter(self)
             self._painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             font = self._painter.font()
-            font.setPixelSize(max(1, int(self.fontsize * self.zoom*2)))
+            font.setPixelSize(max(1, int(self.fontsize * self.zoom * 4)))
             self._painter.setFont(font)
             try:
                 self.draw()
