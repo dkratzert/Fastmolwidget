@@ -22,7 +22,6 @@ dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
     "pyopengl>=3.1",
-    "pyopengl-accelerate>=3.1",
     "qtpy>=2.4.3",
     "shelxfile>=22",
 ]
@@ -36,6 +35,7 @@ pyqt6 = [
 ]
 gl3d = [
     "PyOpenGL>=3.1.7",
+    "PyOpenGL-accelerate>=3.1",
 ]
 # cpp: build-time only — pybind11 must be present when running
 #   pip install -e . --no-build-isolation
