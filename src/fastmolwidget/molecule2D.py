@@ -77,6 +77,8 @@ class MoleculeWidget(QtWidgets.QWidget):
     :param parent: Optional parent widget.
     """
 
+    _AUTO_ZOOM_PADDING = 1.1
+
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
 
@@ -89,8 +91,7 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._adp_map = None
         self._cell = None
         self._is_packed = False
-        self._factor = 1.0
-        self.atoms_size = 12
+        self.zoom = 1.0
         self.fontsize = 13
         self.bond_width = 3
         self.labels = True
@@ -149,7 +150,6 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.objects: list[RenderItem] = []
 
         self.screen_center = [self.width() / 2, self.height() / 2]
-        self.zoom = 1.1
 
         # Numpy arrays for fast vectorized rotation
         self._coords_array = np.empty((0, 3))
@@ -189,9 +189,23 @@ class MoleculeWidget(QtWidgets.QWidget):
         """Reasonable minimum size for molecule rendering."""
         return QtCore.QSize(320, 220)
 
+    @property
+    def atoms_size(self) -> float:
+        """Atom circle diameter in screen pixels, derived from the current zoom."""
+        return self.zoom * 70
+
+    def _auto_zoom(self) -> float:
+        """Compute the zoom level that fits the molecule into the current viewport."""
+        w = self.width()
+        h = self.height()
+        r = self.molecule_radius
+        if w <= 0 or h <= 0 or r <= 0:
+            return self._AUTO_ZOOM_PADDING / 100
+        return self._AUTO_ZOOM_PADDING * min(w, h) / 2 / r / 100
+
     def _adp_intersection_line_width(self) -> float:
         """Return a zoom-aware stroke width for ADP intersection lines."""
-        return max(1.0, min(6.0, self._factor * 3.0))
+        return max(1.0, min(6.0, self.zoom * 3.0))
 
     def set_bond_width(self, width: int):
         """Set the width of the bonds."""
@@ -261,7 +275,7 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def reset_view(self):
         """Reset zoom and rotation to defaults."""
-        self.zoom = 1.0
+        self.zoom = self._auto_zoom()
         self.x_angle = 180.0
         self.y_angle = 180.0
         self.z_angle = 0.0
@@ -388,8 +402,7 @@ class MoleculeWidget(QtWidgets.QWidget):
                     at.u_iso = None
 
         if not keep_view:
-            self._factor = min(self.width(), self.height()) / 2 / self.molecule_radius * self.zoom / 100
-            self.atoms_size = self._factor * 70
+            self.zoom = self._auto_zoom()
 
         self.update()
 
@@ -446,6 +459,14 @@ class MoleculeWidget(QtWidgets.QWidget):
             self.atoms.append(a)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
+        """Scale zoom proportionally so the molecule fills the same fraction of the viewport."""
+        old_size = event.oldSize()
+        new_size = event.size()
+        if old_size.width() > 0 and old_size.height() > 0:
+            old_min = min(old_size.width(), old_size.height())
+            new_min = min(new_size.width(), new_size.height())
+            if old_min > 0:
+                self.zoom *= new_min / old_min
         super().resizeEvent(event)
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:
@@ -986,11 +1007,9 @@ class MoleculeWidget(QtWidgets.QWidget):
             super().keyPressEvent(event)
 
     def zoom_molecule(self, event: QMouseEvent):
-        """Adjust the zoom / scale factor based on the right-button drag delta."""
-        self._factor -= (self._lastPos.y() - event.position().y()) / 400
-        self._factor = max(0.005, self._factor)
-        self.zoom += (self._lastPos.y() - event.position().y()) / 400
-        self.atoms_size = abs(self._factor * 70)
+        """Adjust the zoom level based on the right-button drag delta."""
+        delta = (self._lastPos.y() - event.position().y()) / 400
+        self.zoom = max(0.005, self.zoom - delta)
         self.update()
 
     def rotate_molecule(self, event: QMouseEvent):
@@ -1059,7 +1078,7 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     def draw(self) -> None:
         """Execute the main rendering pass."""
-        self.scale = self._factor * 150
+        self.scale = self.zoom * 130
         self.screen_center = [self.width() / 2, self.height() / 2]
         self.cx_global = self.screen_center[0] - self.molecule_center[0] * self.scale
         self.cy_global = self.screen_center[1] - self.molecule_center[1] * self.scale
@@ -1191,12 +1210,12 @@ class MoleculeWidget(QtWidgets.QWidget):
         x2 = p2[0] * self.scale + self.cx_global
         y2 = p2[1] * self.scale + self.cy_global
 
-        dynamic_width = max(1, int(self.bond_width * self._factor * 5))
+        dynamic_width = max(1, int(self.bond_width * self.zoom * 5))
         return x1, y1, x2, y2, dynamic_width
 
     def _draw_bond_selection(self, x1: float, y1: float, x2: float, y2: float, dynamic_width: int):
         """Draws a crisp cyan outline behind a selected bond."""
-        sel_width = dynamic_width + max(4, int(12 * self._factor))
+        sel_width = dynamic_width + max(4, int(12 * self.zoom))
         pen = QPen(QColor(0, 190, 255), sel_width, Qt.PenStyle.SolidLine)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         self._painter.setPen(pen)
@@ -1312,7 +1331,7 @@ class MoleculeWidget(QtWidgets.QWidget):
     def _draw_selection(self, r1: float, r2: float):
         """Draws a crisp, thick cyan outline to indicate selection."""
         padding = 4.0  # pixels
-        pen = QPen(QColor(0, 190, 255), max(3, 12 * self._factor), Qt.PenStyle.SolidLine)
+        pen = QPen(QColor(0, 190, 255), max(3, 12 * self.zoom), Qt.PenStyle.SolidLine)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         self._painter.setPen(pen)
         self._painter.setBrush(Qt.BrushStyle.NoBrush)

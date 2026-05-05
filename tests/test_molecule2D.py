@@ -32,7 +32,7 @@ def test_render_item():
 
 def test_molecule_widget_creation():
     widget = MoleculeWidget()
-    assert widget.atoms_size == 12
+    assert widget.atoms_size == 70.0
     assert widget.fontsize == 13
     assert widget.bond_width == 3
     assert widget.labels is True
@@ -41,9 +41,9 @@ def test_molecule_widget_creation():
 
 def test_adp_intersection_line_width_scales_with_zoom():
     widget = MoleculeWidget()
-    widget._factor = 0.2
+    widget.zoom = 0.2
     thin = widget._adp_intersection_line_width()
-    widget._factor = 1.0
+    widget.zoom = 1.0
     thick = widget._adp_intersection_line_width()
     assert thick > thin
 
@@ -71,7 +71,7 @@ def test_molecule_widget_with_cif():
     # Test setting parameters and re-drawing
     widget.labels = False
     widget.show_adps = False
-    widget.atoms_size = 15
+    widget.zoom = 15 / 70  # equivalent to atoms_size = 15
     widget.bond_width = 4
     widget.repaint()
 
