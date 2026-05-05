@@ -209,7 +209,7 @@ class _Atom3D:
         "center", "label", "type_", "part", "symmgen",
         "color_f", "display_radius",
         "u_cart", "u_iso", "adp_valid", "u_eigvals", "u_eigvecs",
-        "adp_billboard_r", "adp_A_matrix",
+        "adp_billboard_r", "adp_A_matrix", "npd_half_edge",
     ]
 
     def __init__(
@@ -247,6 +247,9 @@ class _Atom3D:
         # Set by _build_geometry when ADP data is present
         self.adp_billboard_r: float = 0.0
         self.adp_A_matrix: np.ndarray | None = None
+        # Half-edge length (Å) of the NPD-cube placeholder; only set when
+        # u_cart exists but adp_valid is False.
+        self.npd_half_edge: float = 0.0
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Atom3D {self.label} {self.type_} {self.center}>"
@@ -632,6 +635,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._cylinder_ibo: int = 0
         self._ellipsoid_batch_vbo: int = 0
         self._ellipsoid_batch_ibo: int = 0
+        # NPD-cube placeholder mesh (reuses the cylinder shader: same vertex
+        # layout = position3 + normal3 + color3 + selected1).
+        self._cube_vbo: int = 0
+        self._cube_ibo: int = 0
 
         # ---- CPU-side geometry buffers ------------------------------------
         self._sphere_verts: np.ndarray = np.empty(0, dtype=np.float32)
@@ -643,9 +650,14 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._ellipsoid_verts: np.ndarray = np.empty(0, dtype=np.float32)
         self._ellipsoid_idx: np.ndarray = np.empty(0, dtype=np.uint32)
         self._ellipsoid_count: int = 0
+        self._cube_verts: np.ndarray = np.empty(0, dtype=np.float32)
+        self._cube_idx: np.ndarray = np.empty(0, dtype=np.uint32)
+        self._cube_count: int = 0
 
         # ADP atoms for batched ellipsoid draw call
         self._adp_draw_list: list[_Atom3D] = []
+        # NPD atoms for batched cube draw call
+        self._npd_draw_list: list[_Atom3D] = []
 
         self._geometry_dirty: bool = False
 
@@ -777,12 +789,13 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             _CYLINDER_VERT, _CYLINDER_FRAG, "cylinder"
         )
 
-        # Allocate VBOs / IBOs (sphere, cylinder, ellipsoid batch)
-        buffers = gl.glGenBuffers(6)
+        # Allocate VBOs / IBOs (sphere, cylinder, ellipsoid batch, NPD cubes)
+        buffers = gl.glGenBuffers(8)
         (
             self._sphere_vbo, self._sphere_ibo,
             self._cylinder_vbo, self._cylinder_ibo,
             self._ellipsoid_batch_vbo, self._ellipsoid_batch_ibo,
+            self._cube_vbo, self._cube_ibo,
         ) = buffers
 
         # One-shot MSAA diagnostic: warn when the actual sample count is < 2,
@@ -862,6 +875,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # Regular atom spheres
         if self._sphere_count > 0:
             self._render_spheres(mv, proj)
+
+        # NPD-cube placeholders (atoms whose ADP tensor is non-positive-definite)
+        if self._show_adps and self._cube_count > 0:
+            self._render_cubes(mv, proj)
 
         # ADP ellipsoids – all in a single batched draw call
         if self._show_adps and self._ellipsoid_count > 0:
@@ -963,22 +980,34 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """(Re)build all CPU-side geometry from :attr:`atoms`."""
         self._build_sphere_geometry()
         self._build_ellipsoid_geometry_batched()
+        self._build_cube_geometry()
         self._build_cylinder_geometry()
         self._geometry_dirty = True
 
     def _build_sphere_geometry(self) -> None:
-        """Create billboard quad data for non-ADP atoms."""
+        """Create billboard quad data for non-ADP atoms.
+
+        Atoms are routed to one of three buckets when ``_show_adps`` is on:
+        a valid anisotropic ADP → ellipsoid impostor; an NPD ADP (any
+        eigenvalue ≤ 0) → 3-D cube placeholder; everything else → sphere
+        impostor.  When ``_show_adps`` is off, NPD atoms fall back to spheres
+        — matching the 2-D widget's behaviour.
+        """
         corners = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]], dtype=np.float32)
         quad_idx_tpl = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
 
         self._adp_draw_list = []
+        self._npd_draw_list = []
         sphere_atoms: list[_Atom3D] = []
 
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
                 continue
-            if self._show_adps and atom.u_cart is not None and atom.adp_valid:
-                self._adp_draw_list.append(atom)
+            if self._show_adps and atom.u_cart is not None:
+                if atom.adp_valid:
+                    self._adp_draw_list.append(atom)
+                else:
+                    self._npd_draw_list.append(atom)
             else:
                 sphere_atoms.append(atom)
 
@@ -1148,6 +1177,82 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._ellipsoid_idx = idx
         self._ellipsoid_count = int(len(idx))
 
+    def _build_cube_geometry(self) -> None:
+        """Build a tessellated cube mesh per NPD atom.
+
+        NPD (non-positive-definite) atoms cannot be drawn as ellipsoids, so
+        they get an axis-aligned cube placeholder — same convention as the
+        2-D widget.  The mesh re-uses the cylinder shader's vertex layout
+        (10 floats: position3, normal3, color3, selected1) so the existing
+        ``_cylinder_prog`` can render it without a dedicated shader.
+        """
+        atoms = self._npd_draw_list
+        if not atoms:
+            self._cube_verts = np.empty(0, dtype=np.float32)
+            self._cube_idx = np.empty(0, dtype=np.uint32)
+            self._cube_count = 0
+            return
+
+        # 6 face normals (outward).  Each face has 4 unique vertices so
+        # that each face can carry its own normal (flat shading).
+        face_normals = np.array([
+            ( 0.0,  0.0,  1.0),  # +Z (front)
+            ( 0.0,  0.0, -1.0),  # -Z (back)
+            ( 1.0,  0.0,  0.0),  # +X (right)
+            (-1.0,  0.0,  0.0),  # -X (left)
+            ( 0.0,  1.0,  0.0),  # +Y (top)
+            ( 0.0, -1.0,  0.0),  # -Y (bottom)
+        ], dtype=np.float32)
+
+        # Local-space corner offsets (half-edge = 1) for each face, in
+        # CCW order when viewed from outside.
+        face_corners = np.array([
+            # +Z
+            [(-1, -1, 1), ( 1, -1, 1), ( 1,  1, 1), (-1,  1, 1)],
+            # -Z
+            [( 1, -1,-1), (-1, -1,-1), (-1,  1,-1), ( 1,  1,-1)],
+            # +X
+            [( 1, -1, 1), ( 1, -1,-1), ( 1,  1,-1), ( 1,  1, 1)],
+            # -X
+            [(-1, -1,-1), (-1, -1, 1), (-1,  1, 1), (-1,  1,-1)],
+            # +Y
+            [(-1,  1, 1), ( 1,  1, 1), ( 1,  1,-1), (-1,  1,-1)],
+            # -Y
+            [(-1, -1,-1), ( 1, -1,-1), ( 1, -1, 1), (-1, -1, 1)],
+        ], dtype=np.float32)
+
+        # Per-face quad → 2 triangles (CCW)
+        face_quad = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+
+        n = len(atoms)
+        verts = np.zeros((n * 24, 10), dtype=np.float32)
+        idx = np.zeros(n * 36, dtype=np.uint32)
+
+        for ai, atom in enumerate(atoms):
+            half = float(atom.npd_half_edge) if atom.npd_half_edge > 0.0 \
+                else 0.5 * float(atom.display_radius)
+            is_selected = atom.label in self.selected_atoms
+            color = _SEL_COLOR if is_selected else atom.color_f
+            sel_flag = 1.0 if is_selected else 0.0
+            base_v = ai * 24
+            base_i = ai * 36
+
+            for f in range(6):
+                normal = face_normals[f]
+                for c in range(4):
+                    vi = base_v + f * 4 + c
+                    verts[vi, 0:3] = atom.center + face_corners[f, c] * half
+                    verts[vi, 3:6] = normal
+                    verts[vi, 6:9] = color
+                    verts[vi, 9] = sel_flag
+                idx[base_i + f * 6: base_i + f * 6 + 6] = (
+                    face_quad + base_v + f * 4
+                )
+
+        self._cube_verts = verts.ravel()
+        self._cube_idx = idx
+        self._cube_count = int(len(idx))
+
     def _upload_geometry(self) -> None:
         """Upload CPU geometry arrays to GPU VBOs."""
         if not self._gl_initialized or self._gl_failed:
@@ -1206,6 +1311,25 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 gl.GL_ELEMENT_ARRAY_BUFFER,
                 self._ellipsoid_idx.nbytes,
                 self._ellipsoid_idx,
+                gl.GL_DYNAMIC_DRAW,
+            )
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+
+        if self._cube_verts.size > 0:
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._cube_vbo)
+            gl.glBufferData(
+                gl.GL_ARRAY_BUFFER,
+                self._cube_verts.nbytes,
+                self._cube_verts,
+                gl.GL_DYNAMIC_DRAW,
+            )
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+
+            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._cube_ibo)
+            gl.glBufferData(
+                gl.GL_ELEMENT_ARRAY_BUFFER,
+                self._cube_idx.nbytes,
+                self._cube_idx,
                 gl.GL_DYNAMIC_DRAW,
             )
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
@@ -1309,6 +1433,44 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             b"a_A_col0", b"a_A_col1", b"a_A_col2",
             b"a_evec0", b"a_evec1", b"a_evec2",
         ])
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+        gl.glUseProgram(0)
+
+    def _render_cubes(self, mv: np.ndarray, proj: np.ndarray) -> None:
+        """Render NPD-cube placeholders using the cylinder shader.
+
+        Cubes share the cylinder vertex layout (position3 + normal3 + color3
+        + selected1, 10 floats / vert) so a dedicated shader is unnecessary.
+        """
+        prog = self._cylinder_prog
+        gl.glUseProgram(prog)
+
+        _set_mat4(prog, b"u_mv", mv)
+        _set_mat4(prog, b"u_proj", proj)
+
+        try:
+            nm = np.linalg.inv(mv[:3, :3]).T.astype(np.float32)
+        except np.linalg.LinAlgError:
+            nm = np.eye(3, dtype=np.float32)
+        loc_nm = gl.glGetUniformLocation(prog, b"u_normal_mat")
+        if loc_nm >= 0:
+            gl.glUniformMatrix3fv(loc_nm, 1, False, nm.T.copy())
+
+        stride = 10 * 4  # 10 floats × 4 bytes
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._cube_vbo)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._cube_ibo)
+
+        _bind_attrib(prog, b"a_position", 3, stride, 0)
+        _bind_attrib(prog, b"a_normal", 3, stride, 12)
+        _bind_attrib(prog, b"a_color", 3, stride, 24)
+        _bind_attrib(prog, b"a_selected", 1, stride, 36)
+
+        gl.glDrawElements(
+            gl.GL_TRIANGLES, self._cube_count, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0)
+        )
+
+        _unbind_attrib(prog, [b"a_position", b"a_normal", b"a_color", b"a_selected"])
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glUseProgram(0)
@@ -1541,12 +1703,20 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     a3d.u_cart = self._uij_to_cart(uvals, symm)
                     a3d.u_iso = float(np.trace(a3d.u_cart) / 3.0)
                     evals, evecs = np.linalg.eigh(a3d.u_cart)
+                    a3d.u_eigvals = evals
+                    a3d.u_eigvecs = evecs
                     if np.any(evals <= 0):
+                        # NPD: render as a cube placeholder.  Size the cube
+                        # from the largest |eigenvalue| so it is visible
+                        # even when one principal component is negative.
+                        # Scaled to 40 % of what the full ellipsoid radius
+                        # would be, so the cube is visually compact.
                         a3d.adp_valid = False
+                        a3d.npd_half_edge = float(
+                            0.4 * _ADP_SCALE * np.sqrt(np.max(np.abs(evals)))
+                        )
                     else:
                         a3d.adp_valid = True
-                        a3d.u_eigvals = evals
-                        a3d.u_eigvecs = evecs
                         # Billboard radius for the ellipsoid impostor quad
                         a3d.adp_billboard_r = float(
                             _ADP_SCALE * np.sqrt(np.max(evals)) * 1.2
@@ -2221,6 +2391,19 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             ):
                 t = self._ray_ellipsoid_hit_viewspace(
                     ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
+                )
+            elif (
+                self._show_adps
+                and atom.u_cart is not None
+                and not atom.adp_valid
+                and atom.npd_half_edge > 0.0
+            ):
+                # Cube placeholder: pick against its bounding sphere
+                # (radius = half_edge × √3).  Slight over-pick at the
+                # corners is acceptable and simpler than ray-AABB.
+                radius = float(atom.npd_half_edge) * 1.7320508
+                t = self._ray_sphere_hit_viewspace(
+                    ray_origin, ray_dir, atom.center, radius, mv
                 )
             else:
                 radius = (sqrt(float(atom.u_iso)) * _ADP_SCALE) if atom.u_iso is not None else atom.display_radius

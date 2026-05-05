@@ -562,6 +562,48 @@ def test_molecule_bounds():
 # ADP with a real CIF (no GL required for the tensor maths)
 # ------------------------------------------------------------------
 
+def test_npd_atom_renders_as_cube():
+    """Atoms with non-positive-definite ADP tensors must render as cubes.
+
+    p21c.cif contains an Al1 atom with U33 ≈ -0.0137, which makes its U_cart
+    non-positive-definite.  When ADPs are shown the atom must be routed to
+    the cube draw list (not the sphere bucket); when ADPs are hidden it
+    must fall back to a regular sphere — same behaviour as the 2-D widget.
+    """
+    from fastmolwidget.cif.cif_file_io import CifReader
+    from fastmolwidget.tools import to_float
+
+    cif = CifReader(data / "p21c.cif")
+    adp_dict = {
+        dp.label: (
+            to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+            to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
+        )
+        for dp in cif.displacement_parameters()
+    }
+    widget = MoleculeWidget3D()
+    widget.open_molecule(list(cif.atoms_orth), cif.cell[:6], adp_dict)
+
+    al1 = next(a for a in widget.atoms if a.label == "Al1")
+    assert al1.u_cart is not None
+    assert al1.adp_valid is False, "Al1 in p21c.cif must be flagged NPD"
+    assert al1.npd_half_edge > 0.0, "NPD half-edge must be set for cube sizing"
+
+    # ADPs ON: Al1 must be in the NPD-cube list, not the sphere list.
+    widget.show_adps(True)
+    npd_labels = {a.label for a in widget._npd_draw_list}
+    assert "Al1" in npd_labels
+    assert widget._cube_count > 0, "Cube index buffer must be populated"
+    # 6 faces × 2 triangles × 3 indices = 36 indices per cube.
+    assert widget._cube_count % 36 == 0
+    assert widget._cube_count // 36 == len(widget._npd_draw_list)
+
+    # ADPs OFF: NPD list must be empty; Al1 falls back to a sphere.
+    widget.show_adps(False)
+    assert len(widget._npd_draw_list) == 0
+    assert widget._cube_count == 0
+
+
 def test_adp_tensors_computed():
     """ADP atoms from a CIF must have valid u_cart tensors attached."""
     from fastmolwidget.cif.cif_file_io import CifReader
