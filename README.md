@@ -189,6 +189,7 @@ Both viewers expose the same two-row control bar:
 | Bond Width            | 3       | Stroke width / cylinder radius for bonds (2D: 1–15, 3D: 0–15)                                 |
 | Bond Color            | —       | Opens a colour picker to change the default bond colour                                        |
 | Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)                |
+| Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                     |
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
 
@@ -251,7 +252,7 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 - **`set_background_color(color: QColor)`** — change background colour
 - **`reset_view()`** — reset zoom, rotation, and pan to defaults
 - **`reset_rotation_center()`** — restore the rotation pivot to the molecule's geometric center (undoes a middle-click recentring)
-- **`save_image(filename, image_scale=1.5)`** — render the current view to an image file
+- **`save_image(filename: Path, image_scale: float = 1.5)`** — capture the current OpenGL framebuffer and write it to a PNG or JPEG file (format inferred from the file extension). The captured image is then scaled by `image_scale` using smooth bilinear filtering before saving. Labels appear in the saved image if they are active at the time of the call.
 
 #### Example — feeding atom data directly to `MoleculeWidget3D`
 
@@ -343,6 +344,11 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 - **`reset_view()`**  
   Reset zoom, pan, and rotation to their defaults.
+
+- **`save_image(filename: Path, image_scale: float = 1.5)`**  
+  Render the current structure view to an image file.  
+  The widget is redrawn off-screen at `widget_size × image_scale`; the result is saved as PNG or JPEG (format inferred from the file extension).  
+  Labels appear in the saved image if they are active at the time of the call.
 
 #### Example — feeding atom data directly to `MoleculeWidget` (2D)
 
