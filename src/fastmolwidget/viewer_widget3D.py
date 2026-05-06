@@ -297,6 +297,7 @@ if __name__ == "__main__":
         w.load_file(args.cif_file)
     w.show()
     w.grow()
-    #app.processEvents()
+    # app.processEvents()
     w.showMaximized()
+    # w.render_widget.set_visible_parts({0, 1})
     app.exec()
