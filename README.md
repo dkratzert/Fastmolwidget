@@ -55,7 +55,7 @@ uv add "fastmolwidget[pyside6]"
 # or PyQt6
 uv add "fastmolwidget[pyqt6]"
 
-# add 3D OpenGL support
+# add 3D OpenGL support (optional, requires Qt ≥ 6.7 and pyopenGL installed in the Python environment)
 uv add "fastmolwidget[pyside6,gl3d]"
 ```
 

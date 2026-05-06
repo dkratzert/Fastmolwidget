@@ -1,7 +1,7 @@
 [project]
 name = "fastmolwidget"
 dynamic = ["version"]
-description = "A PyQt widget to display crystal structures"
+description = "A PyQt/PySide widget to display crystal structures"
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -10,18 +10,18 @@ authors = [
 requires-python = ">=3.12"
 keywords = ["chemistry", "crystallography", "qt", "widget", "molecule", "structure", "visualization"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Software Development :: User Interfaces",
 ]
 dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
-    "pyopengl>=3.1",
     "qtpy>=2.4.3",
     "shelxfile>=22",
 ]
