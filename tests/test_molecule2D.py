@@ -576,3 +576,110 @@ def test_align_best_view_coords_updated_2d():
     # Coordinates must have been rotated (i.e. are different now)
     assert not np.allclose(widget._coords_array, coords_before)
 
+
+# ------------------------------------------------------------------
+# set_visible_parts / partsChanged (MoleculeWidget 2D)
+# ------------------------------------------------------------------
+
+class TestVisibleParts2D:
+    """Tests for the disorder-part filter in MoleculeWidget (2D)."""
+
+    def _make_atoms(self):
+        return [
+            Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+            Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
+            Atomtuple("C3", "C", 3.0, 0.0, 0.0, 2),
+        ]
+
+    def test_available_parts_after_open_molecule(self):
+        widget = MoleculeWidget()
+        widget.open_molecule(self._make_atoms())
+        assert widget.available_parts == frozenset({0, 1, 2})
+
+    def test_visible_parts_default_is_none(self):
+        widget = MoleculeWidget()
+        widget.open_molecule(self._make_atoms())
+        assert widget._visible_parts is None
+
+    def test_parts_changed_signal_emitted(self):
+        widget = MoleculeWidget()
+        received: list[frozenset] = []
+        widget.partsChanged.connect(received.append)
+        widget.open_molecule(self._make_atoms())
+        assert len(received) == 1
+        assert received[0] == frozenset({0, 1, 2})
+
+    def test_set_visible_parts_stores_value(self):
+        widget = MoleculeWidget()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts({0, 1})
+        assert widget._visible_parts == {0, 1}
+
+    def test_set_visible_parts_none_shows_all(self):
+        widget = MoleculeWidget()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts({0})
+        widget.set_visible_parts(None)
+        assert widget._visible_parts is None
+
+    def test_set_visible_parts_empty_hides_all(self):
+        widget = MoleculeWidget()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts(set())
+        assert widget._visible_parts == set()
+
+    def test_parts_reset_on_new_open_molecule(self):
+        widget = MoleculeWidget()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts({0})
+        widget.open_molecule([Atomtuple("N1", "N", 0.0, 0.0, 0.0, 0)])
+        assert widget._visible_parts is None
+        assert widget.available_parts == frozenset({0})
+
+    def test_single_part_structure_has_no_disorder(self):
+        widget = MoleculeWidget()
+        widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+        assert widget.available_parts == frozenset({0})
+
+
+# ------------------------------------------------------------------
+# Part-filter viewer controls (2D viewer widget)
+# ------------------------------------------------------------------
+
+def test_2d_viewer_part_container_hidden_when_no_disorder():
+    from fastmolwidget.viewer_widget import MoleculeViewerWidget
+    viewer = MoleculeViewerWidget()
+    viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+    assert viewer._part_container.isHidden()
+
+
+def test_2d_viewer_part_container_shown_for_disordered_structure():
+    from fastmolwidget.viewer_widget import MoleculeViewerWidget
+    viewer = MoleculeViewerWidget()
+    viewer._render_widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
+        Atomtuple("C3", "C", 3.0, 0.0, 0.0, 2),
+    ])
+    assert not viewer._part_container.isHidden()
+
+
+def test_2d_viewer_combo_all_parts_checked_by_default():
+    from fastmolwidget.viewer_widget import MoleculeViewerWidget
+    viewer = MoleculeViewerWidget()
+    viewer._render_widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
+    ])
+    assert viewer._part_combo.checked_values() == [0, 1]
+
+
+def test_2d_viewer_all_checked_passes_none_to_renderer():
+    from fastmolwidget.viewer_widget import MoleculeViewerWidget
+    viewer = MoleculeViewerWidget()
+    viewer._render_widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
+    ])
+    assert viewer._render_widget._visible_parts is None
+

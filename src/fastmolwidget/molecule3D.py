@@ -305,6 +305,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
+    #: Emitted after every :meth:`open_molecule` / :meth:`grow_molecule` call
+    #: with the frozenset of disorder-part numbers present in the loaded atoms.
+    partsChanged = QtCore.Signal(object)
 
     # Vertical half-extent multiplier used for orthographic framing.
     _ORTHO_VIEW_MARGIN: float = 1.6
@@ -336,6 +339,12 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.show_hydrogens_flag: bool = True
         self.selected_atoms: set[str] = set()
         self.selected_bonds: set[tuple[str, str]] = set()
+
+        # ---- Part filter -------------------------------------------------
+        #: Frozenset of all disorder-part numbers in the current atom list.
+        self.available_parts: frozenset[int] = frozenset()
+        #: Parts to render; ``None`` means *all parts* (no filtering).
+        self._visible_parts: set[int] | None = None
 
         self._show_adps: bool = True
 
@@ -755,6 +764,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
                 continue
+            if self._visible_parts is not None and atom.part not in self._visible_parts:
+                continue
             if self._show_adps and atom.u_cart is not None:
                 if atom.adp_valid:
                     self._adp_draw_list.append(atom)
@@ -810,6 +821,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
             if not self.show_hydrogens_flag:
                 if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                    continue
+            if self._visible_parts is not None:
+                if at1.part not in self._visible_parts or at2.part not in self._visible_parts:
                     continue
 
             bond_key: tuple[str, str] = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
@@ -1577,6 +1591,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
             self.atoms.append(a3d)
 
+        self.available_parts = frozenset(a.part for a in self.atoms)
+        self._visible_parts = None
+        self.partsChanged.emit(self.available_parts)
+
         self.connections = self._get_conntable()
 
         if not keep_view:
@@ -1719,6 +1737,17 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def show_hydrogens(self, value: bool) -> None:
         """Toggle hydrogen atom and bond display."""
         self.show_hydrogens_flag = value
+        if self.atoms:
+            self._build_geometry()
+        self.update()
+
+    def set_visible_parts(self, parts: set[int] | None) -> None:
+        """Set which disorder parts are rendered.
+
+        :param parts: A set of part numbers to display, or ``None`` to show
+            all parts (no filtering).  An empty set hides every atom.
+        """
+        self._visible_parts = parts
         if self.atoms:
             self._build_geometry()
         self.update()
@@ -2274,6 +2303,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         for atom in self.atoms:
             if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
+                continue
+            if self._visible_parts is not None and atom.part not in self._visible_parts:
                 continue
             # Hit test against the *rendered* surface so the entire visible
             # ellipsoid / sphere is selectable.

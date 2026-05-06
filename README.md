@@ -246,6 +246,7 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 - **`show_adps(value: bool)`** — toggle ADP ellipsoid rendering; falls back to isotropic spheres when `False`
 - **`show_labels(value: bool)`** — show / hide atom labels
 - **`show_hydrogens(value: bool)`** — show / hide hydrogen atoms and bonds
+- **`set_visible_parts(parts: set[int] | None)`** — filter by disorder part; `None` shows all atoms; an empty set hides all atoms; e.g. `set_visible_parts({0, 1})` shows only Part 0 and Part 1
 - **`set_bond_width(width: int)`** — set cylinder radius scale (1–15)
 - **`set_bond_color(color)`** — set the default color for non-selected bonds; accepts `QColor`, hex string, or an RGB tuple
 - **`set_labels_visible(visible: bool)`** — alias for `show_labels`
@@ -329,6 +330,11 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 - **`show_hydrogens(value: bool)`**  
   Show or hide hydrogen / deuterium atoms and their bonds.
+
+- **`set_visible_parts(parts: set[int] | None)`**  
+  Filter by disorder part number.  `None` (the default) shows all parts.  Pass a
+  set of integers to restrict rendering to those parts; an empty set hides every
+  atom.  Example: `widget.set_visible_parts({0, 1})` shows Part 0 and Part 1.
 
 - **`set_bond_width(width: int)`**  
   Set the stroke width for bonds in pixels (valid range: 1–15).

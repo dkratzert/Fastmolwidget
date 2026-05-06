@@ -81,6 +81,9 @@ class MoleculeWidget(QtWidgets.QWidget):
 
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
+    #: Emitted after every :meth:`open_molecule` / :meth:`grow_molecule` call
+    #: with the frozenset of disorder-part numbers present in the loaded atoms.
+    partsChanged = QtCore.Signal(object)
 
     def __init__(self, parent: QtGui.QWidget = None):
         super().__init__(parent)
@@ -98,6 +101,12 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._show_adps = True
 
         self.show_hydrogens_flag = True
+
+        # ---- Part filter -------------------------------------------------
+        #: Frozenset of all disorder-part numbers in the current atom list.
+        self.available_parts: frozenset[int] = frozenset()
+        #: Parts to render; ``None`` means *all parts* (no filtering).
+        self._visible_parts: set[int] | None = None
 
         # Track selected atoms and bonds as sets for multi-selection
         self.selected_atoms: set[str] = set()
@@ -273,6 +282,15 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.show_hydrogens_flag = value
         self.update()
 
+    def set_visible_parts(self, parts: set[int] | None) -> None:
+        """Set which disorder parts are rendered.
+
+        :param parts: A set of part numbers to display, or ``None`` to show
+            all parts (no filtering).  An empty set hides every atom.
+        """
+        self._visible_parts = parts
+        self.update()
+
     def reset_view(self):
         """Reset zoom and rotation to defaults."""
         self.zoom = self._auto_zoom()
@@ -337,6 +355,10 @@ class MoleculeWidget(QtWidgets.QWidget):
         self.atoms.clear()
         self.make_adps(atoms)
         self.connections = self.get_conntable_from_atoms()
+
+        self.available_parts = frozenset(a.part for a in self.atoms)
+        self._visible_parts = None
+        self.partsChanged.emit(self.available_parts)
 
         if not keep_view:
             self.get_center_and_radius()
@@ -1179,6 +1201,11 @@ class MoleculeWidget(QtWidgets.QWidget):
         for item in self.objects:
             if not self.show_hydrogens_flag:
                 if item.atom1.type_ in hydrogens or (item.is_bond and item.atom2.type_ in hydrogens):
+                    continue
+            if self._visible_parts is not None:
+                if item.atom1.part not in self._visible_parts:
+                    continue
+                if item.is_bond and item.atom2.part not in self._visible_parts:
                     continue
             if item.is_bond:
                 # Cull bonds where both endpoints are off-screen

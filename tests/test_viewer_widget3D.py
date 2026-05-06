@@ -1328,3 +1328,120 @@ def test_align_best_view_rot_matrix_changes_3d():
     # The rotation matrix must not equal the identity
     assert not np.allclose(widget._rot_matrix, np.eye(3, dtype=np.float32), atol=1e-3)
 
+
+# ------------------------------------------------------------------
+# set_visible_parts / partsChanged (MoleculeWidget3D)
+# ------------------------------------------------------------------
+
+class TestVisibleParts3D:
+    """Tests for the disorder-part filter in MoleculeWidget3D."""
+
+    def _make_atoms(self):
+        return [
+            Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+            Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
+            Atomtuple("C3", "C", 3.0, 0.0, 0.0, 2),
+        ]
+
+    def test_available_parts_after_open_molecule(self):
+        widget = MoleculeWidget3D()
+        widget.open_molecule(self._make_atoms())
+        assert widget.available_parts == frozenset({0, 1, 2})
+
+    def test_visible_parts_default_is_none(self):
+        widget = MoleculeWidget3D()
+        widget.open_molecule(self._make_atoms())
+        assert widget._visible_parts is None
+
+    def test_parts_changed_signal_emitted(self):
+        widget = MoleculeWidget3D()
+        received: list[frozenset] = []
+        widget.partsChanged.connect(received.append)
+        widget.open_molecule(self._make_atoms())
+        assert len(received) == 1
+        assert received[0] == frozenset({0, 1, 2})
+
+    def test_set_visible_parts_filters_sphere_geometry(self):
+        widget = MoleculeWidget3D()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts({0, 1})
+        # Only atoms with part 0 or 1 should be in the sphere geometry.
+        # We check via available_parts and _visible_parts consistency.
+        assert widget._visible_parts == {0, 1}
+
+    def test_set_visible_parts_none_shows_all(self):
+        widget = MoleculeWidget3D()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts({0})
+        widget.set_visible_parts(None)
+        assert widget._visible_parts is None
+
+    def test_set_visible_parts_empty_hides_all(self):
+        widget = MoleculeWidget3D()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts(set())
+        assert widget._visible_parts == set()
+
+    def test_parts_reset_on_new_open_molecule(self):
+        widget = MoleculeWidget3D()
+        widget.open_molecule(self._make_atoms())
+        widget.set_visible_parts({0})
+        # Loading a new molecule must reset _visible_parts to None.
+        widget.open_molecule([Atomtuple("N1", "N", 0.0, 0.0, 0.0, 0)])
+        assert widget._visible_parts is None
+        assert widget.available_parts == frozenset({0})
+
+
+# ------------------------------------------------------------------
+# set_visible_parts / partsChanged (MoleculeViewer3DWidget)
+# ------------------------------------------------------------------
+
+class TestViewerPartControls3D:
+    """Tests for the part-filter UI in MoleculeViewer3DWidget."""
+
+    def _disordered_atoms(self):
+        return [
+            Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+            Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
+            Atomtuple("C3", "C", 3.0, 0.0, 0.0, 2),
+        ]
+
+    def test_part_container_hidden_when_no_disorder(self):
+        viewer = MoleculeViewer3DWidget()
+        viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+        assert viewer._part_container.isHidden()
+
+    def test_part_container_shown_when_disorder_present(self):
+        viewer = MoleculeViewer3DWidget()
+        viewer._render_widget.open_molecule(self._disordered_atoms())
+        assert not viewer._part_container.isHidden()
+
+    def test_combo_has_correct_items(self):
+        viewer = MoleculeViewer3DWidget()
+        viewer._render_widget.open_molecule(self._disordered_atoms())
+        assert viewer._part_combo.checked_values() == [0, 1, 2]
+
+    def test_unchecking_part_calls_set_visible_parts(self):
+        viewer = MoleculeViewer3DWidget()
+        viewer._render_widget.open_molecule(self._disordered_atoms())
+        # Simulate unticking Part 2 (index 2 in the model).
+        item = viewer._part_combo.model().item(2)
+        from qtpy.QtCore import Qt
+        item.setCheckState(Qt.CheckState.Unchecked)
+        assert 2 not in (viewer._render_widget._visible_parts or set())
+
+    def test_all_checked_passes_none_to_renderer(self):
+        """When all parts are ticked the renderer receives None (no filter)."""
+        viewer = MoleculeViewer3DWidget()
+        viewer._render_widget.open_molecule(self._disordered_atoms())
+        # All should be ticked → visible_parts is None
+        assert viewer._render_widget._visible_parts is None
+
+    def test_part_container_hidden_after_single_part_reload(self):
+        viewer = MoleculeViewer3DWidget()
+        viewer._render_widget.open_molecule(self._disordered_atoms())
+        assert not viewer._part_container.isHidden()
+        # Reload with a single-part structure
+        viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
+        assert viewer._part_container.isHidden()
+

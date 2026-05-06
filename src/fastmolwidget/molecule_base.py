@@ -86,6 +86,14 @@ class MoleculeWidgetProtocol(Protocol):
         """Toggle hydrogen atom visibility."""
         ...
 
+    def set_visible_parts(self, parts: set[int] | None) -> None:
+        """Set which disorder parts are rendered.
+
+        :param parts: A set of part numbers to display, or ``None`` to show
+            all parts (no filtering).  An empty set hides every atom.
+        """
+        ...
+
     def set_bond_width(self, width: int) -> None:
         """Set the bond width (screen pixels or world-space scaling factor)."""
         ...

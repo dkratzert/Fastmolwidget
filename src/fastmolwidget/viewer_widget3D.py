@@ -20,6 +20,7 @@ from pathlib import Path
 
 from qtpy import QtGui, QtWidgets
 
+from fastmolwidget._part_combo import _CheckableComboBox
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule3D import MoleculeWidget3D
 
@@ -44,6 +45,10 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
     * **Bond Color** – button opening a color picker for all non-selected bonds.
     * **Reset Rotation Center** – restores the rotation pivot to the molecule's
       geometric centre (undoes a middle-click recentring).
+    * **Parts** *(Row 3, shown only when disorder parts are present)* –
+      a checkable combo box listing every disorder-part number found in the
+      loaded structure.  All parts are selected by default; unticking a part
+      hides those atoms and their bonds.
 
     The loader (:class:`~fastmolwidget.loader.MoleculeLoader`) is identical to
     the 2-D widget so all supported file formats (CIF, SHELX .res/.ins, XYZ)
@@ -101,6 +106,23 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._render_widget.set_bond_width(3)
         self._render_widget.show_labels(False)
 
+        # ── Part filter (Row 3) ───────────────────────────────────────────────
+        self._part_combo = _CheckableComboBox()
+        self._part_combo.setMinimumWidth(110)
+        self._part_combo.selectionChanged.connect(self._apply_part_filter)
+
+        self._part_container = QtWidgets.QWidget()
+        part_bar = QtWidgets.QHBoxLayout(self._part_container)
+        part_bar.setContentsMargins(0, 0, 0, 0)
+        part_bar.addWidget(QtWidgets.QLabel("Show Parts:"))
+        part_bar.addWidget(self._part_combo)
+        part_bar.addStretch()
+        self._part_container.hide()
+
+        # React to partsChanged from the renderer (also fires on programmatic
+        # open_molecule() calls from outside the viewer).
+        self._render_widget.partsChanged.connect(self._update_part_controls)
+
         # ── layout ───────────────────────────────────────────────────────────
         # Row 1: structure toggles
         control_bar = QtWidgets.QHBoxLayout()
@@ -126,6 +148,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         vl.addWidget(self._render_widget)
         vl.addLayout(control_bar)
         vl.addLayout(control_bar2)
+        vl.addWidget(self._part_container)
 
     # ------------------------------------------------------------------
     # Public API
@@ -184,6 +207,31 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
             self._grow_checkbox.blockSignals(False)
             self._loader.set_grow(False)
         self._loader.set_pack(checked)
+
+    def _update_part_controls(self, parts: frozenset[int]) -> None:
+        """Rebuild the Part combo whenever the renderer loads a new molecule.
+
+        Hides the Part row when only one unique part value exists (no disorder).
+        """
+        self._part_combo.clear_parts()
+        # Only show the row when there is actual disorder (more than one part).
+        if len(parts) <= 1:
+            self._part_container.hide()
+            return
+        for part in sorted(parts):
+            self._part_combo.add_part(part, checked=True)
+        self._part_container.show()
+        # All parts visible → pass None (skip per-atom set lookup in renderer).
+        self._render_widget.set_visible_parts(None)
+
+    def _apply_part_filter(self) -> None:
+        """Forward the current combo selection to the renderer."""
+        checked = set(self._part_combo.checked_values())
+        # Pass None when everything is ticked — avoids per-atom set lookup.
+        if checked == self._render_widget.available_parts:
+            self._render_widget.set_visible_parts(None)
+        else:
+            self._render_widget.set_visible_parts(checked)
 
     def _choose_bond_color(self) -> None:
         """Open a colour picker for the bond colour."""
