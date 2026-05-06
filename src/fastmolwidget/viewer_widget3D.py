@@ -25,7 +25,7 @@ from fastmolwidget.molecule3D import MoleculeWidget3D
 
 """
 TODO:
-
+* Hide distinct parts, e.g show only Part 0 and part 1.
 """
 
 
@@ -73,6 +73,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.setValue(3)
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
         self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
+        self._best_view_button = QtWidgets.QPushButton("Best View")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
 
@@ -90,6 +91,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.valueChanged.connect(self._render_widget.set_bond_width)
         self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._reset_center_button.clicked.connect(self._render_widget.reset_rotation_center)
+        self._best_view_button.clicked.connect(self._render_widget.align_best_view)
         self._open_file_button.clicked.connect(self._open_file_dialog)
         self._save_image_button.clicked.connect(self._save_image_dialog)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
@@ -116,6 +118,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._bond_width_spinbox)
         control_bar2.addWidget(self._bond_color_button)
         control_bar2.addWidget(self._reset_center_button)
+        control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
         control_bar2.addStretch()
 
@@ -212,8 +215,8 @@ if __name__ == "__main__":
 
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup
-    # w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
-    w.load_file('tests/test-data/p21c.cif')
+    w.load_file(Path(__file__).parent.parent.parent / "tests" / "test-data" / "p31c.cif")
+    # w.load_file('tests/test-data/p21c.cif')
     # w.load_file('tests/test-data/1000007.cif')
     # w.load_file('tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('tests/test-data/4060314.cif'))
@@ -227,6 +230,7 @@ if __name__ == "__main__":
     if args.cif_file:
         w.load_file(args.cif_file)
     w.show()
+    w._grow_checkbox.setChecked(True)
     #app.processEvents()
     w.showMaximized()
     app.exec()

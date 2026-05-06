@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 from qtpy import QtGui, QtWidgets
 
@@ -480,3 +481,98 @@ def test_drag_clears_hover_state_2d():
     assert widget.hovered_bond is None
     assert widget._hovered_bond_distance is None
     assert widget._hover_cursor is None
+
+
+# ------------------------------------------------------------------
+# align_best_view – 2D renderer
+# ------------------------------------------------------------------
+
+def test_align_best_view_is_rotation_matrix_2d():
+    """align_best_view() must produce a valid rotation matrix (det≈1, R@Rᵀ≈I)."""
+    widget = MoleculeWidget()
+    atoms = [
+        Atomtuple("C1", "C",  0.0,  0.0, 0.0, 0),
+        Atomtuple("C2", "C",  3.0,  0.0, 0.0, 0),
+        Atomtuple("C3", "C",  1.5,  2.0, 0.0, 0),
+        Atomtuple("C4", "C",  1.5,  1.0, 1.0, 0),
+        Atomtuple("O1", "O", -1.0, -1.0, 2.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    R = widget.cumulative_R.astype(np.float64)
+    np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-5)
+    np.testing.assert_allclose(np.linalg.det(R), 1.0, atol=1e-5)
+
+
+def test_align_best_view_planar_atoms_z_is_thin_direction_2d():
+    """For atoms in the XY plane the camera Z axis should align with original Z."""
+    widget = MoleculeWidget()
+    atoms = [
+        Atomtuple("C1", "C", -5.0,  0.0, 0.0, 0),
+        Atomtuple("C2", "C",  5.0,  0.0, 0.0, 0),
+        Atomtuple("C3", "C",  0.0,  5.0, 0.0, 0),
+        Atomtuple("C4", "C",  0.0, -5.0, 0.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    # Third row of cumulative_R is the camera Z direction;
+    # it must be roughly ±[0, 0, 1] because Z was already the thin axis.
+    z_camera = widget.cumulative_R[2]
+    assert abs(abs(z_camera[2]) - 1.0) < 1e-4
+
+
+def test_align_best_view_noop_on_empty_2d():
+    """align_best_view() must not crash or alter rotation on an empty widget."""
+    widget = MoleculeWidget()
+    widget.align_best_view()
+    np.testing.assert_array_equal(widget.cumulative_R, np.eye(3, dtype=np.float32))
+
+
+def test_align_best_view_noop_on_single_atom_2d():
+    """align_best_view() must leave rotation unchanged with only one atom."""
+    widget = MoleculeWidget()
+    widget.open_molecule([Atomtuple("C1", "C", 1.0, 2.0, 3.0, 0)])
+    widget.align_best_view()
+    np.testing.assert_array_equal(widget.cumulative_R, np.eye(3, dtype=np.float32))
+
+
+def test_align_best_view_hydrogen_filter_2d():
+    """When hydrogens are hidden, H atoms must not influence the PCA."""
+    widget = MoleculeWidget()
+    widget.show_hydrogens(False)
+
+    # Heavy atoms: flat in XY (no Z spread)
+    # H atoms: far out in Z – would distort PCA if included
+    atoms = [
+        Atomtuple("C1", "C", -5.0,  0.0,  0.0, 0),
+        Atomtuple("C2", "C",  5.0,  0.0,  0.0, 0),
+        Atomtuple("C3", "C",  0.0,  3.0,  0.0, 0),
+        Atomtuple("C4", "C",  0.0, -3.0,  0.0, 0),
+        Atomtuple("H1", "H",  0.0,  0.0, 20.0, 0),
+        Atomtuple("H2", "H",  0.0,  0.0,-20.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    # Z camera axis should match original Z (thin for heavy atoms only)
+    z_camera = widget.cumulative_R[2]
+    assert abs(abs(z_camera[2]) - 1.0) < 1e-4
+
+
+def test_align_best_view_coords_updated_2d():
+    """After align_best_view() the atom coordinates must reflect the new rotation."""
+    widget = MoleculeWidget()
+    atoms = [
+        Atomtuple("C1", "C",  0.0,  0.0, 0.0, 0),
+        Atomtuple("C2", "C",  4.0,  0.0, 0.0, 0),
+        Atomtuple("C3", "C",  2.0,  3.0, 0.0, 0),
+        Atomtuple("C4", "C",  2.0,  1.5, 2.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    coords_before = widget._coords_array.copy()
+    widget.align_best_view()
+    # Coordinates must have been rotated (i.e. are different now)
+    assert not np.allclose(widget._coords_array, coords_before)
+

@@ -1228,3 +1228,103 @@ def test_atom_labels_render_readable_glyphs_3d():
         f"reference glyph aspect {ref_aspect:.2f} — labels are not being "
         f"rendered as text."
     )
+
+
+# ------------------------------------------------------------------
+# align_best_view – 3D renderer
+# ------------------------------------------------------------------
+
+def test_align_best_view_is_rotation_matrix_3d():
+    """align_best_view() must yield a valid rotation matrix (det≈1, R@Rᵀ≈I)."""
+    widget = MoleculeWidget3D()
+    atoms = [
+        Atomtuple("C1", "C",  0.0,  0.0, 0.0, 0),
+        Atomtuple("C2", "C",  3.0,  0.0, 0.0, 0),
+        Atomtuple("C3", "C",  1.5,  2.0, 0.0, 0),
+        Atomtuple("C4", "C",  1.5,  1.0, 1.0, 0),
+        Atomtuple("O1", "O", -1.0, -1.0, 2.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    R = widget._rot_matrix.astype(np.float64)
+    np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-5)
+    np.testing.assert_allclose(np.linalg.det(R), 1.0, atol=1e-5)
+
+
+def test_align_best_view_planar_atoms_z_is_thin_direction_3d():
+    """For atoms in the XY plane the camera Z row must align with original Z."""
+    widget = MoleculeWidget3D()
+    atoms = [
+        Atomtuple("C1", "C", -5.0,  0.0, 0.0, 0),
+        Atomtuple("C2", "C",  5.0,  0.0, 0.0, 0),
+        Atomtuple("C3", "C",  0.0,  5.0, 0.0, 0),
+        Atomtuple("C4", "C",  0.0, -5.0, 0.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    z_camera = widget._rot_matrix[2]
+    assert abs(abs(z_camera[2]) - 1.0) < 1e-4
+
+
+def test_align_best_view_noop_on_empty_3d():
+    """align_best_view() must not crash or alter rotation on an empty widget."""
+    widget = MoleculeWidget3D()
+    widget.align_best_view()
+    np.testing.assert_array_equal(widget._rot_matrix, np.eye(3, dtype=np.float32))
+
+
+def test_align_best_view_noop_on_single_atom_3d():
+    """align_best_view() must leave rotation unchanged with a single atom."""
+    widget = MoleculeWidget3D()
+    widget.open_molecule([Atomtuple("C1", "C", 1.0, 2.0, 3.0, 0)])
+    widget.align_best_view()
+    np.testing.assert_array_equal(widget._rot_matrix, np.eye(3, dtype=np.float32))
+
+
+def test_align_best_view_hydrogen_filter_3d():
+    """H atoms must not influence PCA when show_hydrogens_flag is False."""
+    widget = MoleculeWidget3D()
+    widget.show_hydrogens(False)
+
+    # Heavy atoms: flat in XY (no Z spread)
+    # H atoms: far out in Z – would distort PCA if included
+    atoms = [
+        Atomtuple("C1", "C", -5.0,  0.0,  0.0, 0),
+        Atomtuple("C2", "C",  5.0,  0.0,  0.0, 0),
+        Atomtuple("C3", "C",  0.0,  3.0,  0.0, 0),
+        Atomtuple("C4", "C",  0.0, -3.0,  0.0, 0),
+        Atomtuple("H1", "H",  0.0,  0.0, 20.0, 0),
+        Atomtuple("H2", "H",  0.0,  0.0,-20.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    z_camera = widget._rot_matrix[2]
+    assert abs(abs(z_camera[2]) - 1.0) < 1e-4
+
+
+def test_align_best_view_in_protocol():
+    """MoleculeWidget3D must still satisfy MoleculeWidgetProtocol after adding align_best_view."""
+    widget = MoleculeWidget3D()
+    assert isinstance(widget, MoleculeWidgetProtocol)
+    assert hasattr(MoleculeWidgetProtocol, "align_best_view")
+
+
+def test_align_best_view_rot_matrix_changes_3d():
+    """After align_best_view() the rotation matrix must differ from identity."""
+    widget = MoleculeWidget3D()
+    # Atoms that are clearly tilted: main spread is along (1,1,1) diagonal
+    atoms = [
+        Atomtuple("C1", "C", -4.0, -4.0, -4.0, 0),
+        Atomtuple("C2", "C",  4.0,  4.0,  4.0, 0),
+        Atomtuple("C3", "C", -4.0,  0.0,  0.0, 0),
+        Atomtuple("C4", "C",  4.0,  0.0,  0.0, 0),
+    ]
+    widget.open_molecule(atoms)
+    widget.align_best_view()
+
+    # The rotation matrix must not equal the identity
+    assert not np.allclose(widget._rot_matrix, np.eye(3, dtype=np.float32), atol=1e-3)
+

@@ -251,6 +251,7 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 - **`setLabelFont(font_size: int)`** — set label font pixel size
 - **`set_background_color(color: QColor)`** — change background colour
 - **`reset_view()`** — reset zoom, rotation, and pan to defaults
+- **`align_best_view()`** — rotate the structure so the widest face points towards the viewer (PCA on visible atoms; H/D excluded when hydrogen visibility is off)
 - **`reset_rotation_center()`** — restore the rotation pivot to the molecule's geometric center (undoes a middle-click recentring)
 - **`save_image(filename: Path, image_scale: float = 1.5)`** — capture the current OpenGL framebuffer and write it to a PNG or JPEG file (format inferred from the file extension). The captured image is then scaled by `image_scale` using smooth bilinear filtering before saving. Labels appear in the saved image if they are active at the time of the call.
 
@@ -344,6 +345,9 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 - **`reset_view()`**  
   Reset zoom, pan, and rotation to their defaults.
+
+- **`align_best_view()`**  
+  Rotate the structure to the orientation that maximises atom visibility for screenshots.  Uses PCA on the currently visible atom positions: the thinnest axis of the atom cloud points towards the camera so the widest face faces the viewer.  Hydrogen / deuterium atoms are excluded when their visibility is turned off.
 
 - **`save_image(filename: Path, image_scale: float = 1.5)`**  
   Render the current structure view to an image file.  

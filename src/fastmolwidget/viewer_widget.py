@@ -59,6 +59,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_width_spinbox.setValue(3)
         self._bond_color_button = QtWidgets.QPushButton("Bond Color…")
         self._reset_center_button = QtWidgets.QPushButton("Reset Rotation Center")
+        self._best_view_button = QtWidgets.QPushButton("Best View")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
 
@@ -77,6 +78,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._bond_color_button.clicked.connect(self._choose_bond_color)
         self._open_file_button.clicked.connect(self._open_file_dialog)
         self._reset_center_button.clicked.connect(self._render_widget.reset_rotation_center)
+        self._best_view_button.clicked.connect(self._render_widget.align_best_view)
         self._save_image_button.clicked.connect(self._save_image_dialog)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
@@ -102,6 +104,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._bond_width_spinbox)
         control_bar2.addWidget(self._bond_color_button)
         control_bar2.addWidget(self._reset_center_button)
+        control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
         control_bar2.addStretch()
 
@@ -200,6 +203,7 @@ if __name__ == '__main__':
     #w.load_file('tests/test-data/p31c-finalcif.res')
     #w.load_file('tests/test-data/1548072_many_atoms.cif')
     w.load_file('tests/test-data/p21c.cif')
+    w._grow_checkbox.setChecked(True)
     w.show()
     w.showMaximized()
     app.exec()

@@ -124,6 +124,17 @@ class MoleculeWidgetProtocol(Protocol):
         """Reset zoom, rotation and pan to defaults."""
         ...
 
+    def align_best_view(self) -> None:
+        """Rotate the structure to the orientation that maximises atom visibility.
+
+        Uses PCA on the currently visible atom positions so that the direction
+        with the least spread points towards the camera (Z-axis) and the widest
+        face of the molecule faces the viewer.  Hydrogen / deuterium atoms are
+        excluded when ``show_hydrogens_flag`` is ``False``.  No-op when fewer
+        than two visible atoms are loaded.
+        """
+        ...
+
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
         """Render the current view to an image file."""
         ...

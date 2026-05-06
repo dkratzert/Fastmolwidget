@@ -1791,6 +1791,56 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.cumulative_R = target_R
         self.update()
 
+    def align_best_view(self) -> None:
+        """Rotate the structure to the orientation that maximises atom visibility.
+
+        Uses PCA (Principal Component Analysis) on the currently visible atom
+        positions.  The eigenvector with the **smallest** eigenvalue (the axis
+        along which the cloud is thinnest) is mapped to the camera Z-axis so
+        that the widest face of the molecule points towards the viewer.
+
+        Hydrogen / deuterium atoms are excluded from the PCA when
+        ``show_hydrogens_flag`` is ``False``.  Does nothing when fewer than
+        two visible atoms are loaded.
+        """
+        if not self.atoms:
+            return
+
+        # --- collect visible atom positions ------------------------------
+        if self.show_hydrogens_flag:
+            visible_coords = np.array([a.center for a in self.atoms], dtype=np.float64)
+        else:
+            visible_coords = np.array(
+                [a.center for a in self.atoms if a.type_ not in ('H', 'D')],
+                dtype=np.float64,
+            )
+        if len(visible_coords) < 2:
+            return
+
+        # --- PCA on centred coordinates ----------------------------------
+        centred = visible_coords - visible_coords.mean(axis=0)
+        cov = centred.T @ centred  # 3×3 scatter matrix
+
+        evals, evecs = np.linalg.eigh(cov)  # eigenvalues ascending, evecs as columns
+
+        # Sort descending: largest variance → X, smallest → Z (towards viewer)
+        order = np.argsort(evals)[::-1]
+        evecs = evecs[:, order]
+
+        x_axis = evecs[:, 0].astype(np.float32)
+        y_axis = evecs[:, 1].astype(np.float32)
+        z_axis = evecs[:, 2].astype(np.float32)
+
+        # Enforce right-handed coordinate system
+        if np.dot(np.cross(x_axis, y_axis), z_axis) < 0:
+            z_axis = -z_axis
+
+        target_R = np.array([x_axis, y_axis, z_axis], dtype=np.float32)
+
+        self._rot_matrix = target_R
+        self.cumulative_R = target_R
+        self.update()
+
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         """Handle key-press events for reciprocal-axis alignment."""
         if event.key() == Qt.Key.Key_F1:
