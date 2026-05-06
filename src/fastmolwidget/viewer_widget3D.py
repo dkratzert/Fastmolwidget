@@ -147,6 +147,21 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         """
         self._loader.load_file(filename)
 
+    def grow(self) -> None:
+        """Grow the current structure to complete molecules.
+
+        Expands the asymmetric unit using crystal symmetry (SDM algorithm).
+        Deactivates Pack Unit Cell if it is currently enabled.
+        No-op when no file has been loaded or the file has no symmetry (XYZ).
+        """
+        if self._pack_checkbox.isChecked():
+            self._pack_checkbox.blockSignals(True)
+            self._pack_checkbox.setChecked(False)
+            self._pack_checkbox.blockSignals(False)
+            self._loader.set_pack(False)
+        self._grow_checkbox.setChecked(True)
+        self._loader.set_grow(True)
+
     def set_bond_color(self,
                        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int]) -> None:
         """Set the default colour used for non-selected 3-D bonds."""
@@ -230,7 +245,7 @@ if __name__ == "__main__":
     if args.cif_file:
         w.load_file(args.cif_file)
     w.show()
-    w._grow_checkbox.setChecked(True)
+    w.grow()
     #app.processEvents()
     w.showMaximized()
     app.exec()

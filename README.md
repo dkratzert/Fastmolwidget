@@ -200,6 +200,7 @@ Both viewers expose the same two-row control bar:
 A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
 
 - `load_file(path)` — load a structure file (format auto-detected from extension: `.cif`, `.res`, `.ins`, `.xyz`)
+- `grow()` — expand the asymmetric unit to complete molecules using crystal symmetry; deactivates Pack Unit Cell if active; no-op for XYZ files or when no file is loaded
 - `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget3D`
 
@@ -287,6 +288,7 @@ layout.addWidget(mol)
 A self-contained 2D viewer combining `MoleculeWidget` with the control bar.
 
 - `load_file(path)` — load a structure file (format auto-detected from extension)
+- `grow()` — expand the asymmetric unit to complete molecules using crystal symmetry; deactivates Pack Unit Cell if active; no-op for XYZ files or when no file is loaded
 - `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget`
 

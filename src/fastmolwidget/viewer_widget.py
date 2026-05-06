@@ -134,6 +134,21 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         """
         self._loader.load_file(filename)
 
+    def grow(self) -> None:
+        """Grow the current structure to complete molecules.
+
+        Expands the asymmetric unit using crystal symmetry (SDM algorithm).
+        Deactivates Pack Unit Cell if it is currently enabled.
+        No-op when no file has been loaded or the file has no symmetry (XYZ).
+        """
+        if self._pack_checkbox.isChecked():
+            self._pack_checkbox.blockSignals(True)
+            self._pack_checkbox.setChecked(False)
+            self._pack_checkbox.blockSignals(False)
+            self._loader.set_pack(False)
+        self._grow_checkbox.setChecked(True)
+        self._loader.set_grow(True)
+
     def set_bond_color(
         self,
         color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
@@ -199,11 +214,12 @@ if __name__ == '__main__':
         app = QtWidgets.QApplication([])
 
     w = MoleculeViewerWidget()
-    #w.load_file('tests/test-data/p31c.cif')
+    w.load_file('tests/test-data/p31c.cif')
     #w.load_file('tests/test-data/p31c-finalcif.res')
     #w.load_file('tests/test-data/1548072_many_atoms.cif')
-    w.load_file('tests/test-data/p21c.cif')
-    w._grow_checkbox.setChecked(True)
+    #w.load_file('tests/test-data/p21c.cif')
+    w.grow()
+    w._reset_center_button.click()
     w.show()
     w.showMaximized()
     app.exec()
