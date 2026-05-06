@@ -33,7 +33,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
     * **Hide Hydrogens** – toggle hydrogen visibility.
     * **Bond Width** – spinbox controlling bond width (second row).
     * **Bond Color** – button opening a color picker for all non-selected bonds (second row).
-    * **Parts** *(Row 3, shown only when disorder parts are present)* –
+    * **Parts** *(inline in Row 1, after Hide Hydrogens, shown only when disorder parts are present)* –
       a checkable combo box listing every disorder-part number found in the
       loaded structure.  All parts are selected by default; unticking a part
       hides those atoms and their bonds.
@@ -98,11 +98,14 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._part_combo.selectionChanged.connect(self._apply_part_filter)
 
         self._part_container = QtWidgets.QWidget()
+        self._part_container.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         part_bar = QtWidgets.QHBoxLayout(self._part_container)
         part_bar.setContentsMargins(0, 0, 0, 0)
         part_bar.addWidget(QtWidgets.QLabel("Show Parts:"))
         part_bar.addWidget(self._part_combo)
-        part_bar.addStretch()
         self._part_container.hide()
 
         self._render_widget.partsChanged.connect(self._update_part_controls)
@@ -126,13 +129,13 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._reset_center_button)
         control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
+        control_bar2.addWidget(self._part_container)
         control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
         vl.addWidget(self._render_widget)
         vl.addLayout(control_bar)
         vl.addLayout(control_bar2)
-        vl.addWidget(self._part_container)
 
     # ------------------------------------------------------------------
     # Public API
