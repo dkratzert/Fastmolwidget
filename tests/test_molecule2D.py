@@ -651,7 +651,7 @@ def test_2d_viewer_part_container_hidden_when_no_disorder():
     from fastmolwidget.viewer_widget import MoleculeViewerWidget
     viewer = MoleculeViewerWidget()
     viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
-    assert viewer._part_container.isHidden()
+    assert viewer._part_widget.isHidden()
 
 
 def test_2d_viewer_part_container_shown_for_disordered_structure():
@@ -662,7 +662,7 @@ def test_2d_viewer_part_container_shown_for_disordered_structure():
         Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
         Atomtuple("C3", "C", 3.0, 0.0, 0.0, 2),
     ])
-    assert not viewer._part_container.isHidden()
+    assert not viewer._part_widget.isHidden()
 
 
 def test_2d_viewer_combo_all_parts_checked_by_default():
@@ -672,7 +672,7 @@ def test_2d_viewer_combo_all_parts_checked_by_default():
         Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
         Atomtuple("C2", "C", 1.5, 0.0, 0.0, 1),
     ])
-    assert viewer._part_combo.checked_values() == [0, 1]
+    assert viewer._part_widget.checked_values() == [0, 1]
 
 
 def test_2d_viewer_all_checked_passes_none_to_renderer():
