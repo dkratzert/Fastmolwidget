@@ -246,7 +246,7 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 - **`show_labels(value: bool)`** — show / hide atom labels
 - **`show_hydrogens(value: bool)`** — show / hide hydrogen atoms and bonds
 - **`set_visible_parts(parts: set[int] | None)`** — filter by disorder part; `None` shows all atoms; an empty set hides all atoms; e.g. `set_visible_parts({0, 1})` shows only Part 0 and Part 1
-- **`set_bond_width(width: int)`** — set cylinder radius scale (1–15)
+- **`set_bond_width(width: int)`** — set cylinder radius scale (0–15)
 - **`set_bond_color(color)`** — set the default color for non-selected bonds; accepts `QColor`, hex string, or an RGB tuple
 - **`set_labels_visible(visible: bool)`** — alias for `show_labels`
 - **`setLabelFont(font_size: int)`** — set label font pixel size
