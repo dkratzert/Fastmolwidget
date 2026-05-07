@@ -1588,11 +1588,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
             self.atoms.append(a3d)
 
+        self.connections = self._get_conntable()
+
         self.available_parts = frozenset(a.part for a in self.atoms)
         self._visible_parts = None
-        self.partsChanged.emit(self.available_parts)
-
-        self.connections = self._get_conntable()
 
         if not keep_view:
             self._compute_molecule_bounds()
@@ -1608,6 +1607,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         self._build_geometry()
         self.update()
+
+        # Emit after geometry is fully built so signal handlers (e.g.
+        # _update_part_controls → set_visible_parts) won't trigger a
+        # redundant _build_geometry() with stale state.
+        self.partsChanged.emit(self.available_parts)
 
     def _compute_molecule_bounds(self) -> None:
         """Compute the bounding sphere of the current atom set."""
@@ -1744,6 +1748,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         :param parts: A set of part numbers to display, or ``None`` to show
             all parts (no filtering).  An empty set hides every atom.
         """
+        if parts == self._visible_parts:
+            return
         self._visible_parts = parts
         if self.atoms:
             self._build_geometry()

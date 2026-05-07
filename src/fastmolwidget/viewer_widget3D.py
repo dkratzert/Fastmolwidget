@@ -185,7 +185,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
             self._pack_checkbox.setChecked(False)
             self._pack_checkbox.blockSignals(False)
             self._loader.set_pack(False)
+        self._grow_checkbox.blockSignals(True)
         self._grow_checkbox.setChecked(True)
+        self._grow_checkbox.blockSignals(False)
         self._loader.set_grow(True)
 
     def set_bond_color(self,
@@ -286,14 +288,14 @@ if __name__ == "__main__":
     # w.load_file('tests/test-data/1000007.cif')
     # w.load_file('tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('tests/test-data/4060314.cif'))
-    # w.load_file(Path('tests/test-data/1979688_small.cif'))
+    w.load_file(Path('tests/test-data/1979688_small.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1367_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1368_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1369_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1370_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1371_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1372_ESM.cif'))
-    w.load_file(Path('tests/test-data/IKmjs421_2_0m_sump.res'))
+    # w.load_file(Path('tests/test-data/IKmjs421_2_0m_sump.res'))
     if args.cif_file:
         w.load_file(args.cif_file)
     w.show()

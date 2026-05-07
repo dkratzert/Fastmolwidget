@@ -170,7 +170,9 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
             self._pack_checkbox.setChecked(False)
             self._pack_checkbox.blockSignals(False)
             self._loader.set_pack(False)
+        self._grow_checkbox.blockSignals(True)
         self._grow_checkbox.setChecked(True)
+        self._grow_checkbox.blockSignals(False)
         self._loader.set_grow(True)
 
     def set_bond_color(
