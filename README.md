@@ -231,7 +231,7 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
   Load a new set of atoms and redraw.
     - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` directly in the tuple for anisotropic atoms
     - `cell` — optional `(a, b, c, α, β, γ)` tuple; required for ADP rendering
-    - `adps` — optional mapping of `label -> (U11, U22, U33, U23, U13, U12)` for anisotropic displacement parameters
+    - `adps` — optional legacy mapping of `label -> (U11, U22, U33, U23, U13, U12)` kept for API compatibility; current loading paths provide ADPs via each atom’s embedded `adp` field
     - `keep_view` — preserve current zoom, rotation, and pan when `True`
 
 - **`grow_molecule(atoms, cell=None)`**  
@@ -306,7 +306,7 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
   Load a new set of atoms and reset (or optionally preserve) the view.
     - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` for anisotropic atoms
     - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering
-    - `adps` — optional mapping of `label -> (U11, U22, U33, U23, U13, U12)` for anisotropic displacement parameters
+    - `adps` — optional legacy mapping of `label -> (U11, U22, U33, U23, U13, U12)` kept for API compatibility; current loading paths provide ADPs via each atom’s embedded `adp` field
     - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
 
 - **`grow_molecule(atoms, cell=None)`**  
