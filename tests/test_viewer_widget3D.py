@@ -1395,23 +1395,23 @@ class TestViewerPartControls3D:
     def test_part_container_hidden_when_no_disorder(self):
         viewer = MoleculeViewer3DWidget()
         viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
-        assert viewer._part_container.isHidden()
+        assert viewer._part_widget.isHidden()
 
     def test_part_container_shown_when_disorder_present(self):
         viewer = MoleculeViewer3DWidget()
         viewer._render_widget.open_molecule(self._disordered_atoms())
-        assert not viewer._part_container.isHidden()
+        assert not viewer._part_widget.isHidden()
 
     def test_combo_has_correct_items(self):
         viewer = MoleculeViewer3DWidget()
         viewer._render_widget.open_molecule(self._disordered_atoms())
-        assert viewer._part_combo.checked_values() == [0, 1, 2]
+        assert viewer._part_widget.checked_values() == [0, 1, 2]
 
     def test_unchecking_part_calls_set_visible_parts(self):
         viewer = MoleculeViewer3DWidget()
         viewer._render_widget.open_molecule(self._disordered_atoms())
         # Simulate unticking Part 2 (index 2 in the model).
-        item = viewer._part_combo.model().item(2)
+        item = viewer._part_widget._combo.model().item(2)
         from qtpy.QtCore import Qt
         item.setCheckState(Qt.CheckState.Unchecked)
         assert 2 not in (viewer._render_widget._visible_parts or set())
@@ -1426,8 +1426,8 @@ class TestViewerPartControls3D:
     def test_part_container_hidden_after_single_part_reload(self):
         viewer = MoleculeViewer3DWidget()
         viewer._render_widget.open_molecule(self._disordered_atoms())
-        assert not viewer._part_container.isHidden()
+        assert not viewer._part_widget.isHidden()
         # Reload with a single-part structure
         viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
-        assert viewer._part_container.isHidden()
+        assert viewer._part_widget.isHidden()
 

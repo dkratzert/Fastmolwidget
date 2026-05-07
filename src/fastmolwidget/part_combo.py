@@ -141,3 +141,110 @@ class _CheckableComboBox(QtWidgets.QComboBox):
         if le is not None:
             le.setText(text)
 
+
+class PartFilterWidget(QtWidgets.QWidget):
+    """A label + checkable combo box for disorder-part filtering.
+
+    Wraps :class:`_CheckableComboBox` together with a descriptive label into
+    a single :class:`~qtpy.QtWidgets.QWidget` that shows/hides itself
+    automatically depending on how many distinct parts are present.
+
+    Parameters
+    ----------
+    label:
+        Text shown to the left of the combo box. Defaults to ``"Show Parts:"``.
+    min_combo_width:
+        Minimum width (pixels) for the combo box.  When ``None`` (default)
+        the width is derived from the rendered size of the label text
+        ``"All Parts"`` plus room for the drop-down arrow, so the button
+        face never clips its content.
+    parent:
+        Optional parent widget.
+
+    Signals
+    -------
+    selectionChanged
+        Re-emitted from the inner :class:`_CheckableComboBox` whenever a
+        checked state changes.
+
+    Usage::
+
+        widget = PartFilterWidget()
+        widget.selectionChanged.connect(lambda: do_something(widget.checked_values()))
+        layout.addWidget(widget)
+
+        # When a new molecule is loaded, call:
+        widget.update_parts(frozenset({0, 1, 2}))
+    """
+
+    #: Emitted whenever a checked state changes inside the combo.
+    selectionChanged = QtCore.Signal()
+
+    def __init__(
+        self,
+        label: str = "Show Parts:",
+        *,
+        min_combo_width: int | None = None,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+
+        self._combo = _CheckableComboBox()
+        self._combo.selectionChanged.connect(self.selectionChanged)
+
+        if min_combo_width is None:
+            # Derive the minimum width from the widest default label text
+            # ("All Parts") so the button face is never clipped.
+            fm = self._combo.fontMetrics()
+            # Arrow-button width from the current Qt style; fall back to 28 px.
+            try:
+                arrow_w: int = self._combo.style().pixelMetric(
+                    QtWidgets.QStyle.PixelMetric.PM_ScrollBarExtent  # type: ignore[attr-defined]
+                )
+            except AttributeError:
+                arrow_w = 28
+            min_combo_width = fm.horizontalAdvance("All Parts") + arrow_w + 8
+        self._combo.setMinimumWidth(min_combo_width)
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QtWidgets.QLabel(label))
+        layout.addWidget(self._combo)
+
+        # Hidden until update_parts() reveals disorder.
+        self.hide()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def update_parts(self, parts: frozenset[int]) -> None:
+        """Rebuild the combo from *parts* and show/hide the widget.
+
+        - If *parts* has **≤ 1** element the widget hides itself.
+        - Otherwise each part number is added as a checked item and the
+          widget becomes visible.
+
+        Parameters
+        ----------
+        parts:
+            The set of distinct disorder-part integers from the current
+            molecule.
+        """
+        self._combo.clear_parts()
+        if len(parts) <= 1:
+            self.hide()
+            return
+        for part in sorted(parts):
+            self._combo.add_part(part, checked=True)
+        self.show()
+
+    def checked_values(self) -> list[int]:
+        """Return part numbers whose checkbox is currently ticked."""
+        return self._combo.checked_values()
+

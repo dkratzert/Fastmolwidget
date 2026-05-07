@@ -16,7 +16,7 @@ from pathlib import Path
 
 from qtpy import QtGui, QtWidgets
 
-from fastmolwidget._part_combo import _CheckableComboBox
+from fastmolwidget.part_combo import PartFilterWidget
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule2D import MoleculeWidget
 
@@ -93,20 +93,8 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._render_widget.show_labels(False)
 
         # ── Part filter (Row 3) ───────────────────────────────────────────────
-        self._part_combo = _CheckableComboBox()
-        self._part_combo.setMinimumWidth(110)
-        self._part_combo.selectionChanged.connect(self._apply_part_filter)
-
-        self._part_container = QtWidgets.QWidget()
-        self._part_container.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        part_bar = QtWidgets.QHBoxLayout(self._part_container)
-        part_bar.setContentsMargins(0, 0, 0, 0)
-        part_bar.addWidget(QtWidgets.QLabel("Show Parts:"))
-        part_bar.addWidget(self._part_combo)
-        self._part_container.hide()
+        self._part_widget = PartFilterWidget()
+        self._part_widget.selectionChanged.connect(self._apply_part_filter)
 
         self._render_widget.partsChanged.connect(self._update_part_controls)
 
@@ -129,7 +117,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._reset_center_button)
         control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
-        control_bar2.addWidget(self._part_container)
+        control_bar2.addWidget(self._part_widget)
         control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
@@ -202,18 +190,13 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
 
     def _update_part_controls(self, parts: frozenset[int]) -> None:
         """Rebuild the Part combo whenever the renderer loads a new molecule."""
-        self._part_combo.clear_parts()
-        if len(parts) <= 1:
-            self._part_container.hide()
-            return
-        for part in sorted(parts):
-            self._part_combo.add_part(part, checked=True)
-        self._part_container.show()
-        self._render_widget.set_visible_parts(None)
+        self._part_widget.update_parts(parts)
+        if len(parts) > 1:
+            self._render_widget.set_visible_parts(None)
 
     def _apply_part_filter(self) -> None:
         """Forward the current combo selection to the renderer."""
-        checked = set(self._part_combo.checked_values())
+        checked = set(self._part_widget.checked_values())
         if checked == self._render_widget.available_parts:
             self._render_widget.set_visible_parts(None)
         else:

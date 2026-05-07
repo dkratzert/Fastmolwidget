@@ -20,7 +20,7 @@ from pathlib import Path
 
 from qtpy import QtGui, QtWidgets
 
-from fastmolwidget._part_combo import _CheckableComboBox
+from fastmolwidget.part_combo import PartFilterWidget
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule3D import MoleculeWidget3D
 
@@ -107,20 +107,8 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._render_widget.show_labels(False)
 
         # ── Part filter (Row 3) ───────────────────────────────────────────────
-        self._part_combo = _CheckableComboBox()
-        self._part_combo.setMinimumWidth(110)
-        self._part_combo.selectionChanged.connect(self._apply_part_filter)
-
-        self._part_container = QtWidgets.QWidget()
-        self._part_container.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Preferred,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        part_bar = QtWidgets.QHBoxLayout(self._part_container)
-        part_bar.setContentsMargins(0, 0, 0, 0)
-        part_bar.addWidget(QtWidgets.QLabel("Show Parts:"))
-        part_bar.addWidget(self._part_combo)
-        self._part_container.hide()
+        self._part_widget = PartFilterWidget()
+        self._part_widget.selectionChanged.connect(self._apply_part_filter)
 
         # React to partsChanged from the renderer (also fires on programmatic
         # open_molecule() calls from outside the viewer).
@@ -145,7 +133,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._reset_center_button)
         control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
-        control_bar2.addWidget(self._part_container)
+        control_bar2.addWidget(self._part_widget)
         control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
@@ -218,20 +206,14 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
 
         Hides the Part row when only one unique part value exists (no disorder).
         """
-        self._part_combo.clear_parts()
-        # Only show the row when there is actual disorder (more than one part).
-        if len(parts) <= 1:
-            self._part_container.hide()
-            return
-        for part in sorted(parts):
-            self._part_combo.add_part(part, checked=True)
-        self._part_container.show()
+        self._part_widget.update_parts(parts)
         # All parts visible → pass None (skip per-atom set lookup in renderer).
-        self._render_widget.set_visible_parts(None)
+        if len(parts) > 1:
+            self._render_widget.set_visible_parts(None)
 
     def _apply_part_filter(self) -> None:
         """Forward the current combo selection to the renderer."""
-        checked = set(self._part_combo.checked_values())
+        checked = set(self._part_widget.checked_values())
         # Pass None when everything is ticked — avoids per-atom set lookup.
         if checked == self._render_widget.available_parts:
             self._render_widget.set_visible_parts(None)
