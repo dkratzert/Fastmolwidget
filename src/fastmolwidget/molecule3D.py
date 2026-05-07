@@ -324,7 +324,6 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.connections: tuple = ()
         self._cell: tuple[float, ...] | None = None
         self._is_packed: bool = False
-        self._adp_map: dict = {}
         self._astar: float = 0.0
         self._bstar: float = 0.0
         self._cstar: float = 0.0
@@ -1554,13 +1553,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             else:
                 a3d.symmgen = False
 
-            if self._adp_map and self._cell and base_name in self._adp_map:
+            adp_vals = getattr(at, "adp", None)
+            if adp_vals is not None and self._cell:
                 try:
-                    uvals = self._adp_map[base_name]
-                    symm = getattr(at, "symm_matrix", None)
-                    if symm is not None:
-                        symm = np.array(symm, dtype=float)
-                    a3d.u_cart = self._uij_to_cart(uvals, symm)
+                    symm_arr = np.array(symm, dtype=float) if symm is not None else None
+                    a3d.u_cart = self._uij_to_cart(adp_vals, symm_arr)
                     a3d.u_iso = float(np.trace(a3d.u_cart) / 3.0)
                     evals, evecs = np.linalg.eigh(a3d.u_cart)
                     a3d.u_eigvals = evals

@@ -467,13 +467,12 @@ class MoleculeWidget(QtWidgets.QWidget):
                 a.symmgen = not np.allclose(symm_np, np.eye(3))
             else:
                 a.symmgen = False
-            if self._adp_map and self._cell and base_name in self._adp_map:
+            adp_vals = getattr(at, 'adp', None)
+            if adp_vals is not None and self._cell:
                 try:
-                    uvals = self._adp_map[base_name]
-                    symm_matrix = getattr(at, 'symm_matrix', None)
                     if symm_matrix is not None:
                         symm_matrix = np.array(symm_matrix, dtype=float)
-                    a.u_cart = self._uij_to_cart(uvals, symm_matrix)
+                    a.u_cart = self._uij_to_cart(adp_vals, symm_matrix)
                     a.u_iso = np.trace(a.u_cart) / 3.0
                 except Exception:
                     a.u_cart = None

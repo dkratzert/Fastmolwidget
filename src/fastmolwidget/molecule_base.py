@@ -11,7 +11,7 @@ Usage::
     from fastmolwidget.molecule2D import MoleculeWidget
 
     def render(widget: MoleculeWidgetProtocol) -> None:
-        widget.open_molecule(atoms, cell=cell, adps=adps)
+        widget.open_molecule(atoms, cell=cell)
 
 """
 

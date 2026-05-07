@@ -50,12 +50,13 @@ def test_adp_intersection_line_width_scales_with_zoom():
 
 
 def test_molecule_widget_with_cif():
-    cif = CifReader(data / '1979688_small.cif')
-    adp_dict = {dp.label: (dp.U11, dp.U22, dp.U33, dp.U23, dp.U13, dp.U12) for dp in cif.displacement_parameters()}
+    from fastmolwidget.loader import MoleculeLoader
+    from fastmolwidget.molecule2D import MoleculeWidget as _MW
 
-    widget = MoleculeWidget()
+    widget = _MW()
     widget.resize(800, 600)
-    widget.open_molecule(list(cif.atoms_orth), cif.cell[:6], adp_dict)
+    loader = MoleculeLoader(widget)
+    loader.load_file(data / '1979688_small.cif')
     widget.show()
 
     assert len(widget.atoms) == 94

@@ -18,11 +18,10 @@ Example usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Generator
 
 from shelxfile import Shelxfile
 
-from fastmolwidget.cif.cif_file_io import CifReader, adp
+from fastmolwidget.cif.cif_file_io import CifReader
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.sdm import Atomtuple
 from fastmolwidget.tools import to_float
@@ -135,16 +134,26 @@ class MoleculeLoader:
     def _load_cif(self, path: Path, *, keep_view: bool = False) -> None:
         """Load a CIF file using :class:`CifReader`."""
         cif = CifReader(path)
+        adp_by_label: dict[str, tuple] = {
+            dp.label: (
+                to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+                to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
+            )
+            for dp in cif.displacement_parameters()
+        }
         if self._pack_enabled:
             atoms = self._compute_packed_atoms_cif(cif, self._pack_symmop_indices)
         elif self._grow_enabled:
             atoms = self._compute_grown_atoms(cif)
         else:
-            atoms = list(cif.atoms_orth)
+            atoms = [
+                Atomtuple(label=at.label, type=at.type, x=at.x, y=at.y, z=at.z,
+                          part=at.part, adp=adp_by_label.get(at.label))
+                for at in cif.atoms_orth
+            ]
         self._widget.open_molecule(
             atoms=atoms,
             cell=cif.cell[:6],
-            adps=self._load_adps_from_cif(cif.displacement_parameters()),
             keep_view=keep_view,
         )
         self._widget._is_packed = self._pack_enabled
@@ -168,9 +177,17 @@ class MoleculeLoader:
         """
         from fastmolwidget.sdm import SDM
 
+        adp_by_label: dict[str, tuple] = {
+            dp.label: (
+                to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+                to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
+            )
+            for dp in cif.displacement_parameters()
+        }
         fract_atoms = list(cif.atoms_fract)
         sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
-        return sdm.pack_unit_cell(symmop_indices=symmop_indices)
+        cart_atoms = sdm.pack_unit_cell(symmop_indices=symmop_indices)
+        return [at._replace(adp=adp_by_label.get(at.label)) for at in cart_atoms]
 
     @staticmethod
     def _compute_grown_atoms(cif: CifReader) -> list:
@@ -178,7 +195,8 @@ class MoleculeLoader:
 
         Reads fractional-coordinate atoms, runs the Shortest Distance Matrix
         algorithm with the CIF's symmetry operators, and returns the packed
-        Cartesian-coordinate atom list.
+        Cartesian-coordinate atom list.  ADPs are re-attached from the CIF
+        displacement parameters after growing.
 
         :param cif: The parsed CIF to grow.
         :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
@@ -187,32 +205,19 @@ class MoleculeLoader:
         """
         from fastmolwidget.sdm import SDM
 
+        adp_by_label: dict[str, tuple] = {
+            dp.label: (
+                to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
+                to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
+            )
+            for dp in cif.displacement_parameters()
+        }
         # SDM.calc_molindex mutates the atom lists in place – pass a fresh copy
         fract_atoms = list(cif.atoms_fract)
         sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
         need_symm = sdm.calc_sdm()
-        return sdm.packer(sdm, need_symm)
-
-    @staticmethod
-    def _load_adps_from_cif(
-        adps: Generator[adp, Any, None],
-    ) -> dict[str, tuple[float, float, float, float, float, float]]:
-        """Convert a generator of CIF displacement parameters into the ADP
-        mapping expected by :meth:`MoleculeWidget.open_molecule`.
-
-        :param adps: Generator of :class:`~fastmolwidget.cif.cif_file_io.adp`
-            named-tuples produced by
-            :meth:`~fastmolwidget.cif.cif_file_io.CifReader.displacement_parameters`.
-        :returns: A dict mapping atom labels to ``(U11, U22, U33, U23, U13,
-            U12)`` tuples of floats.
-        """
-        adp_dict: dict[str, tuple[float, float, float, float, float, float]] = {}
-        for dp in adps:
-            adp_dict[dp.label] = (
-                to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
-                to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
-            )
-        return adp_dict
+        cart_atoms = sdm.packer(sdm, need_symm)
+        return [at._replace(adp=adp_by_label.get(at.label)) for at in cart_atoms]
 
     # ------------------------------------------------------------------
     # SHELX .res / .ins loading
@@ -221,19 +226,19 @@ class MoleculeLoader:
     def _load_shelx(self, path: Path, *, keep_view: bool = False) -> None:
         """Load a SHELX instruction (.res / .ins) file using the
         :mod:`shelxfile` library."""
-        atoms, cell, adps = self._parse_shelx(path)
+        atoms, cell = self._parse_shelx(path)
         if self._pack_enabled:
             atoms = self._compute_packed_atoms_shelx(path, self._pack_symmop_indices)
         elif self._grow_enabled:
             atoms = self._compute_grown_atoms_shelx(path)
-        self._widget.open_molecule(atoms=atoms, cell=cell, adps=adps,
-                                   keep_view=keep_view)
+        self._widget.open_molecule(atoms=atoms, cell=cell, keep_view=keep_view)
         self._widget._is_packed = self._pack_enabled
 
     @staticmethod
     def _compute_grown_atoms_shelx(path: Path) -> list:
         """Expand the asymmetric unit of a SHELX file to complete molecules
         via the SDM, analogous to :meth:`_compute_grown_atoms` for CIF files.
+        ADPs are re-attached by (label, part) after growing.
 
         :param path: Path to the SHELX ``.res`` / ``.ins`` file.
         :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
@@ -249,6 +254,7 @@ class MoleculeLoader:
             shx.cell.alpha, shx.cell.beta, shx.cell.gamma,
         )
 
+        adp_by_lp: dict[tuple, tuple] = {}
         # Build fractional-coordinate atom lists (mutable – SDM mutates them)
         fract_atoms: list[list] = []
         for at in shx.atoms:
@@ -258,19 +264,21 @@ class MoleculeLoader:
             fract_atoms.append(
                 [at.name, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
+            if not at.is_isotropic:
+                u11, u22, u33, u23, u13, u12 = at.uvals
+                adp_by_lp[(at.name, at.part.n)] = (u11, u22, u33, u23, u13, u12)
 
         # Collect symmetry operations as comma-separated strings (skip identity)
-        symmops: list[str] = []
-        for s in shx.symmcards:
-            op_str = s.to_shelxl()
-            # SDM already includes identity; only add non-identity ops
-            symmops.append(op_str)
-
+        symmops: list[str] = [s.to_shelxl() for s in shx.symmcards]
         centric = shx.latt.centric if shx.latt else False
 
         sdm = SDM(fract_atoms, symmops, cell_params, centric=centric)
         need_symm = sdm.calc_sdm()
-        return sdm.packer(sdm, need_symm)
+        cart_atoms = sdm.packer(sdm, need_symm)
+        return [
+            at._replace(adp=adp_by_lp.get((at.label, at.part)))
+            for at in cart_atoms
+        ]
 
     @staticmethod
     def _compute_packed_atoms_shelx(
@@ -282,6 +290,7 @@ class MoleculeLoader:
         Applies all (or selected) symmetry operations to the fractional-
         coordinate atoms and folds every position back into [0, 1).
         Near-duplicate positions are discarded automatically.
+        ADPs are re-attached by (label, part) after packing.
 
         :param path: Path to the SHELX ``.res`` / ``.ins`` file.
         :param symmop_indices: Optional subset of 0-based symmetry-operation
@@ -299,6 +308,7 @@ class MoleculeLoader:
             shx.cell.alpha, shx.cell.beta, shx.cell.gamma,
         )
 
+        adp_by_lp: dict[tuple, tuple] = {}
         fract_atoms: list[list] = []
         for at in shx.atoms:
             if at.qpeak:
@@ -307,12 +317,19 @@ class MoleculeLoader:
             fract_atoms.append(
                 [at.name, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
+            if not at.is_isotropic:
+                u11, u22, u33, u23, u13, u12 = at.uvals
+                adp_by_lp[(at.name, at.part.n)] = (u11, u22, u33, u23, u13, u12)
 
         symmops: list[str] = [s.to_shelxl() for s in shx.symmcards]
         centric = shx.latt.centric if shx.latt else False
 
         sdm = SDM(fract_atoms, symmops, cell_params, centric=centric)
-        return sdm.pack_unit_cell(symmop_indices=symmop_indices)
+        cart_atoms = sdm.pack_unit_cell(symmop_indices=symmop_indices)
+        return [
+            at._replace(adp=adp_by_lp.get((at.label, at.part)))
+            for at in cart_atoms
+        ]
 
     # ------------------------------------------------------------------
     # XYZ loading
@@ -332,8 +349,7 @@ class MoleculeLoader:
         XYZ files have no unit-cell or ADP information.
         """
         atoms = self._parse_xyz(path)
-        self._widget.open_molecule(atoms=atoms, cell=None, adps=None,
-                                   keep_view=keep_view)
+        self._widget.open_molecule(atoms=atoms, cell=None, keep_view=keep_view)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -345,14 +361,15 @@ class MoleculeLoader:
     ) -> tuple[
         list[Atomtuple],
         tuple[float, float, float, float, float, float],
-        dict[str, tuple[float, float, float, float, float, float]],
     ]:
         """Parse a SHELX .res / .ins file using the :mod:`shelxfile` library.
 
-        Returns the atom list (in Cartesian coordinates), the unit-cell
-        parameters, and a dictionary of anisotropic displacement parameters.
+        Returns the atom list (in Cartesian coordinates, with embedded ADPs)
+        and the unit-cell parameters.
 
         Q-peaks (residual electron-density peaks) are excluded.
+        Anisotropic displacement parameters are embedded in each
+        :class:`~fastmolwidget.sdm.Atomtuple` as the ``adp`` field.
         """
         shx = Shelxfile()
         shx.read_file(path)
@@ -366,13 +383,17 @@ class MoleculeLoader:
         )
 
         atoms: list[Atomtuple] = []
-        adp_dict: dict[str, tuple[float, float, float, float, float, float]] = {}
         for at in shx.atoms:
             # Skip Q-peaks (residual electron-density peaks, not real atoms).
             if at.qpeak:
                 continue
 
             x, y, z = at.cart_coords
+            adp_vals: tuple | None = None
+            if not at.is_isotropic:
+                u11, u22, u33, u23, u13, u12 = at.uvals
+                adp_vals = (u11, u22, u33, u23, u13, u12)
+
             atoms.append(Atomtuple(
                 label=at.name,
                 type=at.element,
@@ -380,14 +401,10 @@ class MoleculeLoader:
                 y=y,
                 z=z,
                 part=at.part.n,
+                adp=adp_vals,
             ))
 
-            # Collect anisotropic displacement parameters for non-isotropic atoms.
-            if not at.is_isotropic:
-                u11, u22, u33, u23, u13, u12 = at.uvals
-                adp_dict[at.name] = (u11, u22, u33, u23, u13, u12)
-
-        return atoms, cell_params, adp_dict
+        return atoms, cell_params
 
     @staticmethod
     def _parse_xyz(path: Path) -> list[Atomtuple]:

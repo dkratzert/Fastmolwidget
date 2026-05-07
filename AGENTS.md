@@ -20,7 +20,7 @@ Embeddable PyQt/PySide6 widget for crystal-structure display. Two parallel rende
 
 ## Core data type
 
-`Atomtuple = namedtuple('Atomtuple', ('label','type','x','y','z','part','symm_matrix'), defaults=(None,))` (defined in `sdm.py`). Coordinates are Cartesian Å when fed to widgets; `part` is SHELX disorder part. ADPs are dicts `{label: (U11,U22,U33,U23,U13,U12)}`. `cell` is `(a,b,c,α,β,γ)`.
+`Atomtuple = namedtuple('Atomtuple', ('label','type','x','y','z','part','symm_matrix','adp'), defaults=(None, None))` (defined in `sdm.py`). Coordinates are Cartesian Å when fed to widgets; `part` is SHELX disorder part. `adp` is `(U11,U22,U33,U23,U13,U12)` or `None` for isotropic atoms — embedded directly in the tuple. `cell` is `(a,b,c,α,β,γ)`.
 
 ## Conventions
 
@@ -28,7 +28,7 @@ Embeddable PyQt/PySide6 widget for crystal-structure display. Two parallel rende
 - **3D fallback path**: any code path in `molecule3D.py` that touches `gl.*` must be guarded so the widget reverts to a `QWidget` text overlay instead of raising.
 - **Growing structures**: enabled via `MoleculeLoader.set_grow(True)`; reloads the last file in-place with `keep_view=True`. XYZ has no symmetry → grow is a no-op.
 - **Packing structures**: enabled via `MoleculeLoader.set_pack(True)`; applies all (or selected) symmetry operations and folds atoms into one unit cell. Pack takes priority over grow when both are active.
-- **Public API additions** must be reflected in: the relevant widget class, `MoleculeWidgetProtocol`, `__init__.py` `__all__`, and `README.md`. Current protocol methods: `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_bond_color`, `set_labels_visible` (alias for `show_labels`), `set_background_color`, `setLabelFont`, `reset_view`, `save_image`.
+- **Public API additions** must be reflected in: the relevant widget class, `MoleculeWidgetProtocol`, `__init__.py` `__all__`, and `README.md`. Current protocol methods: `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_bond_width`, `set_bond_color`, `set_labels_visible` (alias for `show_labels`), `set_background_color`, `setLabelFont`, `reset_view`, `save_image`. `Atomtuple` is exported in `__all__`.
 - **`shelxfile`** is a required runtime dependency (used in `loader.py` for `.res`/`.ins`); it is listed in `pyproject.toml` `dependencies`, not in extras.
 - **3D mouse controls**: left-drag rotate, right-drag zoom, middle-drag pan, **middle-click recentres the rotation pivot** on the clicked atom (`reset_rotation_center()` restores the default), scroll-wheel adjusts label font size.
 - **Keyboard shortcuts** (both 2D and 3D, requires unit cell): **F1** aligns the view so that reciprocal axis a* points towards the viewer; **F2** → b*; **F3** → c*. No-op when no cell is loaded. A unit-cell axis indicator (a=red, b=green, c=blue) is drawn in the bottom-left corner while Pack Unit Cell is active.

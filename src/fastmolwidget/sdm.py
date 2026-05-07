@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     pass
 
 DEBUG = False
-Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix'), defaults=(None,))
+Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix', 'adp'), defaults=(None, None))
 
 
 class SymmCards:

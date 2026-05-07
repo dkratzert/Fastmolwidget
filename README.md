@@ -107,11 +107,8 @@ app.exec()
 from fastmolwidget import MoleculeWidget3D
 
 mol = MoleculeWidget3D(parent=self)
-mol.open_molecule(atoms, cell=cell, adps=adps)
+mol.open_molecule(atoms, cell=cell)
 layout.addWidget(mol)
-```
-
-### Embedding in your own layout (2D)
 
 ```python
 from fastmolwidget import MoleculeWidget, MoleculeLoader
@@ -228,14 +225,13 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 
 #### Data Methods
 
-- **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
+- **`open_molecule(atoms, cell=None, keep_view=False)`**  
   Load a new set of atoms and redraw.
-    - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)
+    - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` directly in the tuple for anisotropic atoms
     - `cell` — optional `(a, b, c, α, β, γ)` tuple; required for ADP rendering
-    - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` tensors
     - `keep_view` — preserve current zoom, rotation, and pan when `True`
 
-- **`grow_molecule(atoms, cell=None, adps=None)`**  
+- **`grow_molecule(atoms, cell=None)`**  
   Replace atoms while preserving the view. Equivalent to `open_molecule(..., keep_view=True)`.
 
 - **`clear()`**  
@@ -260,25 +256,22 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 #### Example — feeding atom data directly to `MoleculeWidget3D`
 
 ```python
-from fastmolwidget import MoleculeWidget3D
-from fastmolwidget.sdm import Atomtuple
+from fastmolwidget import MoleculeWidget3D, Atomtuple
 
 mol = MoleculeWidget3D(parent=self)
 
+# Embed ADP tensors directly in each Atomtuple (None = isotropic / no ADP)
 atoms = [
-    Atomtuple(label="C1", type="C", x=0.0, y=0.0, z=0.0, part=0),
-    Atomtuple(label="O1", type="O", x=1.22, y=0.0, z=0.0, part=0),
-    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0, part=0),
+    Atomtuple(label="C1", type="C", x=0.0,  y=0.0,  z=0.0,  part=0,
+              adp=(0.02, 0.02, 0.02, 0.0, 0.0, 0.0)),
+    Atomtuple(label="O1", type="O", x=1.22, y=0.0,  z=0.0,  part=0,
+              adp=(0.03, 0.03, 0.03, 0.0, 0.0, 0.0)),
+    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0,  part=0),
 ]
-
-adps = {
-    "C1": (0.02, 0.02, 0.02, 0.0, 0.0, 0.0),
-    "O1": (0.03, 0.03, 0.03, 0.0, 0.0, 0.0),
-}
 
 cell = (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)
 
-mol.open_molecule(atoms=atoms, cell=cell, adps=adps)
+mol.open_molecule(atoms=atoms, cell=cell)
 mol.atomClicked.connect(lambda label: print(f"Selected: {label}"))
 
 layout.addWidget(mol)
@@ -306,14 +299,13 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 #### Data Methods
 
-- **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
+- **`open_molecule(atoms, cell=None, keep_view=False)`**  
   Load a new set of atoms and reset (or optionally preserve) the view.
-    - `atoms` — list of `Atomtuple(label, type, x, y, z, part)` in Cartesian coordinates (Å)
+    - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` for anisotropic atoms
     - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering
-    - `adps` — optional `dict` mapping atom labels to `(U11, U22, U33, U23, U13, U12)` ADP tensors
     - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
 
-- **`grow_molecule(atoms, cell=None, adps=None)`**  
+- **`grow_molecule(atoms, cell=None)`**  
   Replace the atom set while always preserving the current view.  
   Equivalent to calling `open_molecule(..., keep_view=True)`.
 
@@ -365,26 +357,22 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 #### Example — feeding atom data directly to `MoleculeWidget` (2D)
 
 ```python
-from fastmolwidget import MoleculeWidget
-from fastmolwidget.sdm import Atomtuple
+from fastmolwidget import MoleculeWidget, Atomtuple
 
 mol = MoleculeWidget(parent=self)
 
+# Embed ADP tensors directly in each Atomtuple (omit or use None = isotropic)
 atoms = [
-    Atomtuple(label="C1", type="C", x=0.0, y=0.0, z=0.0, part=0),
-    Atomtuple(label="O1", type="O", x=1.22, y=0.0, z=0.0, part=0),
-    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0, part=0),
+    Atomtuple(label="C1", type="C", x=0.0,  y=0.0,  z=0.0,  part=0,
+              adp=(0.02, 0.02, 0.02, 0.0, 0.0, 0.0)),
+    Atomtuple(label="O1", type="O", x=1.22, y=0.0,  z=0.0,  part=0,
+              adp=(0.03, 0.03, 0.03, 0.0, 0.0, 0.0)),
+    Atomtuple(label="H1", type="H", x=-0.5, y=0.94, z=0.0,  part=0),
 ]
-
-# ADP tensors: {atom_label: (U11, U22, U33, U23, U13, U12)}
-adps = {
-    "C1": (0.02, 0.02, 0.02, 0.0, 0.0, 0.0),
-    "O1": (0.03, 0.03, 0.03, 0.0, 0.0, 0.0),
-}
 
 cell = (5.0, 5.0, 5.0, 90.0, 90.0, 90.0)  # optional
 
-mol.open_molecule(atoms=atoms, cell=cell, adps=adps)
+mol.open_molecule(atoms=atoms, cell=cell)
 mol.atomClicked.connect(lambda label: print(f"Selected: {label}"))
 
 layout.addWidget(mol)

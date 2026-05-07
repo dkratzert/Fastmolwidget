@@ -570,19 +570,12 @@ def test_npd_atom_renders_as_cube():
     the cube draw list (not the sphere bucket); when ADPs are hidden it
     must fall back to a regular sphere — same behaviour as the 2-D widget.
     """
-    from fastmolwidget.cif.cif_file_io import CifReader
-    from fastmolwidget.tools import to_float
+    from fastmolwidget.loader import MoleculeLoader
 
-    cif = CifReader(data / "p21c.cif")
-    adp_dict = {
-        dp.label: (
-            to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
-            to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
-        )
-        for dp in cif.displacement_parameters()
-    }
-    widget = MoleculeWidget3D()
-    widget.open_molecule(list(cif.atoms_orth), cif.cell[:6], adp_dict)
+    loader_widget = MoleculeWidget3D()
+    loader = MoleculeLoader(loader_widget)
+    loader.load_file(data / "p21c.cif")
+    widget = loader_widget
 
     al1 = next(a for a in widget.atoms if a.label == "Al1")
     assert al1.u_cart is not None
@@ -606,19 +599,12 @@ def test_npd_atom_renders_as_cube():
 
 def test_adp_tensors_computed():
     """ADP atoms from a CIF must have valid u_cart tensors attached."""
-    from fastmolwidget.cif.cif_file_io import CifReader
-    from fastmolwidget.tools import to_float
+    from fastmolwidget.loader import MoleculeLoader
 
-    cif = CifReader(data / "1979688_small.cif")
-    adp_dict = {
-        dp.label: (
-            to_float(dp.U11), to_float(dp.U22), to_float(dp.U33),
-            to_float(dp.U23), to_float(dp.U13), to_float(dp.U12),
-        )
-        for dp in cif.displacement_parameters()
-    }
-    widget = MoleculeWidget3D()
-    widget.open_molecule(list(cif.atoms_orth), cif.cell[:6], adp_dict)
+    w = MoleculeWidget3D()
+    loader = MoleculeLoader(w)
+    loader.load_file(data / "1979688_small.cif")
+    widget = w
 
     aniso_atoms = [a for a in widget.atoms if a.u_cart is not None and a.adp_valid]
     assert len(aniso_atoms) > 0

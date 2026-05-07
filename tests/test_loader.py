@@ -67,14 +67,14 @@ def test_load_shelx_res(loader, widget):
 
 
 def test_parse_shelx_cell(loader):
-    atoms, cell, adps = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
+    atoms, cell = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
     assert len(cell) == 6
     assert cell[0] == pytest.approx(6.0)
     assert cell[3] == pytest.approx(90.0)
 
 
 def test_parse_shelx_types(loader):
-    atoms, _, _ = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
+    atoms, _ = MoleculeLoader._parse_shelx(data / 'test_molecule.res')
     types = [a.type for a in atoms]
     assert 'C' in types
     assert 'O' in types
@@ -95,25 +95,51 @@ def test_load_shelx_res_disordered(loader, widget):
 
 def test_parse_shelx_excludes_q_peaks():
     """Test that Q-peaks (residual electron density) are not included as atoms."""
-    atoms, _, _ = MoleculeLoader._parse_shelx(data / 'p31c-finalcif.res')
+    atoms, _ = MoleculeLoader._parse_shelx(data / 'p31c-finalcif.res')
     q_labels = [a.label for a in atoms if a.label.startswith('Q')]
     assert len(q_labels) == 0, f"Q-peaks should be excluded, found: {q_labels}"
 
 
 def test_parse_shelx_returns_adps():
-    """Test that anisotropic displacement parameters are extracted from .res files."""
-    atoms, cell, adps = MoleculeLoader._parse_shelx(data / 'p31c-finalcif.res')
-    # Should have ADPs for anisotropic atoms (non-hydrogen, non-isotropic)
-    assert len(adps) > 0, "Should have ADPs for anisotropic atoms"
+    """Test that anisotropic displacement parameters are embedded in Atomtuples."""
+    atoms, cell = MoleculeLoader._parse_shelx(data / 'p31c-finalcif.res')
+    # Should have ADPs embedded for anisotropic atoms (non-hydrogen, non-isotropic)
+    adp_atoms = [a for a in atoms if a.adp is not None]
+    assert len(adp_atoms) > 0, "Should have atoms with embedded ADPs"
     # CL1 should have ADPs
-    assert 'CL1' in adps, "CL1 should have ADP values"
-    u11, u22, u33, u23, u13, u12 = adps['CL1']
+    cl1 = next((a for a in atoms if a.label == 'CL1'), None)
+    assert cl1 is not None, "CL1 atom should be present"
+    assert cl1.adp is not None, "CL1 should have ADP values"
+    u11, u22, u33, u23, u13, u12 = cl1.adp
     assert u11 == pytest.approx(0.01547)
     assert u22 == pytest.approx(0.01791)
     assert u33 == pytest.approx(0.02428)
     # Hydrogen atoms should NOT have ADPs (they are isotropic/riding)
-    h_in_adps = [k for k in adps if k.startswith('H')]
-    assert len(h_in_adps) == 0, f"Hydrogen atoms should not have ADPs, found: {h_in_adps}"
+    h_with_adps = [a for a in atoms if a.label.startswith('H') and a.adp is not None]
+    assert len(h_with_adps) == 0, f"Hydrogen atoms should not have ADPs, found: {h_with_adps}"
+
+
+def test_parse_shelx_disorder_parts_have_distinct_adps():
+    """Atoms with the same label in different PART blocks must have distinct ADPs."""
+    atoms, _ = MoleculeLoader._parse_shelx(data / 'IKmjs421_2_0m_sump.res')
+    # Collect all atoms named 'C1' that have adp data
+    c1_atoms = [a for a in atoms if a.label == 'C1' and a.adp is not None]
+    # There must be at least two C1 atoms in different parts
+    assert len(c1_atoms) >= 2, (
+        f"Expected ≥2 C1 atoms with ADPs in different PART blocks, got {len(c1_atoms)}"
+    )
+    # All must have different part numbers
+    parts = [a.part for a in c1_atoms]
+    assert len(set(parts)) >= 2, f"C1 atoms should span different PART blocks, got parts={parts}"
+    # ADPs must be distinct across parts
+    adp_vals = [a.adp for a in c1_atoms]
+    for i, av in enumerate(adp_vals):
+        for j, bv in enumerate(adp_vals):
+            if i != j:
+                assert av != bv, (
+                    f"C1 atoms in parts {parts[i]} and {parts[j]} should have "
+                    f"distinct ADPs but both have {av}"
+                )
 
 
 # ------------------------------------------------------------------
