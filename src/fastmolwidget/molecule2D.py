@@ -72,7 +72,7 @@ class MoleculeWidget(QtWidgets.QWidget):
     Typical usage::
 
         widget = MoleculeWidget(parent)
-        widget.open_molecule(atoms=atom_list, cell=cell_params, adps=adp_dict)
+        widget.open_molecule(atoms=atom_list, cell=cell_params)
 
     :param parent: Optional parent widget.
     """
@@ -91,7 +91,6 @@ class MoleculeWidget(QtWidgets.QWidget):
         self._bstar = None
         self._cstar = None
         self._amatrix = None
-        self._adp_map = None
         self._cell = None
         self._is_packed = False
         self.zoom = 1.0
@@ -326,28 +325,24 @@ class MoleculeWidget(QtWidgets.QWidget):
     def open_molecule(self,
                       atoms: list[Atomtuple],
                       cell: tuple[float, float, float, float, float, float] | None = None,
-                      adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
                       keep_view: bool = False) -> None:
         """
         Loads a new molecule and completely resets the view (zoom, pan, rotation).
         """
         self._is_packed = False
-        self._load_molecule(atoms, cell, adps, keep_view=keep_view)
+        self._load_molecule(atoms, cell, keep_view=keep_view)
 
     def grow_molecule(self,
                       atoms: list[Atomtuple],
-                      cell: tuple[float, float, float, float, float, float] | None = None,
-                      adps: dict[str, tuple[float, float, float, float, float, float]] | None = None) -> None:
+                      cell: tuple[float, float, float, float, float, float] | None = None) -> None:
         """Updates the molecule while preserving the current view (zoom, pan, rotation)."""
-        self._load_molecule(atoms, cell, adps, keep_view=True)
+        self._load_molecule(atoms, cell, keep_view=True)
 
     def _load_molecule(self, atoms: list[Atomtuple],
                        cell: tuple[float, float, float, float, float, float] | None = None,
-                       adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
                        keep_view: bool = False) -> None:
 
         self._cell = cell
-        self._adp_map = adps if adps is not None else {}
 
         if self._cell is not None and self._show_adps:
             self.calc_amatrix()

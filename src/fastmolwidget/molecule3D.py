@@ -1506,31 +1506,27 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self,
         atoms: list[Atomtuple],
         cell: tuple[float, float, float, float, float, float] | None = None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
         keep_view: bool = False,
     ) -> None:
         """Load a new molecule and (unless *keep_view*) reset the view."""
         self._is_packed = False
-        self._load_molecule(atoms, cell, adps, keep_view=keep_view)
+        self._load_molecule(atoms, cell, keep_view=keep_view)
 
     def grow_molecule(
         self,
         atoms: list[Atomtuple],
         cell: tuple[float, float, float, float, float, float] | None = None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
     ) -> None:
         """Update the displayed molecule while preserving the current view."""
-        self._load_molecule(atoms, cell, adps, keep_view=True)
+        self._load_molecule(atoms, cell, keep_view=True)
 
     def _load_molecule(
         self,
         atoms: list[Atomtuple],
         cell: tuple[float, float, float, float, float, float] | None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None,
         keep_view: bool,
     ) -> None:
         self._cell = cell
-        self._adp_map = adps if adps is not None else {}
 
         if self._cell is not None:
             self.calc_amatrix()
