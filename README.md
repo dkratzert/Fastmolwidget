@@ -185,8 +185,10 @@ Both viewers expose the same two-row control bar:
 |-----------------------|---------|------------------------------------------------------------------------------------------------|
 | Bond Width            | 3       | Stroke width / cylinder radius for bonds (2D: 1–15, 3D: 0–15)                                 |
 | Bond Color            | —       | Opens a colour picker to change the default bond colour                                        |
-| Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)                |
-| Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                     |
+| Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)               |
+| Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
+| Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
+| Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
 
@@ -214,7 +216,7 @@ Hardware-accelerated OpenGL renderer. A `QOpenGLWidget` (Qt ≥ 6) or `QWidget` 
 | Bonds          | Tessellated cylinder mesh (8-segment, 4-segment for angular style) built on the CPU and uploaded as a single VBO             |
 | Labels         | `QPainter` overlay drawn after the OpenGL pass                                                                               |
 
-All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hardware compatibility.
+GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GLSL 1.20) and `#version 140` on Windows/Linux (OpenGL 3.1+ / GLSL 1.40).
 
 #### Qt Signals
 
@@ -225,10 +227,11 @@ All GLSL shaders target `#version 120` (OpenGL 2.1 / GLSL 1.20) for maximum hard
 
 #### Data Methods
 
-- **`open_molecule(atoms, cell=None, keep_view=False)`**  
+- **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
   Load a new set of atoms and redraw.
     - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` directly in the tuple for anisotropic atoms
     - `cell` — optional `(a, b, c, α, β, γ)` tuple; required for ADP rendering
+    - `adps` — optional mapping of `label -> (U11, U22, U33, U23, U13, U12)` for anisotropic displacement parameters
     - `keep_view` — preserve current zoom, rotation, and pan when `True`
 
 - **`grow_molecule(atoms, cell=None)`**  
@@ -299,10 +302,11 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 #### Data Methods
 
-- **`open_molecule(atoms, cell=None, keep_view=False)`**  
+- **`open_molecule(atoms, cell=None, adps=None, keep_view=False)`**  
   Load a new set of atoms and reset (or optionally preserve) the view.
     - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` for anisotropic atoms
     - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering
+    - `adps` — optional mapping of `label -> (U11, U22, U33, U23, U13, U12)` for anisotropic displacement parameters
     - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
 
 - **`grow_molecule(atoms, cell=None)`**  
