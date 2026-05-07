@@ -47,7 +47,6 @@ class MoleculeWidgetProtocol(Protocol):
         self,
         atoms: list[Atomtuple],
         cell: tuple[float, float, float, float, float, float] | None = None,
-        adps: dict[str, tuple[float, float, float, float, float, float]] | None = None,
         keep_view: bool = False,
     ) -> None:
         """Load a new set of atoms and redraw.
@@ -57,9 +56,6 @@ class MoleculeWidgetProtocol(Protocol):
         :param cell: Unit-cell parameters ``(a, b, c, α, β, γ)`` needed to
             convert fractional ADP tensors to Cartesian.  ``None`` for
             molecules with no periodic boundary.
-        :param adps: Mapping of atom label → ``(U11, U22, U33, U23, U13,
-            U12)`` anisotropic displacement parameters.  ``None`` to show
-            plain spheres.
         :param keep_view: If ``True`` the current zoom / rotation / pan is
             preserved.
         """
