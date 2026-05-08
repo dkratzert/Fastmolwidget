@@ -20,6 +20,12 @@ class TestAtoms(unittest.TestCase):
         r = get_radius_from_element('F')
         self.assertEqual(0.72, r)
 
+    def test_get_radius_from_element_with_suffix(self):
+        self.assertEqual(get_radius_from_element('O'), get_radius_from_element('O2'))
+
+    def test_get_radius_from_element_unknown_falls_back_to_carbon(self):
+        self.assertEqual(get_radius_from_element('C'), get_radius_from_element('Xx'))
+
     def test_get_atomic_number(self):
         r = get_atomic_number('F')
         self.assertEqual(9, r)
