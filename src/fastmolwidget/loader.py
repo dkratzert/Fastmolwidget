@@ -261,12 +261,13 @@ class MoleculeLoader:
             if at.qpeak:
                 continue
             x, y, z = at.frac_coords
+            label = at.fullname_short  # unique across residues (e.g. "C1_1")
             fract_atoms.append(
-                [at.name, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
+                [label, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
             if not at.is_isotropic:
                 u11, u22, u33, u23, u13, u12 = at.uvals
-                adp_by_lp[(at.name, at.part.n)] = (u11, u22, u33, u23, u13, u12)
+                adp_by_lp[(label, at.part.n)] = (u11, u22, u33, u23, u13, u12)
 
         # Collect symmetry operations as comma-separated strings (skip identity)
         symmops: list[str] = [s.to_shelxl() for s in shx.symmcards]
@@ -314,12 +315,13 @@ class MoleculeLoader:
             if at.qpeak:
                 continue
             x, y, z = at.frac_coords
+            label = at.fullname_short  # unique across residues (e.g. "C1_1")
             fract_atoms.append(
-                [at.name, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
+                [label, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
             if not at.is_isotropic:
                 u11, u22, u33, u23, u13, u12 = at.uvals
-                adp_by_lp[(at.name, at.part.n)] = (u11, u22, u33, u23, u13, u12)
+                adp_by_lp[(label, at.part.n)] = (u11, u22, u33, u23, u13, u12)
 
         symmops: list[str] = [s.to_shelxl() for s in shx.symmcards]
         centric = shx.latt.centric if shx.latt else False
@@ -395,7 +397,7 @@ class MoleculeLoader:
                 adp_vals = (u11, u22, u33, u23, u13, u12)
 
             atoms.append(Atomtuple(
-                label=at.name,
+                label=at.fullname_short,
                 type=at.element,
                 x=x,
                 y=y,

@@ -120,24 +120,28 @@ def test_parse_shelx_returns_adps():
 
 
 def test_parse_shelx_disorder_parts_have_distinct_adps():
-    """Atoms with the same label in different PART blocks must have distinct ADPs."""
+    """Atoms from different residues with the same base name must each get their
+    own unique ADP.  Labels now use fullname_short (e.g. 'C1_1', 'C1_2' …) so
+    that atoms from different residues can be told apart."""
     atoms, _ = MoleculeLoader._parse_shelx(data / 'IKmjs421_2_0m_sump.res')
-    # Collect all atoms named 'C1' that have adp data
-    c1_atoms = [a for a in atoms if a.label == 'C1' and a.adp is not None]
-    # There must be at least two C1 atoms in different parts
+    # Collect all atoms whose base name is 'C1' (label == 'C1' for resi 0,
+    # or label starts with 'C1_' for resi > 0, but not 'C10*').
+    c1_atoms = [
+        a for a in atoms
+        if (a.label == 'C1' or (a.label.startswith('C1_') and not a.label.startswith('C10_')))
+        and a.adp is not None
+    ]
+    # There must be at least two such atoms (from different residues / parts)
     assert len(c1_atoms) >= 2, (
-        f"Expected ≥2 C1 atoms with ADPs in different PART blocks, got {len(c1_atoms)}"
+        f"Expected ≥2 C1-base atoms with ADPs, got {len(c1_atoms)}"
     )
-    # All must have different part numbers
-    parts = [a.part for a in c1_atoms]
-    assert len(set(parts)) >= 2, f"C1 atoms should span different PART blocks, got parts={parts}"
-    # ADPs must be distinct across parts
+    # ADPs must be distinct (no overwriting via dict collision)
     adp_vals = [a.adp for a in c1_atoms]
     for i, av in enumerate(adp_vals):
         for j, bv in enumerate(adp_vals):
             if i != j:
                 assert av != bv, (
-                    f"C1 atoms in parts {parts[i]} and {parts[j]} should have "
+                    f"C1 atoms at indices {i} and {j} should have "
                     f"distinct ADPs but both have {av}"
                 )
 

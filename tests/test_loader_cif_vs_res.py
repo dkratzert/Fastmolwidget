@@ -35,13 +35,17 @@ app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 DATA = Path('tests/test-data')
 
-# Pairs of (CIF, RES) describing the same structure.  Coordinates always
-# agree.  ADPs only agree for ``ADP_PAIRS`` – the other test-data pairs
+# Pairs of (CIF, RES) describing the *same* refined structure.  Coordinates
+# always agree.  ADPs only agree for ``ADP_PAIRS`` – the other test-data pairs
 # contain a CIF refined further than the matching .res (R₁ comparison
 # confirms different refinement stages), so their ADP values legitimately
 # differ and are excluded from the strict ADP comparison.
+#
+# Note: ``1548072_many_atoms.{cif,res}`` are NOT included here because the
+# two files describe different refinement stages (max coordinate deviation
+# ≈ 0.47 Å).  That file pair is only used for testing multi-residue label
+# and grow/pack functionality in other tests.
 PAIRS: list[tuple[str, str]] = [
-    ('1548072_many_atoms.cif', '1548072_many_atoms.res'),
     (
         '41467_2015_BFncomms9288_MOESM1370_ESM.cif',
         '41467_2015_BFncomms9288_MOESM1370_ESM.res',
@@ -275,8 +279,39 @@ def test_res_label_position_synchronised(res_name: str) -> None:
         assert dz == pytest.approx(parsed.z, abs=1e-4)
 
 
+# ----------------------------------------------------------------------
+# Regression: multi-residue SHELX files must assign unique ADPs per atom
+# ----------------------------------------------------------------------
 
+def test_grown_shelx_multi_residue_adps_are_unique() -> None:
+    """Regression for the bug where all atoms sharing a base name (e.g. 'C1')
+    across different residues received the same ADP after growing.
 
+    ``1548072_many_atoms.res`` has 79 atoms named 'C1' in residues 1-79.
+    After growing, every 'C1_N' must have its own distinct ADP (not the ADP
+    of the last 'C1' that happened to overwrite the others in the dict).
+    """
+    from collections import Counter
+    atoms = MoleculeLoader._compute_grown_atoms_shelx(
+        DATA / '1548072_many_atoms.res'
+    )
+    # Gather grown C1-base atoms (label C1_N for residue N)
+    c1_atoms = [
+        a for a in atoms
+        if a.label.startswith('C1_') and not a.label.startswith('C10_')
+        and a.adp is not None
+    ]
+    assert len(c1_atoms) >= 2, f"Expected multiple C1-residue atoms, got {len(c1_atoms)}"
 
+    # Before the fix, all N atoms shared ONE ADP (the last to overwrite the dict).
+    # After the fix, at most a small number can coincidentally share ADP values.
+    # The threshold of len/4 is conservative: the old bug would give count ≈ len.
+    adp_counts = Counter(a.adp for a in c1_atoms)
+    most_freq_count = adp_counts.most_common(1)[0][1]
+    assert most_freq_count < len(c1_atoms) // 4, (
+        f"ADP collision detected: {most_freq_count}/{len(c1_atoms)} C1-base atoms "
+        f"share the same ADP. Fix: use fullname_short (label+residue) as the "
+        f"adp_by_lp key."
+    )
 
 
