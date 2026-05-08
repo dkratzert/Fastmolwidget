@@ -244,6 +244,66 @@ def test_viewer3d_set_bond_color_proxy():
     np.testing.assert_allclose(viewer.render_widget._bond_rgb, molecule3d._hex_to_rgb_float("#5f5348"), atol=1e-6)
 
 
+# ------------------------------------------------------------------
+# Hover state – part filter
+# ------------------------------------------------------------------
+
+def test_hover_excludes_hidden_part_atom_3d():
+    """_pick_atom_at must return None for an atom whose disorder-part is
+    excluded by _visible_parts."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 1),   # single atom, part 1
+    ])
+
+    # Screen centre maps to the molecule centre for a single-atom structure.
+    cx, cy = widget.width() // 2, widget.height() // 2
+
+    # Baseline: all parts visible → atom is found.
+    widget._visible_parts = None
+    atom, _ = widget._pick_atom_at(float(cx), float(cy))
+    assert atom is not None and atom.label == "C1"
+
+    # Hide part 1 → atom must not be picked.
+    widget._visible_parts = {0}
+    atom_hidden, _ = widget._pick_atom_at(float(cx), float(cy))
+    assert atom_hidden is None
+
+
+def test_hover_excludes_hidden_part_bond_3d():
+    """_update_hover must not set _hover_bond when the bond's endpoints are
+    in a hidden disorder-part."""
+    from qtpy.QtCore import QPointF
+
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    # Atoms wide apart (±2 Å) so the centre ray misses both spheres, but
+    # the bond midpoint projects to screen centre → bond is reachable.
+    widget.open_molecule([
+        Atomtuple("C1", "C", -2.0, 0.0, 0.0, 1),  # part 1
+        Atomtuple("C2", "C",  2.0, 0.0, 0.0, 1),  # part 1
+    ])
+    # Inject bond explicitly (atoms are 4 Å apart, beyond auto-bond threshold).
+    widget.connections = ((0, 1),)
+
+    cx, cy = widget.width() // 2, widget.height() // 2
+    centre = QPointF(float(cx), float(cy))
+
+    # Baseline: all parts visible → bond is hovered at screen centre.
+    widget._visible_parts = None
+    widget._update_hover(centre)
+    assert widget._hover_bond is not None, (
+        "Bond should be hovered at screen centre when parts are unrestricted."
+    )
+
+    # Hide part 1 → bond must not be hovered.
+    widget._visible_parts = {0}
+    widget._update_hover(centre)
+    assert widget._hover_bond is None
+    assert widget._hover_atom_label is None
+
+
 def test_compile_program_disables_validate(monkeypatch):
     """Shader linking should skip eager program validation in initializeGL."""
     if not molecule3d._HAS_PYOPENGL or molecule3d._glshaders is None:

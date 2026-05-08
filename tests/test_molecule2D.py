@@ -467,6 +467,61 @@ def test_leave_event_clears_hover_state_2d():
     assert widget._hover_cursor is None
 
 
+def test_hover_excludes_hidden_part_atom_2d():
+    """Atoms whose disorder-part is not in *_visible_parts* must produce no hover label."""
+    widget = MoleculeWidget()
+    widget.resize(800, 600)
+    widget.show()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),   # part 0 – always visible
+        Atomtuple("C2", "C", 3.0, 0.0, 0.0, 1),   # part 1 – will be hidden
+    ])
+    app.processEvents()
+    widget.grab()  # force paint pass → screenx/screeny populated
+
+    c2 = widget.atoms[1]
+
+    # Baseline: all parts visible → C2 is hovered at its screen position.
+    widget.set_visible_parts(None)
+    widget._update_hover(c2.screenx, c2.screeny)
+    assert widget.hovered_atom == "C2"
+
+    # Hide part 1 → C2 must not produce a hover label.
+    widget.set_visible_parts({0})
+    widget._update_hover(c2.screenx, c2.screeny)
+    assert widget.hovered_atom is None
+    assert widget.hovered_bond is None
+
+
+def test_hover_excludes_hidden_part_bond_2d():
+    """Bonds whose endpoints are in a hidden disorder-part must not show a
+    distance hover label."""
+    widget = MoleculeWidget()
+    widget.resize(800, 600)
+    widget.show()
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 1),   # part 1
+        Atomtuple("O1", "O", 1.5, 0.0, 0.0, 1),   # part 1
+    ])
+    app.processEvents()
+    widget.grab()
+
+    a, b = widget.atoms[0], widget.atoms[1]
+    mx = (a.screenx + b.screenx) / 2.0
+    my = (a.screeny + b.screeny) / 2.0
+
+    # Baseline: all parts visible → bond is hovered at its midpoint.
+    widget.set_visible_parts(None)
+    widget._update_hover(mx, my)
+    assert widget.hovered_bond is not None
+
+    # Hide part 1 → bond must not produce a hover distance label.
+    widget.set_visible_parts({0})
+    widget._update_hover(mx, my)
+    assert widget.hovered_bond is None
+    assert widget.hovered_atom is None
+
+
 def test_drag_clears_hover_state_2d():
     """While the user is rotating / panning / zooming the molecule, hover
     labels must be suppressed."""
