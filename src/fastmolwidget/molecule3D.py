@@ -1399,6 +1399,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             for atom in self.atoms:
                 if not self.show_hydrogens_flag and atom.type_ in hydrogens:
                     continue
+                if self._visible_parts is not None and atom.part not in self._visible_parts:
+                    continue
                 if atom.label == hover_label:
                     hover_atom = atom
                     continue
@@ -1409,6 +1411,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 painter.drawText(pt[0] + offset, pt[1] - offset, atom.label)
         elif hover_label is not None:
             for atom in self.atoms:
+                if self._visible_parts is not None and atom.part not in self._visible_parts:
+                    continue
                 if atom.label == hover_label:
                     hover_atom = atom
                     break
@@ -2035,6 +2039,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 for n1, n2 in self.connections:
                     at1, at2 = self.atoms[n1], self.atoms[n2]
                     if not self.show_hydrogens_flag and (at1.type_ in ("H", "D") or at2.type_ in ("H", "D")):
+                        continue
+                    if self._visible_parts is not None and (
+                        at1.part not in self._visible_parts or at2.part not in self._visible_parts
+                    ):
                         continue
                     t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
                     if t is not None and t < best_t:

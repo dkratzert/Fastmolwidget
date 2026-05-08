@@ -779,6 +779,10 @@ class MoleculeWidget(QtWidgets.QWidget):
                 at1, at2 = item.atom1, item.atom2
                 if not self.show_hydrogens_flag and (at1.type_ in hydrogens or at2.type_ in hydrogens):
                     continue
+                if self._visible_parts is not None and (
+                    at1.part not in self._visible_parts or at2.part not in self._visible_parts
+                ):
+                    continue
                 if self.is_point_near_bond(at1, at2, px, py):
                     if item.z_order < front_z:
                         front_z = item.z_order
@@ -790,6 +794,8 @@ class MoleculeWidget(QtWidgets.QWidget):
             else:
                 atom = item.atom1
                 if not self.show_hydrogens_flag and atom.type_ in hydrogens:
+                    continue
+                if self._visible_parts is not None and atom.part not in self._visible_parts:
                     continue
                 if self.is_point_inside_atom(atom, px, py):
                     if item.z_order < front_z:
