@@ -1791,20 +1791,25 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.update()
 
     def _align_to_reciprocal_axis(self, axis_index: int) -> None:
-        """Align the view so that the reciprocal axis *axis_index* (0=a*, 1=b*, 2=c*) points towards the viewer.
+        """Align the view so that real-space axis *axis_index* (0=a, 1=b, 2=c) points towards the viewer.
+
+        Uses the real-space lattice vectors (columns of the orthogonalisation
+        matrix), matching the convention of Mercury, VESTA and PLATON.  For
+        orthogonal cells this is identical to the reciprocal-axis direction;
+        for non-orthogonal cells it makes the chosen cell edge go straight into
+        the screen so the opposite face is seen flat-on.
 
         Does nothing if no unit cell is available.
         """
         if self._amatrix is None or self._cell is None:
             return
 
-        # Reciprocal lattice vectors in Cartesian are rows of M^{-1}
-        M_inv = np.linalg.inv(self._amatrix)
-        recip_vec = M_inv[axis_index]
-        recip_vec = recip_vec / np.linalg.norm(recip_vec)
+        # Real-space lattice vectors in Cartesian are the columns of _amatrix.
+        direct_vec = self._amatrix[:, axis_index].copy()
+        direct_vec = direct_vec / np.linalg.norm(direct_vec)
 
-        # Build rotation that maps recip_vec → +Z (screen normal, towards viewer)
-        z_axis = recip_vec.astype(np.float32)
+        # Build rotation that maps direct_vec → +Z (screen normal, towards viewer)
+        z_axis = direct_vec.astype(np.float32)
 
         # Choose an initial "up" vector; avoid degeneracy if z_axis is parallel to Y
         up_candidate = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -1874,7 +1879,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.update()
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
-        """Handle key-press events for reciprocal-axis alignment."""
+        """Handle key-press events for real-space axis alignment (F1=a, F2=b, F3=c)."""
         if event.key() == Qt.Key.Key_F1:
             self._align_to_reciprocal_axis(0)
         elif event.key() == Qt.Key.Key_F2:
@@ -2145,7 +2150,13 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         for i in range(3):
             vx, vy = float(axes[i][0]), float(axes[i][1])
             tip_x = origin_x + vx * arrow_len
-            tip_y = origin_y - vy * arrow_len  # screen Y is inverted
+            # OpenGL renders with Y-up in view space; Qt screen Y increases
+            # downward.  The QPainter overlay therefore needs the sign flip so
+            # that a positive view-space Y (= upward on screen = low screen Y)
+            # produces a tip_y that is *less than* origin_y.
+            # (The 2D QPainter renderer uses +vy because it draws atoms without
+            # a Y-flip: screeny = c[1]*scale + cy.)
+            tip_y = origin_y - vy * arrow_len
 
             pen = QtGui.QPen(colors[i], 2.0)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
