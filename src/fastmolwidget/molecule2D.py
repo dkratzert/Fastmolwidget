@@ -1411,15 +1411,21 @@ class MoleculeWidget(QtWidgets.QWidget):
             arc_xform = QTransform(Ax, Ay, Bx, By, 0.0, 0.0)
             self._painter.setTransform(arc_xform * base_transform)
 
-            Az = ri_3d * vi2
-            Bz = rj_3d * vj2
-            z_amp = sqrt(Az * Az + Bz * Bz)
+            # The correct ORTEP boundary between the visible and hidden halves of
+            # each principal arc is where the outward normal of the ellipsoid is
+            # perpendicular to the viewing direction, i.e. (U⁻¹P)_z = 0.
+            # For P(t) = ri·vᵢ·cos t + rj·vⱼ·sin t on the ellipsoid surface,
+            #   (U⁻¹P)_z = (vi2/ri_3d)·cos t + (vj2/rj_3d)·sin t
+            # Multiplying through by ri_3d·rj_3d > 0 (keeps atan2 sign intact):
+            Az_n = vi2 * rj_3d
+            Bz_n = vj2 * ri_3d
+            z_amp = sqrt(Az_n * Az_n + Bz_n * Bz_n)
 
             if z_amp < 1e-8:
                 self._painter.drawArc(self._UNIT_RECT, 0, 5760)
             else:
-                phi_z = atan2(Bz, Az)
-                start_deg = degrees(-(phi_z + 1.5 * pi))
+                phi_n = atan2(Bz_n, Az_n)
+                start_deg = degrees(-(phi_n + 1.5 * pi))
                 self._painter.drawArc(self._UNIT_RECT, int(start_deg * 16), 2880)
 
         # Restore the original painter transform
