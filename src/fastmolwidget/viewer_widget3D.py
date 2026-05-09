@@ -200,6 +200,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
             self._grow_checkbox.blockSignals(False)
             self._loader.set_grow(False)
         self._loader.set_pack(checked)
+        if checked:
+            self._render_widget.reset_rotation_center()
+            self._render_widget._align_to_reciprocal_axis(1)
 
     def _update_part_controls(self, parts: frozenset[int]) -> None:
         """Rebuild the Part combo whenever the renderer loads a new molecule.
