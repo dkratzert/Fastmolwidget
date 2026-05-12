@@ -132,14 +132,15 @@ class _CheckableComboBox(QtWidgets.QComboBox):
         vals = self.checked_values()
         n_total = self.model().rowCount()
         if n_total == 0 or len(vals) == n_total:
-            text = "All Parts"
+            text = "All"
         elif not vals:
-            text = "No Parts"
+            text = "None"
         else:
-            text = "Parts: " + ", ".join(str(v) for v in vals)
+            text = ", ".join(str(v) for v in vals)
         le = self.lineEdit()
         if le is not None:
             le.setText(text)
+        self.view().adjustSize()
 
 
 class PartFilterWidget(QtWidgets.QWidget):
