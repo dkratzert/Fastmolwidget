@@ -111,6 +111,9 @@ mol.open_molecule(atoms, cell=cell)
 layout.addWidget(mol)
 ```
 
+
+### Embedding the 2D widget in your own layout
+
 ```python
 from fastmolwidget import MoleculeWidget, MoleculeLoader
 
