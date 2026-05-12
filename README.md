@@ -109,6 +109,7 @@ from fastmolwidget import MoleculeWidget3D
 mol = MoleculeWidget3D(parent=self)
 mol.open_molecule(atoms, cell=cell)
 layout.addWidget(mol)
+```
 
 ```python
 from fastmolwidget import MoleculeWidget, MoleculeLoader
