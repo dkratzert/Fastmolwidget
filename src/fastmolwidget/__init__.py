@@ -5,16 +5,20 @@ from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.viewer_widget3D import MoleculeViewer3DWidget
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
 from fastmolwidget.sdm import Atomtuple
+from fastmolwidget.molecule_painter import MoleculeRendererMixin
+from fastmolwidget.viewer_widget_quick import MoleculeViewerQuickWidget
 
 __version__ = "0.9.7"
 
 __all__ = [
     "MoleculeViewerWidget",
+    "MoleculeViewerQuickWidget",
     "MoleculeWidget",
     "MoleculeLoader",
     "MoleculeWidget3D",
     "MoleculeViewer3DWidget",
     "MoleculeWidgetProtocol",
+    "MoleculeRendererMixin",
     "Atomtuple",
     "__version__",
 ]
