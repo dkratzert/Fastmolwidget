@@ -13,6 +13,7 @@
 fastmolwidget is a lightweight, embeddable Qt widget that renders molecular and crystal structures in both 2D projection and 3D OpenGL.
 It supports anisotropic displacement parameter (ADP) ellipsoids, ball-and-stick diagrams, and plain sphere representations.
 The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D backend uses hardware-accelerated OpenGL with sphere and ellipsoid impostors.
+A Qt Quick backend is also available for embedding the 2D renderer inside a QML scene.
 
 ## Screenshots
 
@@ -35,7 +36,8 @@ The 2D backend uses a pure-Python QPainter renderer (no OpenGL required); the 3D
 - **Configurable bond color** — set programmatically or via the control-bar color picker
 - **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) are plain `QWidget` subclasses; drop either into any layout
-- **Ready-to-use viewers** — `MoleculeViewerWidget` (2D) and `MoleculeViewer3DWidget` (3D) bundle the renderer with a full control bar
+- **Qt Quick support** — `MoleculeQuickItem` (`QQuickPaintedItem`) and `MoleculeViewerQuickWidget` allow embedding the 2D renderer in a QML scene
+- **Ready-to-use viewers** — `MoleculeViewerWidget` (2D), `MoleculeViewer3DWidget` (3D), and `MoleculeViewerQuickWidget` (Qt Quick) bundle the renderer with a full control bar
 - **Common protocol** — `MoleculeWidgetProtocol` lets you write code that works with either widget interchangeably
 
 ## Supported File Formats
@@ -100,6 +102,26 @@ viewer.load_file("structure.cif")
 viewer.show()
 app.exec()
 ```
+
+### Qt Quick viewer
+
+The Qt Quick viewer embeds the 2D QPainter renderer inside a QML scene with a QML-native control bar.
+
+```python
+from qtpy.QtWidgets import QApplication
+from qtpy.QtCore import QTimer
+from fastmolwidget import MoleculeViewerQuickWidget
+
+app = QApplication([])
+viewer = MoleculeViewerQuickWidget()
+viewer.resize(900, 650)
+viewer.show()
+# Load after show so the QML Component.onCompleted has fired
+QTimer.singleShot(100, lambda: viewer.load_file("structure.cif"))
+app.exec()
+```
+
+> **Note:** `load_file` must be called after the widget is shown and the QML scene has initialised. Using a short `QTimer.singleShot` delay is the simplest approach.
 
 ### Embedding the 3D widget in your own layout
 
@@ -196,6 +218,10 @@ Both viewers expose the same two-row control bar:
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
 
+### `MoleculeViewerQuickWidget` (Qt Quick)
+
+The Qt Quick viewer provides the same two-row control bar as the widget viewers, but implemented in QML (`qml/MoleculeViewer.qml`). All controls and features are identical; the Parts filter uses a QML `Popup` (opens upward) with checkable items instead of the `QComboBox`-based `PartFilterWidget`.
+
 ## API Overview
 
 ### `MoleculeViewer3DWidget(parent=None)`
@@ -206,6 +232,34 @@ A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
 - `grow()` — expand the asymmetric unit to complete molecules using crystal symmetry; deactivates Pack Unit Cell if active; no-op for XYZ files or when no file is loaded
 - `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget3D`
+
+### `MoleculeViewerQuickWidget(parent=None)`
+
+A self-contained Qt Quick viewer embedding a `QQuickWidget` with a QML control bar and a `MoleculeQuickItem` renderer. Degrades gracefully to a text label when Qt Quick is unavailable.
+
+- `load_file(path)` — load a structure file (format auto-detected from extension: `.cif`, `.res`, `.ins`, `.xyz`). Must be called **after** the widget is shown and the QML scene has initialised (use `QTimer.singleShot` for a short delay).
+- `set_bond_color(color)` — set the default color for non-selected bonds
+- `render_widget` — read-only property exposing the underlying `MoleculeQuickItem` (`None` before the QML `Component.onCompleted` fires or when Qt Quick is unavailable)
+
+### `MoleculeQuickItem(parent=None)`
+
+The Qt Quick renderer. A `QQuickPaintedItem` subclass that shares all drawing logic with `MoleculeWidget` via `MoleculeRendererMixin`. Register with QML before use:
+
+```python
+from qtpy.QtQml import qmlRegisterType
+from fastmolwidget import MoleculeQuickItem
+
+qmlRegisterType(MoleculeQuickItem, "Fastmolwidget", 1, 0, "MoleculeItem")
+```
+
+Then in QML:
+
+```qml
+import Fastmolwidget 1.0
+MoleculeItem { id: mol; anchors.fill: parent }
+```
+
+The item exposes the same data and display methods as `MoleculeWidget` (see below): `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_visible_parts`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `setLabelFont`, `set_background_color`, `reset_view`, `align_best_view`, `save_image`.
 
 ### `MoleculeWidget3D(parent=None)`
 
@@ -388,7 +442,7 @@ layout.addWidget(mol)
 
 ### `MoleculeWidgetProtocol`
 
-The core rendering interface is defined by `MoleculeWidgetProtocol`. Both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) satisfy this protocol, making them drop-in replacements for each other.
+The core rendering interface is defined by `MoleculeWidgetProtocol`. `MoleculeWidget` (2D), `MoleculeWidget3D` (3D), and `MoleculeQuickItem` (Qt Quick) all satisfy this protocol, making them drop-in replacements for each other.
 
 ```python
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
