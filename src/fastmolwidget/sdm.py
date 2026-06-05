@@ -237,7 +237,8 @@ class SDM:
 
         t2 = time.perf_counter()
         self.sdmtime = t2 - t1
-        print(f'Time for sdm {"(C++)" if HAS_CPP else "(Python fallback)"}:', round(self.sdmtime, 4), 's')
+        if DEBUG:
+            print(f'Time for sdm {"(C++)" if HAS_CPP else "(Python fallback)"}:', round(self.sdmtime, 4), 's')
 
         self.sdm_list.sort(key=attrgetter('dist'))
         self.calc_molindex(self.atoms)
