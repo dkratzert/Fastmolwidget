@@ -39,6 +39,7 @@ try:
     from qtpy.QtQuickWidgets import QQuickWidget
     from qtpy.QtQml import qmlRegisterType
     from fastmolwidget.molecule_quick import MoleculeQuickItem
+
     _HAS_QTQUICK = True
 except (ImportError, RuntimeError):
     _HAS_QTQUICK = False
@@ -232,8 +233,8 @@ class MoleculeViewerBackend(QtCore.QObject):
             self._render_item.set_bond_color(color)
 
     def set_bond_color(
-        self,
-        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+            self,
+            color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
     ) -> None:
         """Set bond colour from Python code (not a slot)."""
         if self._render_item:
@@ -265,7 +266,7 @@ class MoleculeViewerBackend(QtCore.QObject):
 
     @Slot(int, bool)
     def togglePart(self, part: int, checked: bool) -> None:
-        """Called from each part CheckBox in QML."""
+        """Toggle a single part's visibility and update the renderer."""
         if self._render_item is None:
             return
         if self._manual_parts is None:
@@ -371,8 +372,8 @@ class MoleculeViewerQuickWidget(QtWidgets.QWidget):
             self._backend.load_file(filename)
 
     def set_bond_color(
-        self,
-        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+            self,
+            color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
     ) -> None:
         """Set the default colour used for non-selected bonds."""
         if self._backend:
@@ -385,6 +386,7 @@ class MoleculeViewerQuickWidget(QtWidgets.QWidget):
 
 if __name__ == '__main__':
     import sys
+
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     w = MoleculeViewerQuickWidget()
     w.resize(900, 650)
@@ -394,4 +396,3 @@ if __name__ == '__main__':
         100, lambda: w.load_file('tests/test-data/1979688_small.cif')
     )
     sys.exit(app.exec())
-

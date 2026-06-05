@@ -146,24 +146,13 @@ ColumnLayout {
             onClicked: backend.saveImageDialog()
         }
 
-        // ── Inline parts filter ──────────────────────────────────────────
+        // ── Inline parts filter (combo-box dropdown) ─────────────────────
         // Visible only when the structure has multiple disorder parts.
-        RowLayout {
+        PartFilterComboBox {
             visible: backend.hasParts
-            spacing: 4
-
-            Label {
-                text: "Parts:"
-                visible: backend.hasParts
-            }
-
-            Repeater {
-                model: backend.partsModel
-                CheckBox {
-                    text: "Part " + modelData
-                    checked: true
-                    onToggled: backend.togglePart(modelData, checked)
-                }
+            partsModel: backend.partsModel
+            onPartToggled: function(part, checked) {
+                backend.togglePart(part, checked)
             }
         }
 
