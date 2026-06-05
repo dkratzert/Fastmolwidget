@@ -9,7 +9,7 @@ from fastmolwidget.molecule_painter import MoleculeRendererMixin
 from fastmolwidget.viewer_widget_quick import MoleculeViewerQuickWidget, MoleculeViewerBackend
 from fastmolwidget.molecule_quick import MoleculeQuickItem
 
-__version__ = "0.9.7"
+__version__ = "0.9.8"
 
 __all__ = [
     "MoleculeViewerWidget",
