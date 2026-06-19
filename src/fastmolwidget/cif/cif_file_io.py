@@ -1,14 +1,6 @@
-#  ----------------------------------------------------------------------------
-#  "THE BEER-WARE LICENSE" (Revision 42):
-#  dkratzert@gmx.de> wrote this file.  As long as you retain
-#  this notice you can do whatever you want with this stuff. If we meet some day,
-#  and you think this stuff is worth it, you can buy me a beer in return.
-#  Dr. Daniel Kratzert
-#  ----------------------------------------------------------------------------
 import os
 import re
 from collections import namedtuple
-from collections.abc import Generator
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Generator
@@ -671,9 +663,9 @@ class CifReader:
         publ_loop = self.block.find_loop('_geom_angle_publ_flag') or len(label1) * ['?']
         angle = namedtuple('angle', ('label1', 'label2', 'label3', 'angle_val', 'symm1', 'symm2'))
         for label1, label2, label3, angle_val, symm1, symm2, publ in (
-            zip(label1, label2, label3, angle_val, symm1, symm2, publ_loop, strict=False)):
+                zip(label1, label2, label3, angle_val, symm1, symm2, publ_loop, strict=False)):
             if ((without_H and (self.ishydrogen(label1) or self.ishydrogen(label2) or self.ishydrogen(label3))) or
-                self.yes_not_set(publ)):
+                    self.yes_not_set(publ)):
                 continue
             else:
                 yield angle(label1=label1, label2=label2, label3=label3, angle_val=angle_val,
@@ -747,7 +739,7 @@ class CifReader:
         hydr = namedtuple('HydrogenBond', ('label_d', 'label_h', 'label_a', 'dist_dh', 'dist_ha', 'dist_da',
                                            'angle_dha', 'symm'))
         for label_d, label_h, label_a, dist_dh, dist_ha, dist_da, angle_dha, symm, publ in (
-            zip(label_d, label_h, label_a, dist_dh, dist_ha, dist_da, angle_dha, symm, publ_loop, strict=False)):
+                zip(label_d, label_h, label_a, dist_dh, dist_ha, dist_da, angle_dha, symm, publ_loop, strict=False)):
             if self.yes_not_set(publ):
                 continue
             yield hydr(label_d, label_h, label_a, dist_dh, dist_ha, dist_da, angle_dha, self.checksymm(symm))
@@ -759,7 +751,6 @@ class CifReader:
         for item in self.block:
             if item.pair is not None:
                 yield item.pair
-
 
     def test_res_checksum(self) -> bool:
         """
@@ -794,5 +785,3 @@ class CifReader:
             return False
         else:
             return True
-
-
