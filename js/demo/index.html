@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Fastmolwidget — JS renderer demo</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+    #bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid #ccc; flex-wrap: wrap; }
+    #bar label { display: flex; align-items: center; gap: 4px; font-size: 13px; }
+    canvas { flex: 1; display: block; width: 100%; height: 100%; cursor: grab; }
+    #status { font-size: 12px; color: #555; margin-left: auto; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <button id="openBtn">Open sample.json</button>
+    <input id="fileInput" type="file" accept=".json" style="display:none">
+    <label><input id="growChk" type="checkbox"> Grow</label>
+    <label><input id="packChk" type="checkbox"> Pack unit cell</label>
+    <label><input id="adpChk" type="checkbox" checked> ADPs</label>
+    <label><input id="labelChk" type="checkbox" checked> Labels</label>
+    <label><input id="hChk" type="checkbox" checked> Show H</label>
+    <label>Bond width <input id="bondWidth" type="range" min="1" max="15" value="3"></label>
+    <button id="bestViewBtn">Best view</button>
+    <button id="resetBtn">Reset view</button>
+    <button id="saveBtn">Save image</button>
+    <span id="status"></span>
+  </div>
+  <canvas id="canvas"></canvas>
+
+  <script type="module">
+    import { MoleculeViewer2D } from '../viewer.js';
+
+    const canvas = document.getElementById('canvas');
+    function fitCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const oldW = canvas.width, oldH = canvas.height;
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      if (viewer) viewer.widget.handleResize(oldW, oldH, canvas.width, canvas.height);
+    }
+
+    const viewer = new MoleculeViewer2D(canvas);
+    window.viewer = viewer; // for manual console poking during development
+
+    window.addEventListener('resize', fitCanvas);
+    fitCanvas();
+
+    const status = document.getElementById('status');
+    viewer.widget.addEventListener('atomClicked', (e) => { status.textContent = `Atom: ${e.detail}`; });
+    viewer.widget.addEventListener('bondClicked', (e) => { status.textContent = `Bond: ${e.detail.join('-')}`; });
+    viewer.widget.addEventListener('partsChanged', (e) => { console.log('parts', e.detail); });
+
+    async function loadUrl(url) {
+      const data = await (await fetch(url)).json();
+      viewer.loadStructure(data);
+      fitCanvas();
+      viewer.widget.resetView();
+      status.textContent = `Loaded ${data.atoms.length} atoms`;
+    }
+
+    document.getElementById('openBtn').addEventListener('click', () => loadUrl('sample.json'));
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const data = JSON.parse(await file.text());
+      viewer.loadStructure(data);
+      viewer.widget.resetView();
+    });
+
+    document.getElementById('growChk').addEventListener('change', (e) => {
+      if (e.target.checked) document.getElementById('packChk').checked = false;
+      viewer.setGrow(e.target.checked);
+    });
+    document.getElementById('packChk').addEventListener('change', (e) => {
+      if (e.target.checked) document.getElementById('growChk').checked = false;
+      viewer.setPack(e.target.checked);
+    });
+    document.getElementById('adpChk').addEventListener('change', (e) => viewer.widget.showAdps(e.target.checked));
+    document.getElementById('labelChk').addEventListener('change', (e) => viewer.widget.showLabels(e.target.checked));
+    document.getElementById('hChk').addEventListener('change', (e) => viewer.widget.showHydrogens(e.target.checked));
+    document.getElementById('bondWidth').addEventListener('input', (e) => viewer.widget.setBondWidth(parseInt(e.target.value, 10)));
+    document.getElementById('bestViewBtn').addEventListener('click', () => viewer.widget.alignBestView());
+    document.getElementById('resetBtn').addEventListener('click', () => viewer.widget.resetView());
+    document.getElementById('saveBtn').addEventListener('click', () => viewer.widget.saveImage('molecule.png'));
+
+    // Auto-load the bundled sample on first paint.
+    loadUrl('sample.json').catch((err) => { status.textContent = `Failed to load sample.json: ${err}`; });
+  </script>
+</body>
+</html>

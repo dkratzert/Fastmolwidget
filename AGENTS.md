@@ -43,6 +43,17 @@ Embeddable PyQt/PySide6 widget for crystal-structure display. Three parallel ren
 
 This repo uses **uv** (`uv.lock`) for development, but the build backend is **setuptools** (`build-backend = "setuptools.build_meta"`) because it supports the optional `sdm_cpp` C++ extension built via `setup.py`.
 
+## JavaScript renderer (`js/`)
+
+A dependency-free browser/Canvas port of `molecule2D.py` + `molecule_painter.py`
+plus the SDM grow/pack-unit-cell logic (`sdm.py`), for embedding molecule
+views in web pages without Qt. CIF/SHELX file **parsing** still happens in
+Python (`fastmolwidget.web_export` exports the asymmetric unit + symmetry
+ops as JSON); growing, packing, and rendering all run in the browser. See
+`js/README.md` for the file layout, JSON contract, and API mapping. All
+algorithmic ports were numerically cross-validated against the real Python
+implementations (see `js/README.md` "Notes on fidelity").
+
 ## Copilot instructions
 - Install dependencies in a new virtual environment. For 3D support, the host system must have OpenGL drivers and `libegl1` installed (on Debian/Ubuntu):
 ```bash
