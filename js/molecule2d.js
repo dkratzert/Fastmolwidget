@@ -802,8 +802,11 @@ export class MoleculeWidget2D extends EventTarget {
     });
   }
 
-  /** Render immediately onto `this.canvas` (or a supplied context/size for export). */
-  render(ctx = this.ctx, width = this.canvas.width, height = this.canvas.height) {
+  /** Render immediately onto `this.canvas` (or a supplied context/size for export).
+   * `scale` sets the baseline transform (used by `toDataURL`/`saveImage` to
+   * render at higher resolution without the caller having to pre-apply
+   * `ctx.scale()`, which would otherwise be wiped out by the reset below). */
+  render(ctx = this.ctx, width = this.canvas.width, height = this.canvas.height, scale = 1) {
     // Always start from a clean, known state. If a previous frame threw
     // between a ctx.save() and its matching ctx.restore() (e.g. an
     // unexpected NaN or an invalid colour string reaching a canvas API that
@@ -812,7 +815,7 @@ export class MoleculeWidget2D extends EventTarget {
     // looks like darkened, streaky "stripes" across the canvas. Resetting
     // the transform up front makes that failure mode structurally
     // impossible regardless of what caused the earlier exception.
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
     ctx.save();
     try {
       this._renderScene(ctx, width, height);
@@ -1238,8 +1241,7 @@ export class MoleculeWidget2D extends EventTarget {
     off.width = this.canvas.width * scale;
     off.height = this.canvas.height * scale;
     const octx = off.getContext('2d');
-    octx.scale(scale, scale);
-    this.render(octx, this.canvas.width, this.canvas.height);
+    this.render(octx, this.canvas.width, this.canvas.height, scale);
     return off.toDataURL(type);
   }
 
