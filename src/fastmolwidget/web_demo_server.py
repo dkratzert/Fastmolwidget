@@ -30,7 +30,7 @@ from fastmolwidget.web_export import export_cif
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JS_DIR = REPO_ROOT / 'js'
-DEFAULT_CIF = REPO_ROOT / 'tests' / 'test-data' / 'p31c.cif'
+DEFAULT_CIF = REPO_ROOT / 'tests' / 'test-data' / '41467_2015_BFncomms9288_MOESM1370_ESM.cif'
 
 __all__ = ['main', 'run_server']
 
