@@ -1115,11 +1115,21 @@ export class MoleculeWidget2D extends EventTarget {
       // near edge-on: the transform becomes nearly singular, 1/det blows
       // up, and the "circle" degenerates into a huge filled band across
       // the canvas instead of a thin arc.
+      //
+      // The visible (non-occluded) half of this 3D cross-section is where
+      // its depth offset z(t) = AzN*cos(t) + BzN*sin(t) is <= 0 (smaller z
+      // = closer to the viewer, matching the z-order painter's-algorithm
+      // sort below). z(t) = zAmp*cos(t - phiN), which is <= 0 exactly for
+      // t in [phiN + pi/2, phiN + 3*pi/2] — a plain half turn starting at
+      // phiN + pi/2. (Qt's `drawArc` needs the negated/offset angle here
+      // because its angle parameter is measured the opposite way from the
+      // cos(t)/sin(t) sampling used below; since we sample directly there
+      // is no such flip to compensate for.)
       let startAngle = 0;
       let sweep = 2 * Math.PI;
       if (zAmp >= 1e-8) {
         const phiN = Math.atan2(BzN, AzN);
-        startAngle = -(phiN + 1.5 * Math.PI);
+        startAngle = phiN + Math.PI / 2;
         sweep = Math.PI;
       }
       const steps = 48;
