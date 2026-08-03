@@ -1324,8 +1324,8 @@ class MoleculeRendererMixin:
             By = s * rj_3d * (-vj0 * sin_a + vj1 * cos_a)
             arc_xform = QTransform(Ax, Ay, Bx, By, 0.0, 0.0)
             self._painter.setTransform(arc_xform * base_transform)  # type: ignore[union-attr]
-            Az_n = vi2 * rj_3d
-            Bz_n = vj2 * ri_3d
+            Az_n = vi2 * ri_3d
+            Bz_n = vj2 * rj_3d
             z_amp = sqrt(Az_n * Az_n + Bz_n * Bz_n)
             if z_amp < 1e-8:
                 self._painter.drawArc(self._UNIT_RECT, 0, 5760)  # type: ignore[union-attr]

@@ -11,6 +11,7 @@
  */
 
 import { getRadiusFromElement } from './elements.js';
+import { transpose } from './linalg.js';
 import { applySymmOp, fracToCart, identitySymmOp, matEquals, parseSymmOp, transEquivalent } from './symmetry.js';
 
 const HYDROGENS = new Set(['H', 'D']);
@@ -215,7 +216,7 @@ export class SDM {
         if (atom.molindex !== symmgroup) continue;
         const [px0, py0, pz0] = applySymmOp(op, [atom.x, atom.y, atom.z]);
         const px = px0 + h2, py = py0 + k2, pz = pz0 + l2;
-        const newAtom = { label: atom.label, type: atom.type, x: px, y: py, z: pz, part: atom.part, matrix: op.matrix };
+        const newAtom = { label: atom.label, type: atom.type, x: px, y: py, z: pz, part: atom.part, matrix: transpose(op.matrix) };
 
         let isThere = false;
         if (atom.part >= 0) {
@@ -280,7 +281,7 @@ export class SDM {
         }
         if (!isDup) {
           const [cx, cy, cz] = fracToCart([px, py, pz], this.cell);
-          packed.push({ fx: px, fy: py, fz: pz, part: at.part, label: at.label, type: at.type, cx, cy, cz, matrix: op.matrix });
+          packed.push({ fx: px, fy: py, fz: pz, part: at.part, label: at.label, type: at.type, cx, cy, cz, matrix: transpose(op.matrix) });
         }
       }
     }

@@ -24,7 +24,7 @@
 
 import { getElementColor, getRadiusFromElement } from './elements.js';
 import {
-  cross, eigSym3, identity3, inv3, matMul, matVec, norm, normalize, transpose, vecAdd, vecScale, vecSub,
+  cross, eigSym3, identity3, inv3, matMul, matVec, norm, normalize, orthonormalize3, transpose, vecAdd, vecScale, vecSub,
 } from './linalg.js';
 import { darker, lighter } from './color.js';
 import { buildConnTable } from './conntable.js';
@@ -89,7 +89,7 @@ export class MoleculeWidget2D extends EventTarget {
     this.ctx = canvas.getContext('2d');
 
     this.zoom = 1.0;
-    this.fontsize = 13;
+    this.fontsize = 10;
     this.bondWidth = 3;
     this.labels = true;
     this.showAdpsFlag = true;
@@ -412,17 +412,30 @@ export class MoleculeWidget2D extends EventTarget {
     const invCurrent = inv3(this.cumulativeR) ?? identity3();
     const deltaR = matMul(targetR, invCurrent);
     this._applyDeltaRotation(deltaR);
-    this.cumulativeR = targetR;
+    this.cumulativeR = orthonormalize3(targetR);
     this.update();
   }
 
   _applyDeltaRotation(deltaR) {
+    // Rotate the cached eigen-decomposition rigidly instead of recomputing it
+    // from scratch (mirrors the Python/Qt renderer's `rotate_molecule`).
+    // Re-deriving eigenvectors every drag frame via the analytic eigSym3
+    // solver is numerically unstable whenever an atom has two (near-)equal
+    // ADP eigenvalues (e.g. an atom sitting on a symmetry axis): the
+    // null-space computation degenerates and eigSym3 falls back to an
+    // arbitrary fixed world-axis vector, unrelated to the atom's actual
+    // orientation. That made the principal-axis cross-section lines jump to
+    // nonsensical directions while the ellipse body (computed independently
+    // from the 2x2 projected covariance) stayed correct. Rotating the
+    // eigenvectors themselves is exact (eigenvalues are rotation-invariant)
+    // and keeps everything consistent frame to frame.
     for (const at of this.atoms) {
       at.coordinate = vecAdd(matVec(deltaR, vecSub(at.coordinate, this.moleculeCenter)), this.moleculeCenter);
       at.z = at.coordinate[2];
       if (at.uCart) {
         at.uCart = matMul(deltaR, matMul(at.uCart, transpose(deltaR)));
-        this._refreshAdpDerived(at);
+        if (at.uEigvecs) at.uEigvecs = matMul(deltaR, at.uEigvecs);
+        if (at.uInv) at.uInv = matMul(deltaR, matMul(at.uInv, transpose(deltaR)));
       }
     }
   }
@@ -542,6 +555,12 @@ export class MoleculeWidget2D extends EventTarget {
     const canvas = this.canvas;
     if (canvas.tabIndex < 0) canvas.tabIndex = 0;
     if (!canvas.style.touchAction) canvas.style.touchAction = 'none';
+    // Prevent the browser from starting a text/element selection drag over
+    // the canvas — without this, dragging (e.g. to rotate) can trigger the
+    // browser's "auto-scroll toward viewport edge to extend selection"
+    // behaviour, which visibly shifts the whole page.
+    canvas.style.userSelect = 'none';
+    canvas.style.webkitUserSelect = 'none';
 
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('mousedown', (e) => this._onMouseDown(e));
@@ -573,7 +592,9 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _onMouseDown(e) {
-    this.canvas.focus?.();
+    // preventScroll avoids the browser scrolling the canvas into view (which
+    // would otherwise shift the whole page on every click-drag).
+    this.canvas.focus?.({ preventScroll: true });
     const pos = this._eventPos(e);
     this.lastPos = pos;
     this.pressPos = pos;
@@ -586,6 +607,11 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _onDragMove(e) {
+    // Prevent the browser from starting/extending a text selection while
+    // dragging, which on many browsers auto-scrolls the page toward the
+    // viewport edge the cursor approaches (visible as the toolbar "shifting
+    // upward" during an upward rotate-drag).
+    e.preventDefault();
     const pos = this._eventPos(e);
     if (this._dragButton === 0) {
       this.rotateMolecule(pos.x - this.lastPos.x, pos.y - this.lastPos.y);
@@ -674,7 +700,11 @@ export class MoleculeWidget2D extends EventTarget {
     const Rx = [[1, 0, 0], [0, Math.cos(xAngle), -Math.sin(xAngle)], [0, Math.sin(xAngle), Math.cos(xAngle)]];
     const Ry = [[Math.cos(yAngle), 0, Math.sin(yAngle)], [0, 1, 0], [-Math.sin(yAngle), 0, Math.cos(yAngle)]];
     const R = matMul(Rx, Ry);
-    this.cumulativeR = matMul(R, this.cumulativeR);
+    // Re-orthonormalize after composing: many small rotation multiplications
+    // in a row (every mousemove of a drag, over a long session) otherwise
+    // accumulate floating-point drift away from a proper rotation matrix,
+    // which would gradually distort the rendered geometry.
+    this.cumulativeR = orthonormalize3(matMul(R, this.cumulativeR));
     this._applyDeltaRotation(R);
     this.update();
   }
@@ -774,12 +804,32 @@ export class MoleculeWidget2D extends EventTarget {
 
   /** Render immediately onto `this.canvas` (or a supplied context/size for export). */
   render(ctx = this.ctx, width = this.canvas.width, height = this.canvas.height) {
+    // Always start from a clean, known state. If a previous frame threw
+    // between a ctx.save() and its matching ctx.restore() (e.g. an
+    // unexpected NaN or an invalid colour string reaching a canvas API that
+    // throws), the active transform could otherwise stay leaked — every
+    // following frame would then render translated/rotated/skewed, which
+    // looks like darkened, streaky "stripes" across the canvas. Resetting
+    // the transform up front makes that failure mode structurally
+    // impossible regardless of what caused the earlier exception.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.save();
+    try {
+      this._renderScene(ctx, width, height);
+    } catch (err) {
+      // Mirrors the Python widget's paintEvent try/except: never let a
+      // single bad frame corrupt the canvas or crash the caller.
+      console.error('MoleculeWidget2D render failed:', err);
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  _renderScene(ctx, width, height) {
     ctx.fillStyle = this.bgColor;
     ctx.fillRect(0, 0, width, height);
 
     if (this.atoms.length === 0) {
-      ctx.restore();
       return;
     }
 
@@ -833,8 +883,6 @@ export class MoleculeWidget2D extends EventTarget {
     }
 
     if (this.isPacked) this._drawAxisIndicator(ctx, height);
-
-    ctx.restore();
   }
 
   _calculateZOrder() {
@@ -1056,23 +1104,36 @@ export class MoleculeWidget2D extends EventTarget {
       const Ax = s * ri3d * vi[0], Ay = s * ri3d * vi[1];
       const Bx = s * rj3d * vj[0], By = s * rj3d * vj[1];
 
-      const AzN = vi[2] * rj3d, BzN = vj[2] * ri3d;
+      const AzN = vi[2] * ri3d, BzN = vj[2] * rj3d;
       const zAmp = Math.hypot(AzN, BzN);
 
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.transform(Ax, Ay, Bx, By, cx, cy);
-      ctx.beginPath();
-      if (zAmp < 1e-8) {
-        ctx.arc(0, 0, 1, 0, 2 * Math.PI);
-      } else {
+      // Sample the arc directly in screen space (rather than stroking a
+      // unit circle through a ctx.transform) so the stroke width stays
+      // exactly `cachedAdpLineWidth` device pixels, mirroring Qt's cosmetic
+      // pen. Relying on ctx.transform + a compensating 1/det line-width
+      // scale breaks down when the ellipsoid's principal plane is viewed
+      // near edge-on: the transform becomes nearly singular, 1/det blows
+      // up, and the "circle" degenerates into a huge filled band across
+      // the canvas instead of a thin arc.
+      let startAngle = 0;
+      let sweep = 2 * Math.PI;
+      if (zAmp >= 1e-8) {
         const phiN = Math.atan2(BzN, AzN);
-        const startAngle = -(phiN + 1.5 * Math.PI);
-        ctx.arc(0, 0, 1, startAngle, startAngle + Math.PI);
+        startAngle = -(phiN + 1.5 * Math.PI);
+        sweep = Math.PI;
       }
-      // Undo the anisotropic scale contribution to keep the stroke thin.
-      const detApprox = Math.sqrt(Math.abs(Ax * By - Bx * Ay)) || 1;
-      ctx.lineWidth = this.cachedAdpLineWidth / detApprox;
+      const steps = 48;
+      ctx.save();
+      ctx.beginPath();
+      for (let k = 0; k <= steps; k++) {
+        const t = startAngle + (sweep * k) / steps;
+        const lx = Math.cos(t), ly = Math.sin(t);
+        const px = cx + Ax * lx + Bx * ly;
+        const py = cy + Ay * lx + By * ly;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.lineWidth = this.cachedAdpLineWidth;
       ctx.stroke();
       ctx.restore();
     }

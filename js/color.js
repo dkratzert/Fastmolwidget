@@ -47,7 +47,12 @@ function hsvToRgb(h, s, v) {
 }
 
 /** Parse a colour into `{r,g,b,a}` (0..255, alpha 0..1). Accepts hex strings,
- * `rgb()`/`rgba()` strings, or `[r,g,b]` / `[r,g,b,a]` arrays. */
+ * `rgb()`/`rgba()` strings, `[r,g,b]` / `[r,g,b,a]` arrays, or any other valid
+ * CSS colour (named colours, `hsl()`, etc. — resolved via a throwaway canvas).
+ * Never throws: an unparsable value falls back to opaque black, mirroring
+ * Qt's `QColor` (an invalid colour string silently yields an invalid/black
+ * colour rather than raising), so a single bad colour can never crash a
+ * render pass. */
 export function parseColor(color) {
   if (Array.isArray(color)) {
     const [r, g, b, a = 1] = color;
@@ -63,8 +68,32 @@ export function parseColor(color) {
       const parts = m[1].split(',').map((v) => parseFloat(v));
       return { r: parts[0], g: parts[1], b: parts[2], a: parts[3] ?? 1 };
     }
+    return parseColorViaCanvas(color);
   }
-  throw new Error(`Unsupported colour value: ${color}`);
+  return { r: 0, g: 0, b: 0, a: 1 };
+}
+
+// Lazily created 1x1 canvas used to resolve any CSS-colour syntax the fast
+// paths above don't handle (named colours, hsl(), etc.) without ever
+// throwing — the canvas 2D API silently ignores an invalid `fillStyle`
+// assignment instead of raising.
+let _colorProbeCtx = null;
+function parseColorViaCanvas(color) {
+  try {
+    if (!_colorProbeCtx) {
+      const c = document.createElement('canvas');
+      c.width = 1;
+      c.height = 1;
+      _colorProbeCtx = c.getContext('2d');
+    }
+    _colorProbeCtx.fillStyle = '#000000';
+    _colorProbeCtx.fillStyle = color; // silently ignored if invalid
+    _colorProbeCtx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = _colorProbeCtx.getImageData(0, 0, 1, 1).data;
+    return { r, g, b, a: a / 255 };
+  } catch {
+    return { r: 0, g: 0, b: 0, a: 1 };
+  }
 }
 
 export function toCss({ r, g, b, a = 1 }) {

@@ -134,7 +134,36 @@ cell and canvas focus).
   the underlying geometry is exact).
 - The analytic 3×3 symmetric eigen-decomposition (`linalg.js: eigSym3`) was
   validated against `numpy.linalg.eigh` (max error ~1e-14 on 2000 random
-  matrices).
+  matrices), including atoms with (near-)degenerate ADP eigenvalues (common
+  for atoms sitting on a crystallographic symmetry axis, e.g. `N3`/`C23`/`C24`
+  in `p31c.cif`): the row-cross-product null-space trick used for a single
+  eigenvector is ill-conditioned when its eigenvalue isn't well separated
+  from the others, so `eigSym3` first solves for whichever eigenvalue *is*
+  well separated (always one of the two extremes) and then resolves the
+  remaining (possibly degenerate) pair via a well-conditioned 2×2 eigenproblem
+  in the orthogonal-complement plane, instead of falling back to an arbitrary
+  fixed world-axis vector.
+- Interactive rotation (`_applyDeltaRotation`) rigidly rotates each atom's
+  cached ADP eigenvectors/inverse by the incremental delta rotation rather
+  than re-running `eigSym3` on every drag frame, mirroring the Python/Qt
+  renderer's `rotate_molecule`. `eigSym3` is only invoked once per file
+  load/reload. This matters because eigenvector choice within a degenerate
+  eigenspace, while always mathematically valid, is an arbitrary pick each
+  time it's recomputed — re-deriving it every frame made the principal-axis
+  cross-section arcs jump to a different (correct but visually
+  "differently-rotated") basis on almost every mouse-move event.
 - `SDM.grow()`, `SDM.packUnitCell()`, and `buildConnTable()` were validated
   against the real `fastmolwidget.sdm.SDM` / `fastmolwidget.tools.build_conntable`
   on real CIF test structures and produce byte-for-byte identical atom sets.
+- The `symm_matrix` returned by `SDM.grow()`/`SDM.packUnitCell()` must be the
+  **transpose** of the raw symmetry-operation matrix, matching the convention
+  `fastmolwidget.sdm.SDM` uses internally (it stores `SymmetryElement.matrix.T`).
+  `MoleculeWidget2D._uijToCart()` applies `symm_matrix.T @ Uij @ symm_matrix`
+  (a literal port of `molecule_painter._uij_to_cart`), which only produces the
+  correct tensor-transform law `U' = M @ U @ M.T` when `symm_matrix` is `M.T`.
+  Storing the raw (non-transposed) matrix silently produces wrong — often
+  non-positive-definite — ADP ellipsoids for every symmetry-generated
+  (grown/packed) atom while leaving asymmetric-unit atoms unaffected. Verified
+  against the real Python renderer on `tests/test-data/p31c.cif`: all 52
+  symmetry-generated ADP atoms match to `1e-16` after the fix (vs. 0.04–0.22 Ų
+  off before it).

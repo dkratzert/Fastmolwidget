@@ -107,6 +107,22 @@ export function normalize(a) {
 }
 
 /**
+ * Re-orthonormalize a near-rotation 3x3 matrix (rows) via Gram-Schmidt,
+ * returning the nearest proper rotation matrix. Used to correct the tiny
+ * floating-point drift that accumulates after composing many incremental
+ * rotations (e.g. hundreds of mouse-drag rotate steps in one session) —
+ * without this, a rotation matrix can very slowly stop being orthonormal,
+ * eventually distorting rendered geometry (elongated/skewed shapes).
+ */
+export function orthonormalize3(m) {
+  const r0 = normalize(m[0]);
+  let r1 = vecSub(m[1], vecScale(r0, dot(r0, m[1])));
+  r1 = normalize(r1);
+  const r2 = cross(r0, r1);
+  return [r0, r1, r2];
+}
+
+/**
  * Analytic eigen-decomposition of a symmetric 3x3 matrix, equivalent to
  * `numpy.linalg.eigh`: returns ascending eigenvalues and matching
  * orthonormal eigenvectors as matrix columns.
@@ -153,9 +169,12 @@ export function eigSym3(A) {
   const eig1 = 3 * q - eig0 - eig2; // trace is invariant
 
   const vals = [eig0, eig1, eig2].sort((a, b) => a - b);
+  const [l0, l1, l2] = vals;
 
   const eigenvectorFor = (lambda) => {
-    // Solve (A - lambda*I) v = 0 using the row-cross-product trick.
+    // Solve (A - lambda*I) v = 0 using the row-cross-product trick. Only
+    // reliable when lambda is well separated from the other two
+    // eigenvalues (i.e. (A - lambda*I) has rank 2); callers must ensure that.
     const M = [
       [a00 - lambda, a01, a02],
       [a01, a11 - lambda, a12],
@@ -175,21 +194,60 @@ export function eigSym3(A) {
         bestLen = len;
       }
     }
-    if (bestLen < 1e-9) return [1, 0, 0];
+    if (bestLen < 1e-9) return null;
     return normalize(best);
   };
 
-  let v0 = eigenvectorFor(vals[0]);
-  let v1 = eigenvectorFor(vals[1]);
-  let v2 = eigenvectorFor(vals[2]);
-  // Ensure orthonormal right-handed basis even for (near-)degenerate cases.
-  v1 = normalize(vecSub(v1, vecScale(v0, dot(v0, v1))));
-  if (norm(v1) < 1e-6) {
-    // Degenerate: pick any vector orthogonal to v0.
-    const helper = Math.abs(v0[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
-    v1 = normalize(cross(v0, helper));
+  // Repeated eigenvalues make the row-cross-product null-space trick above
+  // ill-conditioned (or outright rank-deficient), which used to make this
+  // function fall back to an arbitrary fixed world-axis vector — unrelated
+  // to the matrix's actual orientation. This is common in practice: any ADP
+  // that sits on crystallographic symmetry axis has two exactly equal
+  // eigenvalues. Instead, pick whichever eigenvalue is best separated from
+  // the *other two* (always one of the two extremes, never the middle one,
+  // since its isolation is the min of the two outer gaps) and solve for
+  // that eigenvector robustly, then resolve the remaining (possibly
+  // degenerate) pair by reducing to a well-conditioned 2x2 symmetric
+  // eigenproblem within the plane orthogonal to it — never guessing.
+  const isoLow = l1 - l0;
+  const isoHigh = l2 - l1;
+  const isoIndex = isoLow >= isoHigh ? 0 : 2;
+  let vIso = eigenvectorFor(vals[isoIndex]);
+  if (vIso === null) {
+    // All three eigenvalues effectively equal (isotropic): any orthonormal
+    // basis is a valid eigenbasis.
+    return { values: vals, vectors: identity3() };
   }
-  v2 = cross(v0, v1);
+
+  // Helper vector: whichever world axis is least aligned with vIso, to keep
+  // the Gram-Schmidt step well-conditioned.
+  const absComp = [Math.abs(vIso[0]), Math.abs(vIso[1]), Math.abs(vIso[2])];
+  const helperAxis = absComp[0] <= absComp[1] && absComp[0] <= absComp[2] ? 0
+    : absComp[1] <= absComp[2] ? 1 : 2;
+  const helper = [0, 0, 0];
+  helper[helperAxis] = 1;
+  const vA = normalize(vecSub(helper, vecScale(vIso, dot(helper, vIso))));
+  const vB = cross(vIso, vA);
+
+  // Project A onto the (vA, vB) plane and solve the 2x2 eigenproblem
+  // analytically — this correctly splits the remaining two eigenvectors
+  // even when they are close but not exactly equal, and is exact (any
+  // basis works) when they are equal.
+  const Av_A = matVec3(A, vA);
+  const Av_B = matVec3(A, vB);
+  const Aaa = dot(vA, Av_A);
+  const Abb = dot(vB, Av_B);
+  const Aab = dot(vA, Av_B);
+  const T = Aaa + Abb;
+  const D = Aaa * Abb - Aab * Aab;
+  const disc = Math.sqrt(Math.max(0, (T * T) / 4 - D));
+  const eLo = T / 2 - disc;
+  const ph = Math.abs(Aab) > 1e-12 ? Math.atan2(eLo - Aaa, Aab) : (Aaa <= Abb ? 0 : Math.PI / 2);
+  const cosPh = Math.cos(ph), sinPh = Math.sin(ph);
+  const vLo = vecAdd(vecScale(vA, cosPh), vecScale(vB, sinPh));
+  const vHi = vecAdd(vecScale(vA, -sinPh), vecScale(vB, cosPh));
+
+  const [v0, v1, v2] = isoIndex === 0 ? [vIso, vLo, vHi] : [vLo, vHi, vIso];
 
   return {
     values: vals,
@@ -199,4 +257,12 @@ export function eigSym3(A) {
       [v0[2], v1[2], v2[2]],
     ],
   };
+}
+
+function matVec3(A, v) {
+  return [
+    A[0][0] * v[0] + A[0][1] * v[1] + A[0][2] * v[2],
+    A[1][0] * v[0] + A[1][1] * v[1] + A[1][2] * v[2],
+    A[2][0] * v[0] + A[2][1] * v[1] + A[2][2] * v[2],
+  ];
 }
