@@ -30,7 +30,7 @@ from fastmolwidget.web_export import export_cif
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 JS_DIR = REPO_ROOT / 'js'
-DEFAULT_CIF = REPO_ROOT / 'tests' / 'test-data' / '41467_2015_BFncomms9288_MOESM1370_ESM.cif'
+DEFAULT_CIF = REPO_ROOT / 'tests' / 'test-data' / 'p21c.cif'
 
 __all__ = ['main', 'run_server']
 
@@ -55,7 +55,7 @@ _DEMO_HTML_TEMPLATE = """<!doctype html>
     <label><input id="growChk" type="checkbox"> Grow</label>
     <label><input id="packChk" type="checkbox"> Pack unit cell</label>
     <label><input id="adpChk" type="checkbox" checked> ADPs</label>
-    <label><input id="labelChk" type="checkbox" checked> Labels</label>
+    <label><input id="labelChk" type="checkbox"> Labels</label>
     <label><input id="hChk" type="checkbox" checked> Show H</label>
     <label>Bond width <input id="bondWidth" type="range" min="1" max="15" value="3"></label>
     <button id="bestViewBtn">Best view</button>

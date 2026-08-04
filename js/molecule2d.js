@@ -102,7 +102,7 @@ export class MoleculeWidget2D extends EventTarget {
     this.zoom = 1.0;
     this.fontsize = 10;
     this.bondWidth = 3;
-    this.labels = true;
+    this.labels = false;
     this.showAdpsFlag = true;
     this.showHydrogensFlag = true;
 
