@@ -88,6 +88,17 @@ export class MoleculeWidget2D extends EventTarget {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
 
+    // HiDPI support: the canvas backing store is allocated at
+    // devicePixelRatio while all drawing happens in logical (CSS) pixels,
+    // exactly like Qt renders its widget at the screen's device pixel ratio.
+    // This keeps lines crisp on high-density displays and makes line
+    // thicknesses match the Qt QPainter widget 1:1. `options.devicePixelRatio`
+    // forces a fixed ratio (e.g. for deterministic tests / exports).
+    this._forcedDpr = options.devicePixelRatio ?? null;
+    this.dpr = this._detectDpr();
+    this._cssWidth = canvas.width;
+    this._cssHeight = canvas.height;
+
     this.zoom = 1.0;
     this.fontsize = 10;
     this.bondWidth = 3;
@@ -448,8 +459,19 @@ export class MoleculeWidget2D extends EventTarget {
     return this.zoom * 70;
   }
 
+  _detectDpr() {
+    if (this._forcedDpr != null) return this._forcedDpr;
+    return (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+  }
+
+  /** CSS (logical) pixel width of the drawing surface. */
+  get cssWidth() { return this._cssWidth; }
+
+  /** CSS (logical) pixel height of the drawing surface. */
+  get cssHeight() { return this._cssHeight; }
+
   _autoZoom() {
-    const w = this.canvas.width, h = this.canvas.height;
+    const w = this._cssWidth, h = this._cssHeight;
     const r = this.moleculeRadius;
     if (w <= 0 || h <= 0 || r <= 0) return AUTO_ZOOM_PADDING / 100;
     return (AUTO_ZOOM_PADDING * Math.min(w, h)) / 2 / r / 100;
@@ -459,15 +481,28 @@ export class MoleculeWidget2D extends EventTarget {
     return clamp(this.zoom * 3.0, 1.0, 6.0);
   }
 
-  /** Call after resizing the canvas element to keep the on-screen scale
-   * proportional (mirrors Qt's `resizeEvent`). */
-  handleResize(oldW, oldH, newW, newH) {
-    if (oldW > 0 && oldH > 0) {
-      const oldMin = Math.min(oldW, oldH);
-      const newMin = Math.min(newW, newH);
-      if (oldMin > 0) this.zoom *= newMin / oldMin;
-    }
+  /** Resize the drawing surface. `cssWidth`/`cssHeight` are logical (CSS)
+   * pixels — normally the element's `getBoundingClientRect()` size. The
+   * backing store is allocated at `devicePixelRatio` so lines stay crisp on
+   * HiDPI displays, mirroring Qt rendering the widget at the screen's device
+   * pixel ratio. Keeps the on-screen scale proportional (like Qt's
+   * `resizeEvent`). */
+  resize(cssWidth, cssHeight) {
+    this.dpr = this._detectDpr();
+    const oldMin = Math.min(this._cssWidth, this._cssHeight);
+    this._cssWidth = cssWidth;
+    this._cssHeight = cssHeight;
+    this.canvas.width = Math.max(1, Math.round(cssWidth * this.dpr));
+    this.canvas.height = Math.max(1, Math.round(cssHeight * this.dpr));
+    const newMin = Math.min(cssWidth, cssHeight);
+    if (oldMin > 0 && newMin > 0) this.zoom *= newMin / oldMin;
     this.update();
+  }
+
+  /** Backwards-compatible resize entry point. `newW`/`newH` are treated as
+   * logical (CSS) pixels and forwarded to {@link resize}. */
+  handleResize(oldW, oldH, newW, newH) {
+    this.resize(newW, newH);
   }
 
   getSphericalRadius(atom) {
@@ -529,7 +564,7 @@ export class MoleculeWidget2D extends EventTarget {
     const p2 = vecSub(c2, vecScale(vNorm, r2));
     const x1 = p1[0] * this.scale + this.cxGlobal, y1 = p1[1] * this.scale + this.cyGlobal;
     const x2 = p2[0] * this.scale + this.cxGlobal, y2 = p2[1] * this.scale + this.cyGlobal;
-    const dynamicWidth = Math.max(1, Math.round(this.bondWidth * this.zoom * 5));
+    const dynamicWidth = Math.max(1, Math.trunc(this.bondWidth * this.zoom * 5));
     return { x1, y1, x2, y2, width: dynamicWidth };
   }
 
@@ -586,8 +621,8 @@ export class MoleculeWidget2D extends EventTarget {
   _eventPos(e) {
     const rect = this.canvas.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) * (this.canvas.width / rect.width),
-      y: (e.clientY - rect.top) * (this.canvas.height / rect.height),
+      x: (e.clientX - rect.left) * (this._cssWidth / rect.width),
+      y: (e.clientY - rect.top) * (this._cssHeight / rect.height),
     };
   }
 
@@ -806,7 +841,8 @@ export class MoleculeWidget2D extends EventTarget {
    * `scale` sets the baseline transform (used by `toDataURL`/`saveImage` to
    * render at higher resolution without the caller having to pre-apply
    * `ctx.scale()`, which would otherwise be wiped out by the reset below). */
-  render(ctx = this.ctx, width = this.canvas.width, height = this.canvas.height, scale = 1) {
+  render(ctx = this.ctx, width = this._cssWidth, height = this._cssHeight,
+    scale = (this._cssWidth > 0 ? this.canvas.width / this._cssWidth : 1)) {
     // Always start from a clean, known state. If a previous frame threw
     // between a ctx.save() and its matching ctx.restore() (e.g. an
     // unexpected NaN or an invalid colour string reaching a canvas API that
@@ -936,7 +972,7 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _drawBondSelection(ctx, x1, y1, x2, y2, width) {
-    const selWidth = width + Math.max(4, Math.round(12 * this.zoom));
+    const selWidth = width + Math.max(4, Math.trunc(12 * this.zoom));
     ctx.save();
     ctx.strokeStyle = 'rgb(0,190,255)';
     ctx.lineWidth = selWidth;
@@ -1107,7 +1143,16 @@ export class MoleculeWidget2D extends EventTarget {
       const Ax = s * ri3d * vi[0], Ay = s * ri3d * vi[1];
       const Bx = s * rj3d * vj[0], By = s * rj3d * vj[1];
 
-      const AzN = vi[2] * ri3d, BzN = vj[2] * rj3d;
+      // This cross-section curve lies ON the ellipsoid surface, so the
+      // visible/hidden split is the silhouette (front-facing surface),
+      // determined by the surface NORMAL — not by the depth of the curve
+      // point. For a point P(t) = ri3d*cos(t)*vi + rj3d*sin(t)*vj on the
+      // surface, the outward normal is proportional to
+      //   (cos(t)/ri3d)*vi + (sin(t)/rj3d)*vj,
+      // hence the z-amplitude below uses division by the radius, not
+      // multiplication. For a spherical ADP (ri3d == rj3d) the two agree,
+      // but for elongated ellipsoids the depth-based split is wrong.
+      const AzN = vi[2] / ri3d, BzN = vj[2] / rj3d;
       const zAmp = Math.hypot(AzN, BzN);
 
       // Sample the arc directly in screen space (rather than stroking a
@@ -1119,11 +1164,12 @@ export class MoleculeWidget2D extends EventTarget {
       // up, and the "circle" degenerates into a huge filled band across
       // the canvas instead of a thin arc.
       //
-      // The visible (non-occluded) half of this 3D cross-section is where
-      // its depth offset z(t) = AzN*cos(t) + BzN*sin(t) is <= 0 (smaller z
-      // = closer to the viewer, matching the z-order painter's-algorithm
-      // sort below). z(t) = zAmp*cos(t - phiN), which is <= 0 exactly for
-      // t in [phiN + pi/2, phiN + 3*pi/2] — a plain half turn starting at
+      // The visible (front-facing) half of this on-surface cross-section is
+      // where the surface normal's depth component n_z(t) = AzN*cos(t) +
+      // BzN*sin(t) is <= 0 (normal pointing toward the viewer; smaller z =
+      // closer, matching the z-order painter's-algorithm sort below).
+      // n_z(t) = zAmp*cos(t - phiN), which is <= 0 exactly for t in
+      // [phiN + pi/2, phiN + 3*pi/2] — a plain half turn starting at
       // phiN + pi/2. (Qt's `drawArc` needs the negated/offset angle here
       // because its angle parameter is measured the opposite way from the
       // cos(t)/sin(t) sampling used below; since we sample directly there
@@ -1238,10 +1284,10 @@ export class MoleculeWidget2D extends EventTarget {
   /** Render at `scale`x resolution and return a data URL (default PNG). */
   toDataURL(type = 'image/png', scale = 1.5) {
     const off = document.createElement('canvas');
-    off.width = this.canvas.width * scale;
-    off.height = this.canvas.height * scale;
+    off.width = Math.max(1, Math.round(this._cssWidth * scale));
+    off.height = Math.max(1, Math.round(this._cssHeight * scale));
     const octx = off.getContext('2d');
-    this.render(octx, this.canvas.width, this.canvas.height, scale);
+    this.render(octx, this._cssWidth, this._cssHeight, scale);
     return off.toDataURL(type);
   }
 

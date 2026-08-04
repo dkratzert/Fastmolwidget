@@ -71,10 +71,7 @@ _DEMO_HTML_TEMPLATE = """<!doctype html>
     const canvas = document.getElementById('canvas');
     function fitCanvas() {{
       const rect = canvas.getBoundingClientRect();
-      const oldW = canvas.width, oldH = canvas.height;
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-      if (viewer) viewer.widget.handleResize(oldW, oldH, canvas.width, canvas.height);
+      if (viewer) viewer.widget.resize(rect.width, rect.height);
     }}
 
     const viewer = new MoleculeViewer2D(canvas);

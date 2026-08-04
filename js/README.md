@@ -50,6 +50,28 @@ viewer.widget.alignBestView();
 viewer.widget.saveImage('molecule.png');
 ```
 
+### HiDPI / crisp lines
+
+Size the canvas through `widget.resize(cssWidth, cssHeight)` rather than
+setting `canvas.width`/`canvas.height` yourself. The widget allocates the
+backing store at `window.devicePixelRatio` (all drawing still happens in
+logical CSS pixels), so lines stay crisp on Retina / high-DPI displays and
+line thicknesses match the Qt QPainter widget 1:1. Let CSS control the
+displayed size (e.g. `width: 100%; height: 100%`) and call `resize()` with the
+element's `getBoundingClientRect()` size on load and on every `resize` event:
+
+```js
+function fit() {
+  const r = canvas.getBoundingClientRect();
+  viewer.widget.resize(r.width, r.height);
+}
+window.addEventListener('resize', fit);
+fit();
+```
+
+Pass `new MoleculeWidget2D(canvas, { devicePixelRatio: 1 })` to force a fixed
+ratio (e.g. for deterministic tests or exports).
+
 Or use `MoleculeWidget2D` directly if you already have Cartesian atoms and
 don't need growing/packing (mirrors `MoleculeWidget.open_molecule()` in
 Python):
