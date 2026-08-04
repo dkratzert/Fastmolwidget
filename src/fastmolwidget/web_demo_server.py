@@ -57,6 +57,7 @@ _DEMO_HTML_TEMPLATE = """<!doctype html>
     <label><input id="adpChk" type="checkbox" checked> ADPs</label>
     <label><input id="labelChk" type="checkbox"> Labels</label>
     <label><input id="hChk" type="checkbox" checked> Show H</label>
+    <span id="partFilterSlot"></span>
     <label>Bond width <input id="bondWidth" type="range" min="1" max="15" value="3"></label>
     <button id="bestViewBtn">Best view</button>
     <button id="resetBtn">Reset view</button>
@@ -67,6 +68,7 @@ _DEMO_HTML_TEMPLATE = """<!doctype html>
 
   <script type="module">
     import {{ MoleculeViewer2D }} from './viewer.js';
+    import {{ createPartFilter }} from './part_filter.js';
 
     const canvas = document.getElementById('canvas');
     function fitCanvas() {{
@@ -76,6 +78,8 @@ _DEMO_HTML_TEMPLATE = """<!doctype html>
 
     const viewer = new MoleculeViewer2D(canvas);
     window.viewer = viewer; // for manual console poking
+
+    document.getElementById('partFilterSlot').replaceWith(createPartFilter(viewer.widget));
 
     window.addEventListener('resize', fitCanvas);
     fitCanvas();

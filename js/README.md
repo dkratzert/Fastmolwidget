@@ -19,6 +19,7 @@ dependency-free JavaScript (ES modules, Canvas 2D — no build step required).
 | `sdm.js`        | `SDM` class — grow asymmetric unit / pack unit cell (port of `sdm.py`) |
 | `molecule2d.js` | `MoleculeWidget2D` — the Canvas renderer (port of `molecule2D.py` + `molecule_painter.py`) |
 | `viewer.js`     | `MoleculeViewer2D` — wires `SDM` growing/packing into the renderer |
+| `part_filter.js`| `createPartFilter(widget)` — checkable disorder-part dropdown (port of `part_combo.PartFilterWidget`) |
 | `demo/`         | Minimal standalone demo page + sample structure |
 
 All algorithmic ports (`eigSym3`, `buildConnTable`, `SDM.grow()`,
@@ -71,6 +72,20 @@ fit();
 
 Pass `new MoleculeWidget2D(canvas, { devicePixelRatio: 1 })` to force a fixed
 ratio (e.g. for deterministic tests or exports).
+
+### Disorder-part filter
+
+`createPartFilter(widget)` builds the same checkable "Show Parts:" dropdown as
+the Qt viewers. Drop the returned element into your control bar; it wires
+itself to the widget's `partsChanged` event and forwards the ticked parts via
+`setVisibleParts(...)`. It stays hidden unless the structure has more than one
+disorder part, and all parts are ticked by default:
+
+```js
+import { createPartFilter } from './part_filter.js';
+document.getElementById('bar').append(createPartFilter(viewer.widget));
+```
+
 
 Or use `MoleculeWidget2D` directly if you already have Cartesian atoms and
 don't need growing/packing (mirrors `MoleculeWidget.open_molecule()` in
