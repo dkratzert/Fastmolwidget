@@ -8,7 +8,7 @@ MoleculeWidget`` keeps working unchanged.
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.9.8"
+__version__ = "1.0.0"
 
 if TYPE_CHECKING:
     from fastmolwidget.loader import MoleculeLoader
