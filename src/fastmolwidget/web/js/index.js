@@ -6,7 +6,7 @@
  * `fastmolwidget.web.bundle_js()`.
  */
 
-export { createViewer, createControlBar } from './embed.js';
+export { createViewer, createControlBar, CONTROL_ELEMENT_DEFAULTS } from './embed.js';
 export { MoleculeViewer2D } from './viewer.js';
 export { MoleculeWidget2D } from './molecule2d.js';
 export { createPartFilter } from './part_filter.js';

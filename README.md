@@ -556,6 +556,19 @@ HiDPI-aware canvas and keeps it sized to the element. Options: `controls`,
 `setBondColor()`, `alignBestView()`, `saveImage()`, …) and emits `atomClicked`,
 `bondClicked` and `partsChanged` events.
 
+`controls` accepts `true`/`false` to show/hide the whole bar, or an object to
+selectively show/hide individual elements (unspecified keys default to
+visible):
+
+```js
+Fastmolwidget.createViewer(container, mol, {
+  controls: { pack: false, bondWidth: false, saveImage: false },
+});
+```
+
+Recognised keys: `grow`, `pack`, `adps`, `labels`, `hydrogens`, `partFilter`,
+`bondWidth`, `bestView`, `resetView`, `saveImage`.
+
 `window.Fastmolwidget` also exposes `MoleculeViewer2D`, `MoleculeWidget2D`,
 `SDM`, `createPartFilter` and `version`.
 
@@ -566,6 +579,8 @@ from fastmolwidget.web import render_html, write_html
 
 write_html('structure.cif', 'structure.html', controls=True, grow=True)
 html = render_html('structure.cif', controls=False, height='400px')
+# Selectively hide individual control-bar elements:
+html = render_html('structure.cif', controls={'pack': False, 'bondWidth': False})
 ```
 
 The result is fully self-contained (renderer and structure inlined), so it

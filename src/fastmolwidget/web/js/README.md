@@ -82,7 +82,7 @@ builds the control bar, and loads *structure*. Options:
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `controls`   | `false` | show the control bar (grow, pack, ADPs, labels, H, part filter, bond width, best view, reset view, save image) |
+| `controls`   | `false` | show the control bar. `true`/`false` shows/hides the whole bar; pass an object to selectively show/hide individual elements instead, e.g. `{grow: true, pack: false, bondWidth: false}` (unspecified keys default to visible). Recognised keys: `grow`, `pack`, `adps`, `labels`, `hydrogens`, `partFilter`, `bondWidth`, `bestView`, `resetView`, `saveImage` |
 | `grow`       | `false` | grow the asymmetric unit to whole molecules |
 | `pack`       | `false` | pack one complete unit cell |
 | `adps`       | `true`  | draw ADP ellipsoids |

@@ -92,7 +92,7 @@ def render_html(
     structure: Structure,
     *,
     title: str | None = None,
-    controls: bool = True,
+    controls: bool | dict[str, bool] = True,
     height: str = '100%',
     background: str = '#ffffff',
     grow: bool = False,
@@ -115,6 +115,12 @@ def render_html(
     :param title: document title; defaults to the file name.
     :param controls: show the control bar (grow, pack, ADPs, labels, hydrogens,
         disorder-part filter, bond width, best view, reset view, save image).
+        Pass ``True``/``False`` to show/hide the whole bar, or a dict to
+        selectively show/hide individual elements, e.g.
+        ``{'pack': False, 'bondWidth': False}`` (unspecified keys default to
+        visible). Recognised keys: ``grow``, ``pack``, ``adps``, ``labels``,
+        ``hydrogens``, ``partFilter``, ``bondWidth``, ``bestView``,
+        ``resetView``, ``saveImage``.
     :param height: CSS height of the viewer container.
     :param background: CSS page/canvas background colour.
     """

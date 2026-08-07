@@ -34,6 +34,25 @@ const DEFAULTS = {
   saveFileName: 'molecule.png',
 };
 
+/**
+ * Individual control-bar elements shown when `options.controls` is truthy.
+ * Every entry defaults to visible; pass an object (instead of `true`) as
+ * `options.controls` to hide specific elements, e.g.
+ * `{controls: {pack: false, bondWidth: false}}`.
+ */
+const CONTROL_ELEMENT_DEFAULTS = {
+  grow: true,
+  pack: true,
+  adps: true,
+  labels: true,
+  hydrogens: true,
+  partFilter: true,
+  bondWidth: true,
+  bestView: true,
+  resetView: true,
+  saveImage: true,
+};
+
 function el(tag, style, props = {}) {
   const node = document.createElement(tag);
   if (style) node.style.cssText = style;
@@ -62,43 +81,49 @@ function button(text, onClick) {
  *
  * @param {MoleculeViewer2D} viewer
  * @param {object} opts effective (merged) options
+ * @param {object} [elements] per-element visibility, see `CONTROL_ELEMENT_DEFAULTS`.
  * @returns {HTMLElement}
  */
-function createControlBar(viewer, opts) {
+function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
+  const show = { ...CONTROL_ELEMENT_DEFAULTS, ...elements };
   const bar = el('div', 'display:flex; gap:8px; align-items:center; padding:6px 10px; '
     + 'border-bottom:1px solid #ccc; flex-wrap:wrap; font-family:sans-serif;');
 
-  const growChk = checkbox('Grow', opts.grow, (checked) => {
-    if (checked) packChk.inputEl.checked = false;
-    viewer.setGrow(checked);
-  });
-  const packChk = checkbox('Pack unit cell', opts.pack, (checked) => {
-    if (checked) growChk.inputEl.checked = false;
-    viewer.setPack(checked);
-  });
+  let growChk = null;
+  let packChk = null;
+  if (show.grow) {
+    growChk = checkbox('Grow', opts.grow, (checked) => {
+      if (checked && packChk) packChk.inputEl.checked = false;
+      viewer.setGrow(checked);
+    });
+  }
+  if (show.pack) {
+    packChk = checkbox('Pack unit cell', opts.pack, (checked) => {
+      if (checked && growChk) growChk.inputEl.checked = false;
+      viewer.setPack(checked);
+    });
+  }
 
-  bar.append(
-    growChk,
-    packChk,
-    checkbox('ADPs', opts.adps, (c) => viewer.widget.showAdps(c)),
-    checkbox('Labels', opts.labels, (c) => viewer.widget.showLabels(c)),
-    checkbox('Show H', opts.hydrogens, (c) => viewer.widget.showHydrogens(c)),
-    createPartFilter(viewer.widget),
-  );
+  if (growChk) bar.append(growChk);
+  if (packChk) bar.append(packChk);
+  if (show.adps) bar.append(checkbox('ADPs', opts.adps, (c) => viewer.widget.showAdps(c)));
+  if (show.labels) bar.append(checkbox('Labels', opts.labels, (c) => viewer.widget.showLabels(c)));
+  if (show.hydrogens) bar.append(checkbox('Show H', opts.hydrogens, (c) => viewer.widget.showHydrogens(c)));
+  if (show.partFilter) bar.append(createPartFilter(viewer.widget));
 
-  const widthLabel = el('label', 'display:flex; align-items:center; gap:4px; font-size:13px;');
-  const widthInput = el('input', null, {
-    type: 'range', min: '1', max: '15', value: String(opts.bondWidth),
-  });
-  widthInput.addEventListener('input', () => viewer.widget.setBondWidth(parseInt(widthInput.value, 10)));
-  widthLabel.append(document.createTextNode('Bond width'), widthInput);
+  if (show.bondWidth) {
+    const widthLabel = el('label', 'display:flex; align-items:center; gap:4px; font-size:13px;');
+    const widthInput = el('input', null, {
+      type: 'range', min: '1', max: '15', value: String(opts.bondWidth),
+    });
+    widthInput.addEventListener('input', () => viewer.widget.setBondWidth(parseInt(widthInput.value, 10)));
+    widthLabel.append(document.createTextNode('Bond width'), widthInput);
+    bar.append(widthLabel);
+  }
 
-  bar.append(
-    widthLabel,
-    button('Best view', () => viewer.widget.alignBestView()),
-    button('Reset view', () => viewer.widget.resetView()),
-    button('Save image', () => viewer.widget.saveImage(opts.saveFileName)),
-  );
+  if (show.bestView) bar.append(button('Best view', () => viewer.widget.alignBestView()));
+  if (show.resetView) bar.append(button('Reset view', () => viewer.widget.resetView()));
+  if (show.saveImage) bar.append(button('Save image', () => viewer.widget.saveImage(opts.saveFileName)));
   return bar;
 }
 
@@ -109,7 +134,12 @@ function createControlBar(viewer, opts) {
  * @param {object|null} [structure] structure in the fractional-coordinate JSON
  *   contract; may be `null` and loaded later via `viewer.loadStructure(...)`.
  * @param {object} [options]
- * @param {boolean} [options.controls=false] show the control bar.
+ * @param {boolean|object} [options.controls=false] show the control bar. Pass
+ *   `true` to show every element, or an object to selectively show/hide
+ *   individual elements, e.g. `{grow: true, pack: false, bondWidth: false}`.
+ *   Recognised keys (all default `true` when `controls` is an object):
+ *   `grow`, `pack`, `adps`, `labels`, `hydrogens`, `partFilter`, `bondWidth`,
+ *   `bestView`, `resetView`, `saveImage`.
  * @param {boolean} [options.grow=false] grow the asymmetric unit to whole molecules.
  * @param {boolean} [options.pack=false] pack one complete unit cell.
  * @param {boolean} [options.adps=true] draw ADP ellipsoids.
@@ -127,6 +157,10 @@ export function createViewer(container, structure = null, options = {}) {
   const host = typeof container === 'string' ? document.getElementById(container) : container;
   if (!host) throw new Error('createViewer: container not found');
   const opts = { ...DEFAULTS, ...options };
+  const controlsEnabled = !!options.controls;
+  const controlElements = typeof options.controls === 'object' && options.controls !== null
+    ? options.controls
+    : {};
 
   host.textContent = '';
   const style = window.getComputedStyle(host);
@@ -140,7 +174,7 @@ export function createViewer(container, structure = null, options = {}) {
   if (options.devicePixelRatio !== undefined) viewerOptions.devicePixelRatio = options.devicePixelRatio;
   const viewer = new MoleculeViewer2D(canvas, viewerOptions);
 
-  if (opts.controls) layout.append(createControlBar(viewer, opts));
+  if (controlsEnabled) layout.append(createControlBar(viewer, opts, controlElements));
   layout.append(canvas);
   host.append(layout);
 
@@ -186,4 +220,4 @@ export function createViewer(container, structure = null, options = {}) {
   return viewer;
 }
 
-export { createControlBar };
+export { createControlBar, CONTROL_ELEMENT_DEFAULTS };
