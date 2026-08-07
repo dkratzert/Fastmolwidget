@@ -39,6 +39,7 @@ A Qt Quick backend is also available for embedding the 2D renderer inside a QML 
 - **Qt Quick support** — `MoleculeQuickItem` (`QQuickPaintedItem`) and `MoleculeViewerQuickWidget` allow embedding the 2D renderer in a QML scene
 - **Ready-to-use viewers** — `MoleculeViewerWidget` (2D), `MoleculeViewer3DWidget` (3D), and `MoleculeViewerQuickWidget` (Qt Quick) bundle the renderer with a full control bar
 - **Common protocol** — `MoleculeWidgetProtocol` lets you write code that works with either widget interchangeably
+- **HTML / browser output** — a dependency-free JavaScript port of the 2D renderer ships with the package; `fastmolwidget.web` hands you the renderer and the structure as ready-to-embed strings for HTML reports (see [Embedding in HTML reports](#embedding-in-html-reports))
 
 ## Supported File Formats
 
@@ -508,4 +509,71 @@ python -m fastmolwidget.examples.viewer_3d_example
 
 # Generic 3D Widget example
 python -m fastmolwidget.examples.generic_3d_widget_example
+```
+
+## Embedding in HTML reports
+
+The package ships a dependency-free JavaScript port of the 2D renderer
+(`fastmolwidget/web/js`, see its `README.md`). Structure **parsing** stays in
+Python; growing, packing and rendering run in the browser on a `<canvas>` — no
+Qt, no build step, and no network access at runtime.
+
+`fastmolwidget.web` imports no Qt at all, so it also works in a headless report
+generator.
+
+### Drop it into your own template
+
+`bundle_js()` returns the whole renderer as a single classic-`<script>` string
+and `structure_json()` the structure. Both are safe to paste inside a
+`<script>` element; in Jinja2 inject them with `| safe`:
+
+```python
+from fastmolwidget.web import bundle_js, structure_json
+
+html = template.render(
+    fastmolwidget_js=bundle_js(),
+    structure_json=structure_json('structure.cif'),
+)
+```
+
+```jinja
+<div id="mol" style="height:400px"></div>
+<script>
+    var mol = {{ structure_json | safe }};
+    {{ fastmolwidget_js | safe }}
+</script>
+<script>
+    var viewer = Fastmolwidget.createViewer(
+        document.getElementById('mol'), mol, {controls: false, grow: true});
+</script>
+```
+
+`createViewer(container, structure, options)` fills the container with a
+HiDPI-aware canvas and keeps it sized to the element. Options: `controls`,
+`grow`, `pack`, `adps`, `labels`, `hydrogens`, `bondWidth`, `bondColor`,
+`background`, `bestView`. The returned object is a `MoleculeViewer2D`; its
+`.widget` exposes the same API as the Python `MoleculeWidget` (`showAdps()`,
+`setBondColor()`, `alignBestView()`, `saveImage()`, …) and emits `atomClicked`,
+`bondClicked` and `partsChanged` events.
+
+`window.Fastmolwidget` also exposes `MoleculeViewer2D`, `MoleculeWidget2D`,
+`SDM`, `createPartFilter` and `version`.
+
+### Or generate a finished page
+
+```python
+from fastmolwidget.web import render_html, write_html
+
+write_html('structure.cif', 'structure.html', controls=True, grow=True)
+html = render_html('structure.cif', controls=False, height='400px')
+```
+
+The result is fully self-contained (renderer and structure inlined), so it
+works from `file://`, inside an e-mail attachment, or in a Qt app via
+`QWebEngineView.setHtml(render_html('structure.cif'))`.
+
+To try it out, serve a structure with the built-in demo server:
+
+```bash
+python -m fastmolwidget.web_demo_server --cif tests/test-data/p21c.cif
 ```

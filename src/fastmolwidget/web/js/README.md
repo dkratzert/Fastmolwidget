@@ -2,10 +2,16 @@
 
 A browser/Canvas port of `fastmolwidget.molecule2D` (the 2-D QPainter
 renderer) plus the SDM grow / pack-unit-cell logic (`fastmolwidget.sdm`).
-Structure **file parsing** (CIF via `gemmi`, SHELX via `shelxfile`) stays in
-Python — see `fastmolwidget.web_export` — everything downstream (growing
+The Structure **file parsing** (CIF via `gemmi`, SHELX via `shelxfile`) stays in
+Python — see `fastmolwidget.web.structure_json` — everything downstream (growing
 molecules to completion, packing unit cells, and rendering) runs in plain,
 dependency-free JavaScript (ES modules, Canvas 2D — no build step required).
+
+These sources ship inside the Python package (`fastmolwidget/web/js`).
+`fastmolwidget.web.bundle_js()` concatenates them into a single classic
+`<script>` blob exposing `window.Fastmolwidget`, which is what you embed in an
+HTML report — see the "Embedding in HTML reports" section of the top-level
+`README.md`.
 
 ## Files
 
@@ -20,7 +26,8 @@ dependency-free JavaScript (ES modules, Canvas 2D — no build step required).
 | `molecule2d.js` | `MoleculeWidget2D` — the Canvas renderer (port of `molecule2D.py` + `molecule_painter.py`) |
 | `viewer.js`     | `MoleculeViewer2D` — wires `SDM` growing/packing into the renderer |
 | `part_filter.js`| `createPartFilter(widget)` — checkable disorder-part dropdown (port of `part_combo.PartFilterWidget`) |
-| `demo/`         | Minimal standalone demo page + sample structure |
+| `embed.js`      | `createViewer(container, structure, options)` + the shared control bar |
+| `index.js`      | Public entry point — its exports become `window.Fastmolwidget` |
 
 All algorithmic ports (`eigSym3`, `buildConnTable`, `SDM.grow()`,
 `SDM.packUnitCell()`) have been cross-checked against the real Python
@@ -28,11 +35,26 @@ implementations on real structures and produce identical results.
 
 ## Quick start
 
+The easiest way to see it running is the bundled demo server, which parses a
+CIF in Python and serves the generated self-contained page (and the raw ES
+modules, so you can edit and reload):
+
 ```bash
-cd js
-python3 -m http.server 8000
-# open http://localhost:8000/demo/index.html
+python -m fastmolwidget.web_demo_server --cif tests/test-data/p21c.cif
 ```
+
+From an HTML report (single `<script>` bundle, no modules):
+
+```html
+<div id="mol" style="height:400px"></div>
+<script>/* output of fastmolwidget.web.bundle_js() */</script>
+<script>
+  const viewer = Fastmolwidget.createViewer(
+      document.getElementById('mol'), structure, {controls: true, grow: true});
+</script>
+```
+
+Or with the ES modules directly:
 
 ```js
 import { MoleculeViewer2D } from './viewer.js';
@@ -50,6 +72,30 @@ viewer.widget.setBondColor('#336699');
 viewer.widget.alignBestView();
 viewer.widget.saveImage('molecule.png');
 ```
+
+### `createViewer(container, structure, options)`
+
+The `new Miew({container})`-style entry point used for report embedding. It
+empties *container*, creates a HiDPI-aware canvas inside it, keeps it sized to
+the element (`ResizeObserver`, falling back to `window.onresize`), optionally
+builds the control bar, and loads *structure*. Options:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `controls`   | `false` | show the control bar (grow, pack, ADPs, labels, H, part filter, bond width, best view, reset view, save image) |
+| `grow`       | `false` | grow the asymmetric unit to whole molecules |
+| `pack`       | `false` | pack one complete unit cell |
+| `adps`       | `true`  | draw ADP ellipsoids |
+| `labels`     | `false` | draw atom labels |
+| `hydrogens`  | `true`  | show hydrogen atoms |
+| `bondWidth`  | `3`     | |
+| `bondColor`  | – | CSS colour |
+| `background` | – | CSS colour |
+| `bestView`   | `false` | align to the PCA best view after loading |
+| `devicePixelRatio` | – | force a fixed ratio (deterministic tests/exports) |
+
+It returns the `MoleculeViewer2D` with `.container`, `.canvas`, `.fit()` and
+`.destroy()` added.
 
 ### HiDPI / crisp lines
 
@@ -106,7 +152,8 @@ widget.openMolecule({
 
 ## JSON contract (Python → JS)
 
-`fastmolwidget.web_export.export_cif(path)` / `export_shelx(path)` produce:
+`fastmolwidget.web.structure_json(path)` (and the underlying
+`fastmolwidget.web_export.export_cif` / `export_shelx`) produce:
 
 ```jsonc
 {
@@ -128,7 +175,7 @@ This is the **asymmetric unit** in fractional coordinates — `MoleculeViewer2D`
 runs `SDM` in the browser to grow/pack it before handing Cartesian atoms to
 `MoleculeWidget2D.openMolecule()`. If you don't need growing/packing (e.g. a
 plain XYZ file, or you've already computed Cartesian atoms in Python), skip
-`web_export`/`viewer.js` and call `MoleculeWidget2D.openMolecule()` directly
+`structure_json`/`viewer.js` and call `MoleculeWidget2D.openMolecule()` directly
 with atoms in the same shape as `Atomtuple` (`label, type, x, y, z, part,
 symm_matrix, adp`), Cartesian Å coordinates.
 

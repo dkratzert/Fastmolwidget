@@ -1,11 +1,10 @@
-"""Threaded demo web server that exposes a CIF structure through the
-JavaScript renderer in ``js/`` (see ``js/README.md``).
+"""Threaded demo web server for the JavaScript renderer shipped in
+``fastmolwidget/web/js``.
 
-Parses the CIF in Python (:mod:`fastmolwidget.web_export`) and serves the
-exported asymmetric-unit JSON alongside the ``js/`` renderer modules and a
-generated demo page, using :class:`http.server.ThreadingHTTPServer` so the
-several concurrent requests a browser makes (HTML, JS modules, the JSON
-payload) are each handled in their own thread.
+Parses a CIF in Python (:mod:`fastmolwidget.web_export`) and serves the
+self-contained page produced by :func:`fastmolwidget.web.render_html`, using
+:class:`http.server.ThreadingHTTPServer`.  The raw ES modules are served as
+well, so they can still be loaded directly during JavaScript development.
 
 Run directly::
 
@@ -19,120 +18,45 @@ Then open the printed URL (a browser tab is opened automatically unless
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import threading
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from fastmolwidget.web_export import export_cif
+from fastmolwidget.web import (
+    bundle_js,
+    js_directory,
+    render_html,
+    structure_data,
+    structure_json,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-JS_DIR = REPO_ROOT / 'js'
-DEFAULT_CIF = REPO_ROOT / 'tests' / 'test-data' / 'p21c.cif'
+DEFAULT_CIF = Path('tests') / 'test-data' / 'p21c.cif'
 
-__all__ = ['main', 'run_server']
-
-# Same controls/layout as js/demo/index.html, adapted to be served from the
-# js/ directory root (so the relative './viewer.js' import resolves) and to
-# load the dynamically generated '/structure.json' instead of a static file.
-_DEMO_HTML_TEMPLATE = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>Fastmolwidget — {title}</title>
-  <style>
-    body {{ font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; }}
-    #bar {{ display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid #ccc; flex-wrap: wrap; }}
-    #bar label {{ display: flex; align-items: center; gap: 4px; font-size: 13px; }}
-    canvas {{ flex: 1; display: block; width: 100%; height: 100%; cursor: grab; }}
-    #status {{ font-size: 12px; color: #555; margin-left: auto; }}
-  </style>
-</head>
-<body>
-  <div id="bar">
-    <label><input id="growChk" type="checkbox"> Grow</label>
-    <label><input id="packChk" type="checkbox"> Pack unit cell</label>
-    <label><input id="adpChk" type="checkbox" checked> ADPs</label>
-    <label><input id="labelChk" type="checkbox"> Labels</label>
-    <label><input id="hChk" type="checkbox" checked> Show H</label>
-    <span id="partFilterSlot"></span>
-    <label>Bond width <input id="bondWidth" type="range" min="1" max="15" value="3"></label>
-    <button id="bestViewBtn">Best view</button>
-    <button id="resetBtn">Reset view</button>
-    <button id="saveBtn">Save image</button>
-    <span id="status">Loading {title}…</span>
-  </div>
-  <canvas id="canvas"></canvas>
-
-  <script type="module">
-    import {{ MoleculeViewer2D }} from './viewer.js';
-    import {{ createPartFilter }} from './part_filter.js';
-
-    const canvas = document.getElementById('canvas');
-    function fitCanvas() {{
-      const rect = canvas.getBoundingClientRect();
-      if (viewer) viewer.widget.resize(rect.width, rect.height);
-    }}
-
-    const viewer = new MoleculeViewer2D(canvas);
-    window.viewer = viewer; // for manual console poking
-
-    document.getElementById('partFilterSlot').replaceWith(createPartFilter(viewer.widget));
-
-    window.addEventListener('resize', fitCanvas);
-    fitCanvas();
-
-    const status = document.getElementById('status');
-    viewer.widget.addEventListener('atomClicked', (e) => {{ status.textContent = `Atom: ${{e.detail}}`; }});
-    viewer.widget.addEventListener('bondClicked', (e) => {{ status.textContent = `Bond: ${{e.detail.join('-')}}`; }});
-
-    document.getElementById('growChk').addEventListener('change', (e) => {{
-      if (e.target.checked) document.getElementById('packChk').checked = false;
-      viewer.setGrow(e.target.checked);
-    }});
-    document.getElementById('packChk').addEventListener('change', (e) => {{
-      if (e.target.checked) document.getElementById('growChk').checked = false;
-      viewer.setPack(e.target.checked);
-    }});
-    document.getElementById('adpChk').addEventListener('change', (e) => viewer.widget.showAdps(e.target.checked));
-    document.getElementById('labelChk').addEventListener('change', (e) => viewer.widget.showLabels(e.target.checked));
-    document.getElementById('hChk').addEventListener('change', (e) => viewer.widget.showHydrogens(e.target.checked));
-    document.getElementById('bondWidth').addEventListener('input', (e) => viewer.widget.setBondWidth(parseInt(e.target.value, 10)));
-    document.getElementById('bestViewBtn').addEventListener('click', () => viewer.widget.alignBestView());
-    document.getElementById('resetBtn').addEventListener('click', () => viewer.widget.resetView());
-    document.getElementById('saveBtn').addEventListener('click', () => viewer.widget.saveImage('molecule.png'));
-
-    fetch('/structure.json')
-      .then((r) => r.json())
-      .then((data) => {{
-        viewer.loadStructure(data);
-        fitCanvas();
-        viewer.widget.resetView();
-        status.textContent = `Loaded {title}: ${{data.atoms.length}} atoms`;
-      }})
-      .catch((err) => {{ status.textContent = `Failed to load structure: ${{err}}`; }});
-  </script>
-</body>
-</html>
-"""
+__all__ = ['DEFAULT_CIF', 'main', 'run_server']
 
 
-def _make_handler(structure_json: bytes, demo_html: bytes) -> type[SimpleHTTPRequestHandler]:
-    """Build a request-handler class closing over the pre-rendered response
-    bodies for ``/`` and ``/structure.json``; every other path falls back to
-    serving static files from :data:`JS_DIR` (the renderer modules)."""
+def _make_handler(cif_path: Path) -> type[SimpleHTTPRequestHandler]:
+    """Build a request-handler class serving the viewer page for *cif_path*.
+
+    The page is rendered per request (with the bundle cache cleared) so editing
+    a JavaScript module and reloading the browser shows the change immediately.
+    Every other path falls back to the shipped ES modules.
+    """
+    js_dir = str(js_directory())
 
     class DemoHandler(SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, directory=str(JS_DIR), **kwargs)
+            super().__init__(*args, directory=js_dir, **kwargs)
 
         def do_GET(self) -> None:
             if self.path in ('/', '/index.html'):
-                self._send_bytes(demo_html, 'text/html; charset=utf-8')
+                bundle_js.cache_clear()
+                html = render_html(cif_path, title=cif_path.name, controls=True)
+                self._send_bytes(html.encode('utf-8'), 'text/html; charset=utf-8')
             elif self.path == '/structure.json':
-                self._send_bytes(structure_json, 'application/json')
+                self._send_bytes(structure_json(cif_path).encode('utf-8'), 'application/json')
             else:
                 super().do_GET()
 
@@ -167,18 +91,17 @@ def run_server(
     thread. Returns the running :class:`~http.server.ThreadingHTTPServer` so
     the caller can ``server.shutdown()`` it later (e.g. in tests)."""
     cif_path = Path(cif_path)
-    data = export_cif(cif_path)
-    structure_json = json.dumps(data).encode('utf-8')
-    demo_html = _DEMO_HTML_TEMPLATE.format(title=cif_path.name).encode('utf-8')
+    if not cif_path.is_file():
+        raise FileNotFoundError(f'No such structure file: {cif_path} (pass one with --cif)')
+    n_atoms = len(structure_data(cif_path)['atoms'])
 
-    handler_cls = _make_handler(structure_json, demo_html)
-    server = ThreadingHTTPServer((host, port), handler_cls)
+    server = ThreadingHTTPServer((host, port), _make_handler(cif_path))
 
     thread = threading.Thread(target=server.serve_forever, name='fastmolwidget-web-demo', daemon=True)
     thread.start()
 
     url = f'http://{host}:{port}/'
-    print(f'Serving {cif_path.name} ({len(data["atoms"])} atoms) at {url} (Ctrl+C to stop)')
+    print(f'Serving {cif_path.name} ({n_atoms} atoms) at {url} (Ctrl+C to stop)')
     if open_browser:
         webbrowser.open(url)
     return server

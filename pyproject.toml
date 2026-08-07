@@ -78,7 +78,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-fastmolwidget = ["qml/*.qml"]
+fastmolwidget = ["qml/*.qml", "web/js/*.js", "web/js/*.md", "web/templates/*.html"]
 
 [tool.setuptools.dynamic]
 version = {attr = "fastmolwidget.__version__"}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>$title</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        body {
+            font-family: sans-serif;
+            background: $background;
+        }
+
+        #fastmolwidget-container {
+            width: 100%;
+            height: $height;
+        }
+    </style>
+</head>
+<body>
+<div id="fastmolwidget-container"></div>
+
+<script>
+$bundle_js
+</script>
+
+<script>
+    var fastmolwidgetStructure = $structure_json;
+    var fastmolwidgetOptions = $options_json;
+    var viewer = Fastmolwidget.createViewer(
+        document.getElementById('fastmolwidget-container'),
+        fastmolwidgetStructure,
+        fastmolwidgetOptions);
+</script>
+</body>
+</html>
