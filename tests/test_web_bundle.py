@@ -21,8 +21,29 @@ from fastmolwidget.web import assets, bundle_js
 from fastmolwidget.web.bundle import UnsupportedJsSyntaxError, _transform
 
 CIF = Path('tests/test-data/p21c.cif')
+GROWABLE_CIF = Path('tests/test-data/p31c.cif')
 NODE = shutil.which('node')
 needs_node = pytest.mark.skipif(NODE is None, reason='Node.js not available')
+
+# Stubs the bundle needs to run headless in Node: a canvas that never draws
+# and a no-op requestAnimationFrame (so `update()` never reaches `render()`).
+JS_HEADLESS_PRELUDE = """
+globalThis.requestAnimationFrame = () => 0;
+const canvas = { width: 300, height: 150, getContext: () => ({}),
+                 addEventListener: () => {}, style: {} };
+const F = (require('./bundle.js'), globalThis.Fastmolwidget);
+const d = require('./structure.json');
+const viewer = new F.MoleculeViewer2D(canvas, {attachEvents: false, devicePixelRatio: 1});
+const w = viewer.widget;
+const screenExtent = () => {
+  const s = w.zoom * 130;
+  const cx = w.cssWidth / 2 - w.moleculeCenter[0] * s;
+  const cy = w.cssHeight / 2 - w.moleculeCenter[1] * s;
+  const xs = w.atoms.map((a) => a.coordinate[0] * s + cx);
+  const ys = w.atoms.map((a) => a.coordinate[1] * s + cy);
+  return [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+};
+"""
 
 
 @pytest.fixture(scope='module')
@@ -153,3 +174,77 @@ console.log(JSON.stringify({
     assert js['first'][0] == py_grown[0].label
     for got, expected in zip(js['first'][1:], py_grown[0][2:5], strict=True):
         assert got == pytest.approx(expected, abs=1e-12)
+
+
+def _run_js(node: str, bundle: str, tmp_path: Path, structure: dict, script: str) -> dict:
+    """Run *script* (appended to :data:`JS_HEADLESS_PRELUDE`) in Node and return
+    the JSON object it prints."""
+    (tmp_path / 'bundle.js').write_text(bundle, encoding='utf-8')
+    (tmp_path / 'structure.json').write_text(json.dumps(structure), encoding='utf-8')
+    (tmp_path / 'run.js').write_text(JS_HEADLESS_PRELUDE + script, encoding='utf-8')
+    out = subprocess.run(
+        [node, 'run.js'], cwd=tmp_path, check=True, capture_output=True, text=True,
+    )
+    return json.loads(out.stdout)
+
+
+@needs_node
+def test_grown_structure_is_fitted_into_a_late_measured_canvas(
+    bundle: str, tmp_path: Path, node: str,
+):
+    """Regression: a viewer created in a hidden container (0x0) and grown must
+    fit the *completed* molecule once its real size arrives."""
+    from fastmolwidget.web import structure_data
+
+    script = """
+viewer.loadStructure(d);
+viewer.setGrow(true);
+w.resize(0, 0);          // hidden container: must not poison the zoom
+w.resize(902, 623);      // first real measurement -> refit
+const [x0, x1, y0, y1] = screenExtent();
+console.log(JSON.stringify({x0, x1, y0, y1, zoom: w.zoom, radius: w.moleculeRadius,
+                            atoms: w.atoms.length}));
+"""
+    js = _run_js(node, bundle, tmp_path, structure_data(GROWABLE_CIF), script)
+
+    assert js['atoms'] > 0
+    assert js['x0'] >= 0 and js['x1'] <= 902
+    assert js['y0'] >= 0 and js['y1'] <= 623
+
+
+@needs_node
+def test_js_fit_matches_qt_fit_after_growing(bundle: str, tmp_path: Path, node: str):
+    """`fitToView()` must reproduce the Qt widget's
+    ``reset_rotation_center()`` + ``reset_view()`` fit exactly."""
+    from qtpy import QtWidgets
+
+    from fastmolwidget.loader import MoleculeLoader
+    from fastmolwidget.molecule2D import MoleculeWidget
+    from fastmolwidget.web import structure_data
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    assert app is not None
+    qt_widget = MoleculeWidget()
+    qt_widget.resize(902, 623)
+    loader = MoleculeLoader(qt_widget)
+    loader.load_file(GROWABLE_CIF)
+    loader.set_grow(True)
+    qt_widget.reset_rotation_center()
+    py_radius = qt_widget.molecule_radius
+    py_zoom = qt_widget._AUTO_ZOOM_PADDING * min(902, 623) / 2 / py_radius / 100
+
+    script = """
+viewer.loadStructure(d);
+viewer.setGrow(true);
+w.resize(902, 623);
+console.log(JSON.stringify({zoom: w.zoom, radius: w.moleculeRadius,
+                            center: w.moleculeCenter, atoms: w.atoms.length}));
+"""
+    js = _run_js(node, bundle, tmp_path, structure_data(GROWABLE_CIF), script)
+
+    assert js['atoms'] == len(qt_widget.atoms)
+    # Qt stores the molecule centre as float32, hence the loose tolerance.
+    assert js['radius'] == pytest.approx(py_radius, rel=1e-6)
+    assert js['zoom'] == pytest.approx(py_zoom, rel=1e-6)
+    for got, expected in zip(js['center'], qt_widget.molecule_center, strict=True):
+        assert got == pytest.approx(expected, abs=1e-5)

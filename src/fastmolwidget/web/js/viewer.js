@@ -83,7 +83,14 @@ export class MoleculeViewer2D {
     }
     const withAdp = cartAtoms.map((a) => ({ ...a, adp: this._adpByLabel.get(a.label) ?? null }));
     this.widget.isPacked = this._packEnabled;
-    if (keepView) this.widget.growMolecule({ atoms: withAdp, cell });
-    else this.widget.openMolecule({ atoms: withAdp, cell, keepView: false });
+    if (keepView) {
+      this.widget.growMolecule({ atoms: withAdp, cell });
+      // Growing/packing changes the atom set, but `growMolecule` keeps the
+      // view and therefore the bounding sphere of the *previous* (smaller)
+      // atom set. Re-centre and re-fit — the rotation is preserved.
+      this.widget.fitToView();
+    } else {
+      this.widget.openMolecule({ atoms: withAdp, cell, keepView: false });
+    }
   }
 }

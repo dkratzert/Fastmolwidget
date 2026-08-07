@@ -119,6 +119,26 @@ fit();
 Pass `new MoleculeWidget2D(canvas, { devicePixelRatio: 1 })` to force a fixed
 ratio (e.g. for deterministic tests or exports).
 
+`resize()` ignores non-positive sizes, and the *first* call with a positive
+size re-fits the molecule (`_autoZoom()`) instead of scaling the zoom
+proportionally the way later calls do (Qt `resizeEvent` parity). Viewers
+created inside a hidden container — an inactive report tab, say — are
+measured 0x0 at first and only get their real size later through a
+`ResizeObserver`; without that rule the zoom would be scaled from the
+placeholder 300x150 canvas default and the structure would be drawn far too
+large.
+
+### Fitting grown / packed structures
+
+`setGrow()`/`setPack()` reload the structure with the view kept (so the
+rotation the user dialled in survives), which — exactly like the Python
+`_load_molecule(keep_view=True)` — leaves the bounding sphere describing the
+*previous* atom set. `MoleculeViewer2D` therefore calls `widget.fitToView()`
+after every grow/pack refresh: it recomputes the rotation pivot and the
+auto-zoom for the new atoms while keeping the rotation. This is the JS
+equivalent of the `reset_rotation_center()` + `reset_view()` combination the
+Qt desktop applications run after growing a structure.
+
 ### Disorder-part filter
 
 `createPartFilter(widget)` builds the same checkable "Show Parts:" dropdown as
@@ -198,6 +218,7 @@ symm_matrix, adp`), Cartesian Å coordinates.
 | `align_best_view()`              | `alignBestView()` |
 | `save_image(path)`               | `saveImage(filename)` / `toDataURL()` |
 | `reset_rotation_center()`         | `resetRotationCenter()` |
+| `reset_rotation_center()` + zoom part of `reset_view()` | `fitToView()` (re-centre + re-fit, rotation preserved) |
 | `atomClicked` / `bondClicked` / `partsChanged` signals | `EventTarget` events of the same names (`widget.addEventListener('atomClicked', e => ...)`, `e.detail` holds the payload) |
 
 ## Mouse / keyboard controls

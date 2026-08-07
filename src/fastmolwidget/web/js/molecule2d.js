@@ -96,8 +96,13 @@ export class MoleculeWidget2D extends EventTarget {
     // forces a fixed ratio (e.g. for deterministic tests / exports).
     this._forcedDpr = options.devicePixelRatio ?? null;
     this.dpr = this._detectDpr();
+    // Fallback for callers that never call `resize()`; note that an
+    // unstyled <canvas> reports the HTML default of 300x150, which is not a
+    // meaningful viewport size. `_sized` therefore records whether a real
+    // measurement has been seen yet — see `resize()`.
     this._cssWidth = canvas.width;
     this._cssHeight = canvas.height;
+    this._sized = false;
 
     this.zoom = 1.0;
     this.fontsize = 10;
@@ -212,6 +217,20 @@ export class MoleculeWidget2D extends EventTarget {
 
   resetRotationCenter() {
     this._getCenterAndRadius();
+    this.update();
+  }
+
+  /** Re-centre the rotation pivot on the current atoms and fit them into the
+   * viewport, *keeping* the current rotation.
+   *
+   * There is no single Qt counterpart: it is `reset_rotation_center()`
+   * followed by the zoom part of `reset_view()` — the combination the Qt
+   * desktop applications use after growing or packing a structure. Needed
+   * because loading with `keepView` deliberately does not touch the bounding
+   * sphere, so the auto-zoom would otherwise still fit the asymmetric unit. */
+  fitToView() {
+    this._getCenterAndRadius();
+    this.zoom = this._autoZoom();
     this.update();
   }
 
@@ -486,16 +505,26 @@ export class MoleculeWidget2D extends EventTarget {
    * backing store is allocated at `devicePixelRatio` so lines stay crisp on
    * HiDPI displays, mirroring Qt rendering the widget at the screen's device
    * pixel ratio. Keeps the on-screen scale proportional (like Qt's
-   * `resizeEvent`). */
+   * `resizeEvent`).
+   *
+   * The *first* call with positive dimensions re-fits the molecule instead of
+   * scaling proportionally: until then the widget only knows the placeholder
+   * `canvas.width`/`canvas.height` (300x150 by default), so scaling from that
+   * baseline would produce a wildly wrong zoom. This matters for viewers
+   * created inside a hidden container (e.g. an inactive report tab), whose
+   * real size only arrives later via a `ResizeObserver`. */
   resize(cssWidth, cssHeight) {
+    if (!(cssWidth > 0) || !(cssHeight > 0)) return;
     this.dpr = this._detectDpr();
-    const oldMin = Math.min(this._cssWidth, this._cssHeight);
+    const oldMin = this._sized ? Math.min(this._cssWidth, this._cssHeight) : 0;
     this._cssWidth = cssWidth;
     this._cssHeight = cssHeight;
+    this._sized = true;
     this.canvas.width = Math.max(1, Math.round(cssWidth * this.dpr));
     this.canvas.height = Math.max(1, Math.round(cssHeight * this.dpr));
     const newMin = Math.min(cssWidth, cssHeight);
-    if (oldMin > 0 && newMin > 0) this.zoom *= newMin / oldMin;
+    if (oldMin > 0) this.zoom *= newMin / oldMin;
+    else this.zoom = this._autoZoom();
     this.update();
   }
 

@@ -122,7 +122,12 @@ function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
   }
 
   if (show.bestView) bar.append(button('Best view', () => viewer.widget.alignBestView()));
-  if (show.resetView) bar.append(button('Reset view', () => viewer.widget.resetView()));
+  if (show.resetView) {
+    bar.append(button('Reset view', () => {
+      viewer.widget.resetRotationCenter();
+      viewer.widget.resetView();
+    }));
+  }
   if (show.saveImage) bar.append(button('Save image', () => viewer.widget.saveImage(opts.saveFileName)));
   return bar;
 }
@@ -208,12 +213,15 @@ export function createViewer(container, structure = null, options = {}) {
   };
 
   if (structure) {
+    // Measure first: loading auto-zooms, and until the canvas has been
+    // measured the widget only knows the placeholder 300x150 default size.
+    fit();
     viewer.loadStructure(structure);
     if (opts.pack) viewer.setPack(true);
     else if (opts.grow) viewer.setGrow(true);
     fit();
     if (opts.bestView) viewer.widget.alignBestView();
-    else viewer.widget.resetView();
+    viewer.widget.fitToView();
   } else {
     fit();
   }
