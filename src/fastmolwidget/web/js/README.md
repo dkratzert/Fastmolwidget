@@ -257,6 +257,9 @@ cell and canvas focus).
   time it's recomputed — re-deriving it every frame made the principal-axis
   cross-section arcs jump to a different (correct but visually
   "differently-rotated") basis on almost every mouse-move event.
+- Atoms whose ADP tensor is non-positive-definite (NPD) are drawn as a cube
+  placeholder by `npdCubeFaces()`, a direct port of
+  `molecule_painter.npd_cube_faces`.
 - `SDM.grow()`, `SDM.packUnitCell()`, and `buildConnTable()` were validated
   against the real `fastmolwidget.sdm.SDM` / `fastmolwidget.tools.build_conntable`
   on real CIF test structures and produce byte-for-byte identical atom sets.

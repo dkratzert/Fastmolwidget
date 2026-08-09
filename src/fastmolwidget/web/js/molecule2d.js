@@ -33,6 +33,78 @@ import { calcVolume } from './symmetry.js';
 const HYDROGENS = new Set(['H', 'D']);
 const AUTO_ZOOM_PADDING = 1.1;
 
+/** Half-edge of the NPD placeholder cube, as a fraction of `atomsSize`. */
+const NPD_CUBE_HALF_FACTOR = 0.4;
+/** Bounding-circle radius of the NPD cube, as a fraction of `atomsSize`. */
+const NPD_CUBE_BOUND_FACTOR = NPD_CUBE_HALF_FACTOR * 1.7320508075688772;
+
+// Light direction in view space (x right, y down, z away from the viewer).
+const NPD_LIGHT = normalize([-0.3, -0.5, -1.0]);
+
+// Corner index is i*4 + j*2 + k with i/j/k selecting the sign of u/v/w.
+// Each face is wound so that (p1 - p0) x (p2 - p1) points outwards.
+const NPD_CUBE_FACE_INDICES = [
+  [4, 6, 7, 5], // +u
+  [0, 1, 3, 2], // -u
+  [2, 3, 7, 6], // +v
+  [0, 4, 5, 1], // -v
+  [1, 5, 7, 3], // +w
+  [0, 2, 6, 4], // -w
+];
+
+/**
+ * Projected faces of the NPD placeholder cube — port of
+ * `fastmolwidget.molecule_painter.npd_cube_faces`.
+ *
+ * The cube is axis-aligned in the *molecular* Cartesian frame and is brought
+ * into view space with `R` (the accumulated view rotation), so it turns
+ * together with the rest of the structure.
+ *
+ * @param {number[][]} R 3x3 view rotation matrix (`cumulativeR`).
+ * @param {number} half Half-edge length of the cube in screen pixels.
+ * @returns {{corners: number[][], meanZ: number, normal: number[]}[]} faces
+ *   sorted back-to-front (descending depth; smaller z is nearer the viewer).
+ *   `corners` are screen-space offsets relative to the atom centre.
+ */
+export function npdCubeFaces(R, half) {
+  const u = [R[0][0] * half, R[1][0] * half, R[2][0] * half];
+  const v = [R[0][1] * half, R[1][1] * half, R[2][1] * half];
+  const w = [R[0][2] * half, R[1][2] * half, R[2][2] * half];
+  const corners = [];
+  for (const si of [-1, 1]) {
+    for (const sj of [-1, 1]) {
+      for (const sk of [-1, 1]) {
+        corners.push([
+          si * u[0] + sj * v[0] + sk * w[0],
+          si * u[1] + sj * v[1] + sk * w[1],
+          si * u[2] + sj * v[2] + sk * w[2],
+        ]);
+      }
+    }
+  }
+  const faces = NPD_CUBE_FACE_INDICES.map((idx) => {
+    const pts = idx.map((i) => corners[i]);
+    let normal = cross(vecSub(pts[1], pts[0]), vecSub(pts[2], pts[1]));
+    const n = norm(normal);
+    if (n > 1e-12) normal = vecScale(normal, 1 / n);
+    return {
+      corners: pts.map((p) => [p[0], p[1]]),
+      meanZ: (pts[0][2] + pts[1][2] + pts[2][2] + pts[3][2]) / 4,
+      normal,
+    };
+  });
+  faces.sort((a, b) => b.meanZ - a.meanZ);
+  return faces;
+}
+
+/** Lambert brightness factor for a cube face normal (1.0 = base colour). */
+export function npdFaceShade(normal) {
+  const diffuse = Math.max(
+    0, normal[0] * NPD_LIGHT[0] + normal[1] * NPD_LIGHT[1] + normal[2] * NPD_LIGHT[2],
+  );
+  return Math.min(1.6, Math.max(0.45, 0.6 + 0.85 * diffuse));
+}
+
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -535,6 +607,9 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   getSphericalRadius(atom) {
+    if (atom.uCart && !atom.adpValid) {
+      return (this.atomsSize * NPD_CUBE_BOUND_FACTOR) / this.scale;
+    }
     if (this.showAdpsFlag && atom.uIso != null) return Math.sqrt(atom.uIso);
     return 0.23;
   }
@@ -559,6 +634,10 @@ export class MoleculeWidget2D extends EventTarget {
 
   isPointInsideAtom(atom, px, py) {
     const dx = px - atom.screenx, dy = py - atom.screeny;
+    if (atom.uCart && !atom.adpValid) {
+      const bound = this.atomsSize * NPD_CUBE_BOUND_FACTOR;
+      return dx * dx + dy * dy <= bound * bound;
+    }
     if (this.showAdpsFlag && atom.uCart) {
       const a = atom.uCart[0][0], b = atom.uCart[0][1], c = atom.uCart[1][1];
       const T = a + c, D = a * c - b * b, diff = T * T * 0.25 - D;
@@ -1039,7 +1118,9 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _drawAtom(ctx, atom) {
-    if (this.showAdpsFlag && atom.uCart && !atom.adpValid) {
+    if (atom.uCart && !atom.adpValid) {
+      // Non-positive-definite tensor: show the cube placeholder in both ADP
+      // and isotropic mode so the broken atom is never hidden.
       this._drawInvalidAdp(ctx, atom);
       return;
     }
@@ -1090,39 +1171,34 @@ export class MoleculeWidget2D extends EventTarget {
     ctx.restore();
   }
 
-  /** Non-positive-definite ADP fallback: a small 3-D-looking cube glyph. */
+  /**
+   * Non-positive-definite ADP fallback: a real 3-D cube oriented in the
+   * molecular frame and projected through the current view rotation, so it
+   * turns with the structure. All six faces are painted back-to-front.
+   */
   _drawInvalidAdp(ctx, atom) {
     const cx = atom.screenx, cy = atom.screeny;
-    const size = this.atomsSize;
-    if (this.selectedAtoms.has(atom.name)) this._drawSelection(ctx, cx, cy, size / 2, size / 2, 0);
-
-    const s = size * 0.4;
-    const dx = size * 0.3, dy = -size * 0.3;
-    const P = (x, y) => [cx + x, cy + y];
-    const fl = P(-s - dx / 2, s - dy / 2);
-    const fr = P(s - dx / 2, s - dy / 2);
-    const tl = P(-s - dx / 2, -s - dy / 2);
-    const tr = P(s - dx / 2, -s - dy / 2);
-    const btl = P(-s + dx / 2, -s + dy / 2);
-    const btr = P(s + dx / 2, -s + dy / 2);
-    const bbr = P(s + dx / 2, s + dy / 2);
-
-    const poly = (ctx2, pts, fill) => {
-      ctx2.beginPath();
-      ctx2.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx2.lineTo(pts[i][0], pts[i][1]);
-      ctx2.closePath();
-      ctx2.fillStyle = fill;
-      ctx2.fill();
-      ctx2.stroke();
-    };
+    const half = this.atomsSize * NPD_CUBE_HALF_FACTOR;
+    if (this.selectedAtoms.has(atom.name)) {
+      const bound = this.atomsSize * NPD_CUBE_BOUND_FACTOR;
+      this._drawSelection(ctx, cx, cy, bound, bound, 0);
+    }
 
     ctx.save();
     ctx.strokeStyle = this.fallbackPenColor;
     ctx.lineWidth = 1;
-    poly(ctx, [tl, btl, btr, tr], lighter(atom.color, 160));
-    poly(ctx, [tl, tr, fr, fl], atom.color);
-    poly(ctx, [tr, btr, bbr, fr], darker(atom.color, 180));
+    for (const face of npdCubeFaces(this.cumulativeR, half)) {
+      const k = npdFaceShade(face.normal);
+      ctx.fillStyle = k >= 1 ? lighter(atom.color, k * 100) : darker(atom.color, 100 / k);
+      ctx.beginPath();
+      ctx.moveTo(cx + face.corners[0][0], cy + face.corners[0][1]);
+      for (let i = 1; i < face.corners.length; i++) {
+        ctx.lineTo(cx + face.corners[i][0], cy + face.corners[i][1]);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

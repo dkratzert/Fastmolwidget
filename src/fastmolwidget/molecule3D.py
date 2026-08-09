@@ -281,6 +281,19 @@ _ADP_SCALE: float = 1.5382
 # Screen-space tolerance in pixels for bond hit-testing.
 _BOND_HIT_TOLERANCE_PX: float = 6.0
 
+# Bounding-sphere radius of the NPD placeholder cube, as a multiple of its
+# half-edge (the half body diagonal, sqrt(3)).
+_NPD_BOUND_FACTOR: float = 1.7320508075688772
+
+
+def _npd_bound_radius(atom: _Atom3D) -> float:
+    """Return the bounding-sphere radius of an atom's NPD placeholder cube.
+
+    Used for picking and for label offsets.  ``u_iso`` of an NPD atom can be
+    negative, so the usual ``sqrt(u_iso)`` radius is not available here.
+    """
+    return float(atom.npd_half_edge) * _NPD_BOUND_FACTOR
+
 
 # ---------------------------------------------------------------------------
 # Main widget
@@ -635,8 +648,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         if self._sphere_count > 0:
             self._render_spheres(mv, proj)
 
-        # NPD-cube placeholders (atoms whose ADP tensor is non-positive-definite)
-        if self._show_adps and self._cube_count > 0:
+        # NPD-cube placeholders (atoms whose ADP tensor is non-positive-definite).
+        # Drawn in both ADP and isotropic mode so they are never hidden.
+        if self._cube_count > 0:
             self._render_cubes(mv, proj)
 
         # ADP ellipsoids – all in a single batched draw call
@@ -747,11 +761,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def _build_sphere_geometry(self) -> None:
         """Create billboard quad data for non-ADP atoms.
 
-        Atoms are routed to one of three buckets when ``_show_adps`` is on:
-        a valid anisotropic ADP → ellipsoid impostor; an NPD ADP (any
+        Atoms are routed to one of three buckets: a valid anisotropic ADP →
+        ellipsoid impostor (only while ``_show_adps`` is on); an NPD ADP (any
         eigenvalue ≤ 0) → 3-D cube placeholder; everything else → sphere
-        impostor.  When ``_show_adps`` is off, NPD atoms fall back to spheres
-        — matching the 2-D widget's behaviour.
+        impostor.  The NPD cube is shown in *both* modes so a broken tensor
+        is never silently hidden — matching the 2-D widget's behaviour.
         """
         corners = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]], dtype=np.float32)
         quad_idx_tpl = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
@@ -765,11 +779,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 continue
             if self._visible_parts is not None and atom.part not in self._visible_parts:
                 continue
-            if self._show_adps and atom.u_cart is not None:
-                if atom.adp_valid:
-                    self._adp_draw_list.append(atom)
-                else:
-                    self._npd_draw_list.append(atom)
+            if atom.u_cart is not None and not atom.adp_valid:
+                self._npd_draw_list.append(atom)
+            elif self._show_adps and atom.u_cart is not None:
+                self._adp_draw_list.append(atom)
             else:
                 sphere_atoms.append(atom)
 
@@ -1368,6 +1381,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 C2 = C_view[:2, :2]
                 quad = float(_label_dir2 @ C2 @ _label_dir2)
                 r = sqrt(max(quad, 0.0))
+            elif atom.u_cart is not None and not atom.adp_valid and atom.npd_half_edge > 0.0:
+                # NPD cube placeholder: use its bounding-sphere radius.
+                # ``u_iso`` may be negative here, so sqrt() is not an option.
+                r = _npd_bound_radius(atom)
             elif atom.u_iso is not None:
                 r = sqrt(atom.u_iso)
             else:
@@ -2336,15 +2353,14 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                     ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
                 )
             elif (
-                self._show_adps
-                and atom.u_cart is not None
+                atom.u_cart is not None
                 and not atom.adp_valid
                 and atom.npd_half_edge > 0.0
             ):
                 # Cube placeholder: pick against its bounding sphere
                 # (radius = half_edge × √3).  Slight over-pick at the
                 # corners is acceptable and simpler than ray-AABB.
-                radius = float(atom.npd_half_edge) * 1.7320508
+                radius = _npd_bound_radius(atom)
                 t = self._ray_sphere_hit_viewspace(
                     ray_origin, ray_dir, atom.center, radius, mv
                 )

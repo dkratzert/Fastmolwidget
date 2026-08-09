@@ -393,6 +393,7 @@ if __name__ == '__main__':
     w.show()
     # Load after show so the QML item is fully initialised
     QtCore.QTimer.singleShot(
-        100, lambda: w.load_file('tests/test-data/1979688_small.cif')
+        # 100, lambda: w.load_file('tests/test-data/1979688_small.cif')
+        10, lambda: w.load_file('tests/test-data/p21c.cif')
     )
     sys.exit(app.exec())

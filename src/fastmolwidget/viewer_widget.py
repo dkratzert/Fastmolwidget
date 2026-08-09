@@ -246,10 +246,10 @@ if __name__ == '__main__':
         app = QtWidgets.QApplication([])
 
     w = MoleculeViewerWidget()
-    w.load_file('tests/test-data/p31c.cif')
+    # w.load_file('tests/test-data/p31c.cif')
     # w.load_file('tests/test-data/p31c-finalcif.res')
-    w.load_file('tests/test-data/1548072_many_atoms.cif')
-    # w.load_file('tests/test-data/p21c.cif')
+    # w.load_file('tests/test-data/1548072_many_atoms.cif')
+    w.load_file('tests/test-data/p21c.cif')
     # w.load_file(Path('tests/test-data/IKmjs421_2_0m_sump.res'))
     w.grow()
     w._reset_center_button.click()

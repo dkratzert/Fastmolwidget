@@ -626,9 +626,9 @@ def test_npd_atom_renders_as_cube():
     """Atoms with non-positive-definite ADP tensors must render as cubes.
 
     p21c.cif contains an Al1 atom with U33 ≈ -0.0137, which makes its U_cart
-    non-positive-definite.  When ADPs are shown the atom must be routed to
-    the cube draw list (not the sphere bucket); when ADPs are hidden it
-    must fall back to a regular sphere — same behaviour as the 2-D widget.
+    non-positive-definite.  The atom must be routed to the cube draw list
+    (not the sphere bucket) in *both* ADP and isotropic mode — same behaviour
+    as the 2-D widget.
     """
     from fastmolwidget.loader import MoleculeLoader
 
@@ -642,19 +642,51 @@ def test_npd_atom_renders_as_cube():
     assert al1.adp_valid is False, "Al1 in p21c.cif must be flagged NPD"
     assert al1.npd_half_edge > 0.0, "NPD half-edge must be set for cube sizing"
 
-    # ADPs ON: Al1 must be in the NPD-cube list, not the sphere list.
-    widget.show_adps(True)
-    npd_labels = {a.label for a in widget._npd_draw_list}
-    assert "Al1" in npd_labels
-    assert widget._cube_count > 0, "Cube index buffer must be populated"
-    # 6 faces × 2 triangles × 3 indices = 36 indices per cube.
-    assert widget._cube_count % 36 == 0
-    assert widget._cube_count // 36 == len(widget._npd_draw_list)
+    for show_adps in (True, False):
+        widget.show_adps(show_adps)
+        npd_labels = {a.label for a in widget._npd_draw_list}
+        assert "Al1" in npd_labels, f"cube missing with show_adps={show_adps}"
+        assert widget._cube_count > 0, "Cube index buffer must be populated"
+        # 6 faces × 2 triangles × 3 indices = 36 indices per cube.
+        assert widget._cube_count % 36 == 0
+        assert widget._cube_count // 36 == len(widget._npd_draw_list)
 
-    # ADPs OFF: NPD list must be empty; Al1 falls back to a sphere.
+
+def test_npd_atom_is_not_drawn_as_sphere_with_adps_off():
+    """The NPD atom must not leak into the sphere bucket in isotropic mode.
+
+    Its ``u_iso`` (trace/3) may be negative, which used to reach
+    ``sqrt(u_iso)`` in the sphere-geometry builder.
+    """
+    from fastmolwidget.loader import MoleculeLoader
+
+    widget = MoleculeWidget3D()
+    MoleculeLoader(widget).load_file(data / "p21c.cif")
     widget.show_adps(False)
-    assert len(widget._npd_draw_list) == 0
-    assert widget._cube_count == 0
+
+    npd_labels = {a.label for a in widget._npd_draw_list}
+    adp_labels = {a.label for a in widget._adp_draw_list}
+    assert npd_labels == {"Al1"}
+    assert adp_labels == set()
+    # Every remaining atom went to the sphere bucket.
+    assert widget._sphere_count // 6 == len(widget.atoms) - 1
+
+
+def test_npd_atom_hit_test_uses_cube_bounds_with_adps_off():
+    """Picking an NPD atom must use the cube bound regardless of the ADP toggle."""
+    from fastmolwidget.loader import MoleculeLoader
+
+    widget = MoleculeWidget3D()
+    MoleculeLoader(widget).load_file(data / "p21c.cif")
+    al1 = next(a for a in widget.atoms if a.label == "Al1")
+
+    # sqrt(3) * half-edge — the cube's bounding sphere.
+    assert molecule3d._npd_bound_radius(al1) == pytest.approx(
+        al1.npd_half_edge * np.sqrt(3.0)
+    )
+    # u_iso of an NPD atom may be negative, so the usual sphere radius is
+    # unavailable — this is exactly why the dedicated bound exists.
+    assert al1.npd_half_edge > 0.0
 
 
 def test_adp_tensors_computed():

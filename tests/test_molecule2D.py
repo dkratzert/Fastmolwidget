@@ -739,3 +739,279 @@ def test_2d_viewer_all_checked_passes_none_to_renderer():
     ])
     assert viewer._render_widget._visible_parts is None
 
+
+# ------------------------------------------------------------------
+# NPD (non-positive-definite ADP) placeholder cube
+# ------------------------------------------------------------------
+
+NPD_CIF = data / 'p21c.cif'
+
+
+def _rotation_z(angle_deg: float) -> np.ndarray:
+    a = np.radians(angle_deg)
+    return np.array([
+        [np.cos(a), -np.sin(a), 0.0],
+        [np.sin(a), np.cos(a), 0.0],
+        [0.0, 0.0, 1.0],
+    ])
+
+
+def _grab_rgb(widget) -> np.ndarray:
+    """Return the widget's painted content as an (h, w, 3) uint8 array."""
+    import ctypes
+    app.processEvents()
+    img = widget.grab().toImage().convertToFormat(QtGui.QImage.Format.Format_RGB32)
+    w, h = img.width(), img.height()
+    n_bytes = h * w * 4
+    ptr = img.bits()
+    if isinstance(ptr, (bytes, memoryview)):
+        arr = np.frombuffer(bytes(ptr), dtype=np.uint8).reshape((h, w, 4))
+    elif hasattr(ptr, 'setsize'):
+        ptr.setsize(n_bytes)
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4))
+    else:
+        cbuf = (ctypes.c_uint8 * n_bytes).from_address(int(ptr))
+        arr = np.frombuffer(cbuf, dtype=np.uint8).reshape((h, w, 4))
+    return arr[:, :, :3].copy()
+
+
+def _npd_widget() -> MoleculeWidget:
+    """A widget showing p21c.cif, which contains exactly one NPD atom (Al1)."""
+    from fastmolwidget.loader import MoleculeLoader
+    widget = MoleculeWidget()
+    widget.resize(600, 500)
+    MoleculeLoader(widget).load_file(NPD_CIF)
+    return widget
+
+
+def _single_npd_atom_widget() -> MoleculeWidget:
+    """A widget showing *only* Al1 of p21c.cif.
+
+    With a single atom the rotation pivot is the atom itself, so its screen
+    position is invariant under rotation and any pixel change between two
+    views is caused by the placeholder cube alone.
+    """
+    from fastmolwidget.tools import to_float
+
+    cif = CifReader(NPD_CIF)
+    adp = next(dp for dp in cif.displacement_parameters() if dp.label == 'Al1')
+    at = next(a for a in cif.atoms_orth if a.label == 'Al1')
+    atom = Atomtuple(
+        label=at.label, type=at.type, x=at.x, y=at.y, z=at.z, part=at.part,
+        adp=(to_float(adp.U11), to_float(adp.U22), to_float(adp.U33),
+             to_float(adp.U23), to_float(adp.U13), to_float(adp.U12)),
+    )
+    widget = MoleculeWidget()
+    widget.resize(400, 400)
+    widget.show_labels(False)
+    widget.open_molecule([atom], cell=cif.cell[:6])
+    return widget
+
+
+def test_p21c_has_exactly_one_npd_atom():
+    """Al1 in p21c.cif has U33 = -0.0137 -> its tensor is not positive definite."""
+    widget = _npd_widget()
+    invalid = [at.name for at in widget.atoms
+               if at.u_cart is not None and not at.adp_valid]
+    assert invalid == ['Al1']
+
+
+def test_npd_cube_faces_geometry():
+    from fastmolwidget.molecule_painter import npd_cube_faces
+
+    half = 10.0
+    faces = npd_cube_faces(np.eye(3), half)
+    assert len(faces) == 6
+
+    # Outward normals of an axis-aligned cube are the six unit axes.
+    normals = sorted(tuple(np.round(n, 9)) for _p, _z, n in faces)
+    expected = sorted(
+        tuple(np.round(s * np.eye(3)[i], 9)) for i in range(3) for s in (-1.0, 1.0)
+    )
+    assert normals == expected
+
+    # Faces come back sorted back-to-front (descending depth: smaller z is
+    # nearer the viewer in this renderer).
+    depths = [z for _p, z, _n in faces]
+    assert depths == sorted(depths, reverse=True)
+
+    # Every corner is a +/-half combination.
+    for pts, _z, _n in faces:
+        assert pts.shape == (4, 2)
+        assert np.allclose(np.abs(pts), half)
+
+
+def test_npd_cube_faces_follow_the_view_rotation():
+    """The cube must be rotated by the view matrix, not frozen in screen space."""
+    from fastmolwidget.molecule_painter import npd_cube_faces
+
+    half = 7.5
+    R = _rotation_z(37.0) @ np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, np.cos(0.4), -np.sin(0.4)],
+        [0.0, np.sin(0.4), np.cos(0.4)],
+    ])
+
+    def corner_set(faces):
+        return sorted(tuple(np.round(p, 6)) for pts, _z, _n in faces for p in pts)
+
+    rotated = npd_cube_faces(R, half)
+    expected_3d = [
+        half * (si * R[:, 0] + sj * R[:, 1] + sk * R[:, 2])
+        for si in (-1.0, 1.0) for sj in (-1.0, 1.0) for sk in (-1.0, 1.0)
+    ]
+    expected = sorted(tuple(np.round(p[:2], 6)) for p in expected_3d for _ in range(3))
+    assert corner_set(rotated) == expected
+
+    # ... and the result actually differs from the unrotated cube.
+    assert corner_set(rotated) != corner_set(npd_cube_faces(np.eye(3), half))
+
+    # Normals stay orthonormal after rotation.
+    for _pts, _z, n in rotated:
+        assert float(np.linalg.norm(n)) == pytest.approx(1.0)
+
+
+def _drag_rotate(widget, dx: float, dy: float) -> None:
+    """Rotate the view like a real left-button drag would."""
+    from qtpy import QtCore
+    widget._lastPos = QtCore.QPointF(100.0, 100.0)
+    event = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseMove,
+        QtCore.QPointF(100.0 + dx, 100.0 + dy),
+        QtCore.QPointF(100.0 + dx, 100.0 + dy),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    widget.rotate_molecule(event)
+
+
+def test_npd_cube_is_repainted_when_the_structure_is_rotated():
+    """Regression: the NPD cube used fixed screen offsets and never rotated.
+
+    Only the NPD atom is displayed and it sits on the rotation pivot, so its
+    screen position cannot change — every differing pixel comes from the cube.
+    """
+    widget = _single_npd_atom_widget()
+    widget.show()
+    assert not widget.atoms[0].adp_valid  # precondition: it really is NPD
+
+    before = _grab_rgb(widget)
+    screenx, screeny = widget.atoms[0].screenx, widget.atoms[0].screeny
+    _drag_rotate(widget, 47.0, 23.0)
+    widget.update()
+    after = _grab_rgb(widget)
+
+    assert not np.allclose(widget.cumulative_R, np.eye(3))
+    assert widget.atoms[0].screenx == pytest.approx(screenx)
+    assert widget.atoms[0].screeny == pytest.approx(screeny)
+    if before.shape != after.shape:
+        return
+    changed = (np.abs(before.astype(int) - after.astype(int)).sum(axis=2) > 20).sum()
+    assert changed > 0
+
+
+def test_npd_cube_orientation_changes_with_the_view():
+    """The cube's projected corners must differ between two view rotations."""
+    from fastmolwidget.molecule_painter import NPD_CUBE_HALF_FACTOR, npd_cube_faces
+
+    widget = _npd_widget()
+    half = widget.atoms_size * NPD_CUBE_HALF_FACTOR
+
+    def corners(w):
+        faces = npd_cube_faces(w.cumulative_R, half)
+        return sorted(tuple(np.round(p, 6)) for pts, _z, _n in faces for p in pts)
+
+    before = corners(widget)
+    _drag_rotate(widget, 47.0, 23.0)
+    assert corners(widget) != before
+
+
+def test_npd_cube_is_drawn_with_adps_switched_off():
+    """NPD atoms keep their cube in isotropic mode so they stay recognisable."""
+    from fastmolwidget.molecule_painter import NPD_CUBE_BOUND_FACTOR
+
+    widget = _npd_widget()
+    widget.show_adps(False)
+    widget.show()
+    widget.grab()  # force a paint pass
+
+    npd = next(at for at in widget.atoms if at.u_cart is not None and not at.adp_valid)
+    bound = widget.atoms_size * NPD_CUBE_BOUND_FACTOR
+    # Hit-testing uses the cube's bounding circle, not the isotropic sphere.
+    assert widget.is_point_inside_atom(npd, npd.screenx + bound * 0.9, npd.screeny)
+    assert not widget.is_point_inside_atom(npd, npd.screenx + bound * 1.2, npd.screeny)
+
+
+def test_npd_atom_hit_test_does_not_raise():
+    """u_iso of an NPD atom can be negative -> sqrt() used to blow up here."""
+    widget = _npd_widget()
+    widget.show()
+    widget.grab()
+    npd = next(at for at in widget.atoms if at.u_cart is not None and not at.adp_valid)
+    assert widget.is_point_inside_atom(npd, npd.screenx, npd.screeny)
+    assert widget.get_spherical_radius(npd) > 0.0
+
+
+def test_npd_cube_front_face_follows_the_rotation():
+    """A 90 deg turn about y must bring a different cube face to the front."""
+    from fastmolwidget.molecule_painter import npd_cube_faces
+
+    # Faces come back back-to-front, so the last one faces the viewer
+    # (smallest z).  Unrotated, that is the -w face.
+    front = npd_cube_faces(np.eye(3), 5.0)[-1]
+    assert np.allclose(front[2], [0.0, 0.0, -1.0])
+
+    # After a quarter turn about y the +u face has taken its place.
+    Ry = np.array([
+        [0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+    ])
+    front = npd_cube_faces(Ry, 5.0)[-1]
+    assert np.allclose(front[2], [0.0, 0.0, -1.0])          # still faces us ...
+    assert np.allclose(Ry.T @ front[2], [1.0, 0.0, 0.0])    # ... but it is +u now
+
+
+def test_npd_cube_front_face_colour_changes_with_rotation():
+    """Each face is shaded from its own normal, so the pixel at the atom
+    centre tells us *which* face is currently on top.  Rotating the structure
+    must swap in a differently shaded face."""
+    from fastmolwidget.molecule_painter import (
+        NPD_CUBE_HALF_FACTOR,
+        npd_cube_faces,
+        npd_face_shade,
+    )
+
+    widget = _single_npd_atom_widget()
+    widget.show()
+    atom = widget.atoms[0]
+
+    def centre_colour() -> tuple[int, int, int]:
+        arr = _grab_rgb(widget)
+        h, w = arr.shape[:2]
+        # grab() may apply a device-pixel ratio; scale the logical position.
+        sx = round(atom.screenx * w / widget.width())
+        sy = round(atom.screeny * h / widget.height())
+        b, g, r = arr[sy, sx]  # Format_RGB32 is BGRA in memory
+        return int(r), int(g), int(b)
+
+    def expected_front_colour() -> tuple[int, int, int]:
+        half = widget.atoms_size * NPD_CUBE_HALF_FACTOR
+        _pts, _z, normal = npd_cube_faces(widget.cumulative_R, half)[-1]
+        shade = npd_face_shade(normal)
+        col = atom.color.lighter(max(1, round(shade * 100)))
+        return col.red(), col.green(), col.blue()
+
+    widget.grab()  # populate screenx/screeny
+    before_expected = expected_front_colour()
+    assert centre_colour() == before_expected
+
+    _drag_rotate(widget, 90.0, 40.0)
+    widget.update()
+    after_expected = expected_front_colour()
+    assert centre_colour() == after_expected
+    # The face on top really did change.
+    assert after_expected != before_expected
+
+

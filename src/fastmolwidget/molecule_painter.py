@@ -57,6 +57,78 @@ def calc_volume(
     return a * b * c * sqrt(1 + 2 * ca * cb * cg - ca ** 2 - cb ** 2 - cg ** 2)
 
 
+#: Half-edge of the NPD placeholder cube, as a fraction of ``atoms_size``.
+NPD_CUBE_HALF_FACTOR = 0.4
+
+#: Bounding-circle radius of the NPD cube, as a fraction of ``atoms_size``
+#: (half-edge times sqrt(3), the cube's body diagonal half-length).
+NPD_CUBE_BOUND_FACTOR = NPD_CUBE_HALF_FACTOR * 1.7320508075688772
+
+# Light direction in view space (x right, y down, z away from the viewer):
+# upper-left and in front of the molecule.
+_NPD_LIGHT = np.array([-0.3, -0.5, -1.0])
+_NPD_LIGHT = _NPD_LIGHT / np.linalg.norm(_NPD_LIGHT)
+
+# The six faces of a unit cube as indices into the corner list built by
+# :func:`npd_cube_faces`, each wound so that the outward normal is
+# ``(p1 - p0) x (p2 - p1)``.  Corner index bits are (i, j, k) -> sign of
+# (u, v, w), see below.
+_NPD_CUBE_FACES: tuple[tuple[int, int, int, int], ...] = (
+    (4, 6, 7, 5),  # +u
+    (0, 1, 3, 2),  # -u
+    (2, 3, 7, 6),  # +v
+    (0, 4, 5, 1),  # -v
+    (1, 5, 7, 3),  # +w
+    (0, 2, 6, 4),  # -w
+)
+
+
+def npd_cube_faces(
+    rotation: np.ndarray, half: float,
+) -> list[tuple[np.ndarray, float, np.ndarray]]:
+    """Return the projected faces of the NPD placeholder cube.
+
+    The cube is axis-aligned in the *molecular* Cartesian frame and is
+    brought into view space with *rotation* (the renderer's accumulated view
+    rotation), so it turns together with the rest of the structure — the same
+    convention the OpenGL renderer uses.
+
+    :param rotation: 3x3 view rotation matrix (``cumulative_R``).
+    :param half: Half-edge length of the cube in screen pixels.
+    :returns: A list of ``(corners, mean_z, normal)`` tuples, one per face,
+        sorted **back-to-front** (descending depth, since smaller ``z`` is
+        nearer the viewer here).  ``corners`` is a ``(4, 2)`` array of
+        screen-space offsets relative to the atom centre and ``normal`` is the
+        outward unit normal in view space.
+    """
+    R = np.asarray(rotation, dtype=np.float64)
+    u, v, w = R[:, 0] * half, R[:, 1] * half, R[:, 2] * half
+    # Corner index is i*4 + j*2 + k with i/j/k selecting the sign of u/v/w.
+    corners = np.array([
+        (si * u) + (sj * v) + (sk * w)
+        for si in (-1.0, 1.0) for sj in (-1.0, 1.0) for sk in (-1.0, 1.0)
+    ])
+    faces: list[tuple[np.ndarray, float, np.ndarray]] = []
+    for idx in _NPD_CUBE_FACES:
+        pts = corners[list(idx)]
+        normal = np.cross(pts[1] - pts[0], pts[2] - pts[1])
+        norm = float(np.linalg.norm(normal))
+        if norm > 1e-12:
+            normal = normal / norm
+        faces.append((pts[:, :2], float(pts[:, 2].mean()), normal))
+    faces.sort(key=lambda f: f[1], reverse=True)
+    return faces
+
+
+def npd_face_shade(normal: np.ndarray) -> float:
+    """Return the Lambert brightness factor for a cube face *normal*.
+
+    ``1.0`` leaves the base colour unchanged; larger values brighten it.
+    """
+    diffuse = max(0.0, float(np.dot(normal, _NPD_LIGHT)))
+    return min(1.60, max(0.45, 0.60 + 0.85 * diffuse))
+
+
 # ---------------------------------------------------------------------------
 # Data types
 # ---------------------------------------------------------------------------
@@ -624,6 +696,10 @@ class MoleculeRendererMixin:
 
     def get_spherical_radius(self, atom: Atom) -> float:
         """Return an approximate isotropic radius for label-offset calculations."""
+        if atom.u_cart is not None and not atom.adp_valid:
+            # NPD cube: bounding radius in Angstrom (atoms_size / scale is
+            # zoom-invariant, so this is a constant).
+            return self.atoms_size * NPD_CUBE_BOUND_FACTOR / self.scale
         if self._show_adps and atom.u_iso is not None:
             return sqrt(atom.u_iso)
         return 0.23
@@ -710,6 +786,9 @@ class MoleculeRendererMixin:
         cy = atom.screeny
         dx = px - cx
         dy = py - cy
+        if atom.u_cart is not None and not atom.adp_valid:
+            bound = self.atoms_size * NPD_CUBE_BOUND_FACTOR
+            return dx ** 2 + dy ** 2 <= bound ** 2
         if self._show_adps and atom.u_cart is not None:
             a = atom.u_cart[0, 0]
             b = atom.u_cart[0, 1]
@@ -1155,10 +1234,11 @@ class MoleculeRendererMixin:
 
     def draw_atom(self, atom: Atom) -> None:
         """Draw a single atom as ADP ellipsoid, sphere, or fixed circle."""
-        if self._show_adps and atom.u_cart is not None:
-            if not atom.adp_valid:
-                self._draw_invalid_adp(atom)
-                return
+        if atom.u_cart is not None and not atom.adp_valid:
+            # Non-positive-definite tensor: show the cube placeholder in both
+            # ADP and isotropic mode so the broken atom is never hidden.
+            self._draw_invalid_adp(atom)
+            return
         cx = atom.screenx
         cy = atom.screeny
 
@@ -1219,34 +1299,29 @@ class MoleculeRendererMixin:
         self._painter.restore()  # type: ignore[union-attr]
 
     def _draw_invalid_adp(self, atom: Atom) -> None:
-        cx = atom.screenx
-        cy = atom.screeny
-        size = self.atoms_size
+        """Draw the placeholder cube used for non-positive-definite ADPs.
+
+        The cube is a real 3-D box oriented in the molecular frame, projected
+        through the current view rotation, so it turns with the structure.
+        All six faces are painted back-to-front (painter's algorithm), which
+        gives correct hidden-face removal for any orientation.
+        """
+        half = self.atoms_size * NPD_CUBE_HALF_FACTOR
         self._painter.save()  # type: ignore[union-attr]
-        self._painter.translate(cx, cy)  # type: ignore[union-attr]
+        self._painter.translate(atom.screenx, atom.screeny)  # type: ignore[union-attr]
         if atom.name in self.selected_atoms:
-            self._draw_selection(size / 2, size / 2)
-        s = size * 0.4
-        dx = size * 0.3
-        dy = -size * 0.3
-        fl = QtCore.QPointF(-s - dx / 2, s - dy / 2)
-        fr = QtCore.QPointF(s - dx / 2, s - dy / 2)
-        tl = QtCore.QPointF(-s - dx / 2, -s - dy / 2)
-        tr = QtCore.QPointF(s - dx / 2, -s - dy / 2)
-        btl = QtCore.QPointF(-s + dx / 2, -s + dy / 2)
-        btr = QtCore.QPointF(s + dx / 2, -s + dy / 2)
-        bbr = QtCore.QPointF(s + dx / 2, s + dy / 2)
-        front_face = [tl, tr, fr, fl]
-        top_face = [tl, btl, btr, tr]
-        right_face = [tr, btr, bbr, fr]
-        pen = QPen(self.fallback_pen_color, 1)
-        self._painter.setPen(pen)  # type: ignore[union-attr]
-        self._painter.setBrush(QBrush(atom.color.lighter(160)))  # type: ignore[union-attr]
-        self._painter.drawPolygon(QtGui.QPolygonF(top_face))  # type: ignore[union-attr]
-        self._painter.setBrush(QBrush(atom.color))  # type: ignore[union-attr]
-        self._painter.drawPolygon(QtGui.QPolygonF(front_face))  # type: ignore[union-attr]
-        self._painter.setBrush(QBrush(atom.color.darker(180)))  # type: ignore[union-attr]
-        self._painter.drawPolygon(QtGui.QPolygonF(right_face))  # type: ignore[union-attr]
+            bound = self.atoms_size * NPD_CUBE_BOUND_FACTOR
+            self._draw_selection(bound, bound)
+        self._painter.setPen(QPen(self.fallback_pen_color, 1))  # type: ignore[union-attr]
+        for corners, _mean_z, normal in npd_cube_faces(self.cumulative_R, half):
+            shade = npd_face_shade(normal)
+            self._painter.setBrush(  # type: ignore[union-attr]
+                QBrush(atom.color.lighter(max(1, round(shade * 100))))
+            )
+            polygon = QtGui.QPolygonF(
+                [QtCore.QPointF(float(px), float(py)) for px, py in corners]
+            )
+            self._painter.drawPolygon(polygon)  # type: ignore[union-attr]
         self._painter.restore()  # type: ignore[union-attr]
 
     def draw_npd_text(self, dx: float, dy: float, s: float) -> None:
