@@ -124,7 +124,7 @@ app.exec()
 
 > **Note:** `load_file` must be called after the widget is shown and the QML scene has initialised. Using a short `QTimer.singleShot` delay is the simplest approach.
 
-### Embedding the 3D widget in your own layout
+## Embedding the 3D widget in your own layout
 
 ```python
 from fastmolwidget import MoleculeWidget3D
