@@ -259,7 +259,11 @@ cell and canvas focus).
   "differently-rotated") basis on almost every mouse-move event.
 - Atoms whose ADP tensor is non-positive-definite (NPD) are drawn as a cube
   placeholder by `npdCubeFaces()`, a direct port of
-  `molecule_painter.npd_cube_faces`.
+  `molecule_painter.npd_cube_faces`. The stroke join style is set explicitly
+  (`lineJoin = 'bevel'`, `miterLimit = 2`): the canvas default is `'miter'`
+  with a limit of 10, whereas `QPen` defaults to `BevelJoin` with a limit of
+  2, and with miter joins a face projected nearly edge-on grows a long spike
+  out of its acute corners.
 - `SDM.grow()`, `SDM.packUnitCell()`, and `buildConnTable()` were validated
   against the real `fastmolwidget.sdm.SDM` / `fastmolwidget.tools.build_conntable`
   on real CIF test structures and produce byte-for-byte identical atom sets.

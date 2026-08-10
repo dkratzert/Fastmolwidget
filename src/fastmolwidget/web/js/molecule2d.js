@@ -1187,6 +1187,11 @@ export class MoleculeWidget2D extends EventTarget {
     ctx.save();
     ctx.strokeStyle = this.fallbackPenColor;
     ctx.lineWidth = 1;
+    // Match Qt's QPen defaults (BevelJoin, miter limit 2).  The canvas
+    // default is 'miter' with a limit of 10, which grows a long spike out of
+    // the acute corners of a face that is projected nearly edge-on.
+    ctx.lineJoin = 'bevel';
+    ctx.miterLimit = 2;
     for (const face of npdCubeFaces(this.cumulativeR, half)) {
       const k = npdFaceShade(face.normal);
       ctx.fillStyle = k >= 1 ? lighter(atom.color, k * 100) : darker(atom.color, 100 / k);

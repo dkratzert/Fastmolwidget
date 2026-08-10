@@ -1312,7 +1312,13 @@ class MoleculeRendererMixin:
         if atom.name in self.selected_atoms:
             bound = self.atoms_size * NPD_CUBE_BOUND_FACTOR
             self._draw_selection(bound, bound)
-        self._painter.setPen(QPen(self.fallback_pen_color, 1))  # type: ignore[union-attr]
+        pen = QPen(self.fallback_pen_color, 1)
+        # Bevelled joins keep a nearly edge-on face from growing a miter
+        # spike out of its acute corners.  This is already the QPen default;
+        # it is set explicitly so the JS port can be held to the same rule.
+        pen.setJoinStyle(Qt.PenJoinStyle.BevelJoin)
+        pen.setMiterLimit(2.0)
+        self._painter.setPen(pen)  # type: ignore[union-attr]
         for corners, _mean_z, normal in npd_cube_faces(self.cumulative_R, half):
             shade = npd_face_shade(normal)
             self._painter.setBrush(  # type: ignore[union-attr]
