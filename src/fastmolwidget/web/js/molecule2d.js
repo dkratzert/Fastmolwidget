@@ -168,6 +168,8 @@ export class MoleculeWidget2D extends EventTarget {
     // forces a fixed ratio (e.g. for deterministic tests / exports).
     this._forcedDpr = options.devicePixelRatio ?? null;
     this.dpr = this._detectDpr();
+    // Device scale of the frame currently being rendered; see `render()`.
+    this._renderScale = this.dpr;
     // Fallback for callers that never call `resize()`; note that an
     // unstyled <canvas> reports the HTML default of 300x150, which is not a
     // meaningful viewport size. `_sized` therefore records whether a real
@@ -960,6 +962,12 @@ export class MoleculeWidget2D extends EventTarget {
     // the transform up front makes that failure mode structurally
     // impossible regardless of what caused the earlier exception.
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    // Remember the device scale actually in effect for this frame. Qt strokes
+    // the ADP intersection lines with a *cosmetic* pen, whose width is in
+    // device pixels; the canvas draws in logical pixels, so those strokes have
+    // to divide by this factor to come out the same thickness. Taken from
+    // `scale` rather than `this.dpr` so high-resolution exports match too.
+    this._renderScale = scale || 1;
     ctx.save();
     try {
       this._renderScene(ctx, width, height);
@@ -1149,7 +1157,7 @@ export class MoleculeWidget2D extends EventTarget {
           ctx.fill();
           ctx.stroke();
 
-          this._drawPrincipalArcs(ctx, atom, cx, cy);
+          this._drawPrincipalArcs(ctx, atom, cx, cy, r1, r2, angle);
           ctx.restore();
           return;
         }
@@ -1218,17 +1226,25 @@ export class MoleculeWidget2D extends EventTarget {
     ctx.restore();
   }
 
-  _drawPrincipalArcs(ctx, atom, cx, cy) {
+  _drawPrincipalArcs(ctx, atom, cx, cy, r1, r2, angle) {
     const eigvals = atom.uEigvals;
+    // Qt uses a *cosmetic* pen here, i.e. a width measured in device pixels
+    // and unaffected by any transform. The canvas draws in logical pixels
+    // scaled by `_renderScale`, so divide to land on the same thickness.
+    const lineWidth = this.cachedAdpLineWidth / (this._renderScale || 1);
     if (!eigvals || eigvals[0] <= 0 || eigvals[1] <= 0 || eigvals[2] <= 0) {
+      // Fallback cross spanning the ellipse along its principal axes, matching
+      // `molecule_painter._draw_principal_arcs` (which draws it under the
+      // painter's `rotate(angle)`).
+      const ca = Math.cos(angle), sa = Math.sin(angle);
       ctx.save();
-      ctx.strokeStyle = 'rgba(0,0,0,0.47)';
-      ctx.lineWidth = this.cachedAdpLineWidth;
+      ctx.strokeStyle = `rgba(0,0,0,${120 / 255})`;
+      ctx.lineWidth = lineWidth;
       ctx.beginPath();
-      ctx.moveTo(cx - 1, cy);
-      ctx.lineTo(cx + 1, cy);
-      ctx.moveTo(cx, cy - 1);
-      ctx.lineTo(cx, cy + 1);
+      ctx.moveTo(cx - r1 * ca, cy - r1 * sa);
+      ctx.lineTo(cx + r1 * ca, cy + r1 * sa);
+      ctx.moveTo(cx + r2 * sa, cy - r2 * ca);
+      ctx.lineTo(cx - r2 * sa, cy + r2 * ca);
       ctx.stroke();
       ctx.restore();
       return;
@@ -1236,8 +1252,8 @@ export class MoleculeWidget2D extends EventTarget {
     const eigenvectors = atom.uEigvecs;
     const c = this.adpScale, s = this.scale;
     ctx.save();
-    ctx.strokeStyle = 'rgba(0,0,0,0.47)';
-    ctx.lineWidth = this.cachedAdpLineWidth;
+    ctx.strokeStyle = `rgba(0,0,0,${120 / 255})`;
+    ctx.lineWidth = lineWidth;
 
     const pairs = [[1, 2], [0, 2], [0, 1]];
     for (const [i, j] of pairs) {
@@ -1267,12 +1283,12 @@ export class MoleculeWidget2D extends EventTarget {
 
       // Sample the arc directly in screen space (rather than stroking a
       // unit circle through a ctx.transform) so the stroke width stays
-      // exactly `cachedAdpLineWidth` device pixels, mirroring Qt's cosmetic
-      // pen. Relying on ctx.transform + a compensating 1/det line-width
-      // scale breaks down when the ellipsoid's principal plane is viewed
-      // near edge-on: the transform becomes nearly singular, 1/det blows
-      // up, and the "circle" degenerates into a huge filled band across
-      // the canvas instead of a thin arc.
+      // exactly `cachedAdpLineWidth` device pixels (see `lineWidth` above),
+      // mirroring Qt's cosmetic pen. Relying on ctx.transform + a
+      // compensating 1/det line-width scale breaks down when the ellipsoid's
+      // principal plane is viewed near edge-on: the transform becomes nearly
+      // singular, 1/det blows up, and the "circle" degenerates into a huge
+      // filled band across the canvas instead of a thin arc.
       //
       // The visible (front-facing) half of this on-surface cross-section is
       // where the surface normal's depth component n_z(t) = AzN*cos(t) +
@@ -1302,7 +1318,7 @@ export class MoleculeWidget2D extends EventTarget {
         if (k === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       }
-      ctx.lineWidth = this.cachedAdpLineWidth;
+      ctx.lineWidth = lineWidth;
       ctx.stroke();
       ctx.restore();
     }
