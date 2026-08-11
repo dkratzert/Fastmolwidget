@@ -43,6 +43,12 @@ gl3d = [
 cpp = [
     "pybind11>=2.13",
 ]
+# density: build-time only — pybind11 must be present when running
+#   pip install -e . --no-build-isolation  (builds density_cpp, the
+#   marching-cubes isosurface extension used for residual density maps)
+density = [
+    "pybind11>=2.13",
+]
 
 [project.urls]
 Homepage = "https://github.com/dkratzert/Fastmolwidget"
@@ -69,9 +75,10 @@ fastmolwidget = "fastmolwidget:main"
 
 [build-system]
 # setuptools is used instead of uv_build because it supports C extensions
-# (the optional sdm_cpp pybind11 module).  pybind11 and wheel are build-time
+# (the optional sdm_cpp and density_cpp pybind11 modules).  pybind11, numpy,
+# and wheel are build-time
 # only; they are not installed into the user environment.
-requires = ["setuptools>=68", "pybind11>=2.13", "wheel"]
+requires = ["setuptools>=68", "pybind11>=2.13", "numpy>=2.2.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -94,4 +101,3 @@ test-skip = "*"
 [tool.cibuildwheel.macos]
 # universal2 covers both arm64 and x86_64 — no separate Intel runner needed.
 archs = ["universal2"]
-

@@ -268,6 +268,12 @@ _CYLINDER_VERT        = _shaders.CYLINDER_VERT
 _CYLINDER_FRAG        = _shaders.CYLINDER_FRAG
 _ELLIPSOID_BATCH_VERT = _shaders.ELLIPSOID_BATCH_VERT
 _ELLIPSOID_BATCH_FRAG = _shaders.ELLIPSOID_BATCH_FRAG
+_LINE_VERT            = _shaders.LINE_VERT
+_LINE_FRAG            = _shaders.LINE_FRAG
+
+# Residual-density isosurface colours: green = positive, red = negative.
+_DENSITY_POS_COLOR: tuple[float, float, float] = (0.0, 0.85, 0.0)
+_DENSITY_NEG_COLOR: tuple[float, float, float] = (0.9, 0.0, 0.0)
 
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
@@ -398,6 +404,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # layout = position3 + normal3 + color3 + selected1).
         self._cube_vbo: int = 0
         self._cube_ibo: int = 0
+        # Residual-density isosurface wireframe (positive and negative lobes).
+        self._density_vbo: int = 0
+        self._density_ibo: int = 0
 
         # ---- CPU-side geometry buffers ------------------------------------
         self._sphere_verts: np.ndarray = np.empty(0, dtype=np.float32)
@@ -412,6 +421,19 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._cube_verts: np.ndarray = np.empty(0, dtype=np.float32)
         self._cube_idx: np.ndarray = np.empty(0, dtype=np.uint32)
         self._cube_count: int = 0
+
+        # ---- Residual-density isosurface ----------------------------------
+        #: The computed map, or ``None`` when no density is loaded.
+        self._density_map = None
+        #: Path of the structure file last loaded, used to compute Fc.
+        self._model_path: Path | None = None
+        self._density_level: float = 0.4
+        self._density_verts: np.ndarray = np.empty(0, dtype=np.float32)
+        self._density_idx: np.ndarray = np.empty(0, dtype=np.uint32)
+        #: Index counts of the positive and negative lobe, in that order.
+        self._density_pos_count: int = 0
+        self._density_neg_count: int = 0
+        self._density_dirty: bool = False
 
         # ADP atoms for batched ellipsoid draw call
         self._adp_draw_list: list[_Atom3D] = []
@@ -560,14 +582,19 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._cylinder_prog = self._compile_program(
             _CYLINDER_VERT, _CYLINDER_FRAG, "cylinder"
         )
+        self._line_prog = self._compile_program(
+            _LINE_VERT, _LINE_FRAG, "line"
+        )
 
-        # Allocate VBOs / IBOs (sphere, cylinder, ellipsoid batch, NPD cubes)
-        buffers = gl.glGenBuffers(8)
+        # Allocate VBOs / IBOs (sphere, cylinder, ellipsoid batch, NPD cubes,
+        # residual-density wireframe)
+        buffers = gl.glGenBuffers(10)
         (
             self._sphere_vbo, self._sphere_ibo,
             self._cylinder_vbo, self._cylinder_ibo,
             self._ellipsoid_batch_vbo, self._ellipsoid_batch_ibo,
             self._cube_vbo, self._cube_ibo,
+            self._density_vbo, self._density_ibo,
         ) = buffers
 
         # One-shot MSAA diagnostic: warn when the actual sample count is < 2,
@@ -656,6 +683,14 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         # ADP ellipsoids – all in a single batched draw call
         if self._show_adps and self._ellipsoid_count > 0:
             self._render_ellipsoids_batched(mv, proj)
+
+        # Residual-density isosurface wireframe, drawn last so its lines sit
+        # visually on top of the solid atom/bond geometry (depth testing still
+        # hides the parts that are genuinely behind an atom).
+        if self._density_dirty:
+            self._upload_density_geometry()
+        if self._density_pos_count or self._density_neg_count:
+            self._render_density(mv, proj)
 
         # Build the full 2-D overlay (atom labels, hover tooltip, axis arrows)
         # on an *off-screen* QImage using Qt's raster paint engine, then blit
@@ -1114,6 +1149,32 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         self._geometry_dirty = False
 
+    def _upload_density_geometry(self) -> None:
+        """Upload the residual-density wireframe to its VBO / IBO."""
+        if not self._gl_initialized or self._gl_failed:
+            return
+        self._density_dirty = False
+        if self._density_verts.size == 0 or self._density_idx.size == 0:
+            return
+
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._density_vbo)
+        gl.glBufferData(
+            gl.GL_ARRAY_BUFFER,
+            self._density_verts.nbytes,
+            self._density_verts,
+            gl.GL_DYNAMIC_DRAW,
+        )
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._density_ibo)
+        gl.glBufferData(
+            gl.GL_ELEMENT_ARRAY_BUFFER,
+            self._density_idx.nbytes,
+            self._density_idx,
+            gl.GL_DYNAMIC_DRAW,
+        )
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+
     # ------------------------------------------------------------------
     # Rendering
     # ------------------------------------------------------------------
@@ -1249,6 +1310,43 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         )
 
         _unbind_attrib(prog, [b"a_position", b"a_normal", b"a_color", b"a_selected"])
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
+        gl.glUseProgram(0)
+
+    def _render_density(self, mv: np.ndarray, proj: np.ndarray) -> None:
+        """Draw the residual-density isosurface as a coloured wireframe.
+
+        Both lobes live in one VBO; the positive lobe occupies the first
+        ``_density_pos_count`` indices and the negative lobe the rest, so a
+        single buffer binding serves two draw calls that differ only in the
+        ``u_color`` uniform.
+        """
+        prog = self._line_prog
+        gl.glUseProgram(prog)
+
+        _set_mat4(prog, b"u_mv", mv)
+        _set_mat4(prog, b"u_proj", proj)
+
+        stride = 3 * 4  # position3 × 4 bytes
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._density_vbo)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self._density_ibo)
+        _bind_attrib(prog, b"a_position", 3, stride, 0)
+
+        if self._density_pos_count:
+            _set_vec3(prog, b"u_color", np.array(_DENSITY_POS_COLOR, dtype=np.float32))
+            gl.glDrawElements(
+                gl.GL_LINES, self._density_pos_count,
+                gl.GL_UNSIGNED_INT, ctypes.c_void_p(0),
+            )
+        if self._density_neg_count:
+            _set_vec3(prog, b"u_color", np.array(_DENSITY_NEG_COLOR, dtype=np.float32))
+            gl.glDrawElements(
+                gl.GL_LINES, self._density_neg_count, gl.GL_UNSIGNED_INT,
+                ctypes.c_void_p(self._density_pos_count * 4),
+            )
+
+        _unbind_attrib(prog, [b"a_position"])
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, 0)
         gl.glUseProgram(0)
@@ -1783,6 +1881,117 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """Set atom label pixel size."""
         self.fontsize = max(1, font_size)
         self.update()
+
+    # ------------------------------------------------------------------
+    # Residual (Fo-Fc) density
+    # ------------------------------------------------------------------
+
+    def show_residual_density(
+        self,
+        hkl_path: str | Path,
+        level: float = 0.10,
+        *,
+        model_path: str | Path | None = None,
+    ) -> None:
+        """Compute and display a residual (Fo−Fc) electron-density isosurface.
+
+        The map is calculated from *hkl_path* together with the refined model
+        (see :mod:`fastmolwidget.density`); nothing has to be pre-computed by
+        another program.  Two wireframe surfaces are drawn: ``+level`` in
+        green and ``-level`` in red.
+
+        The result is cached, so :meth:`set_residual_density_level` can change
+        the contour afterwards without recomputing the map.
+
+        :param hkl_path: A SHELX ``.hkl`` file, or a CIF/fcf with a reflection
+            loop.
+        :param level: Contour level in e/Å³.
+        :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
+            Defaults to the file this widget last loaded.
+        :raises RuntimeError: If no model is available, or the compiled
+            ``density_cpp`` extension is missing.
+        """
+        from fastmolwidget.density import calculate_residual_density
+
+        model = model_path if model_path is not None else self._model_path
+        if model is None:
+            raise RuntimeError(
+                'No structure model available - load a .res/.ins/.cif file '
+                'before showing residual density.'
+            )
+        self._density_map = calculate_residual_density(model, hkl_path)
+        self._density_level = abs(float(level))
+        self._build_density_geometry()
+        self.update()
+
+    def set_residual_density_level(self, level: float) -> None:
+        """Re-contour the residual-density map at a new level.
+
+        Does nothing when no map has been computed yet.  The map itself is
+        reused, so this is much cheaper than :meth:`show_residual_density`.
+
+        :param level: Contour level in e/Å³.
+        """
+        self._density_level = abs(float(level))
+        if self._density_map is not None:
+            self._build_density_geometry()
+            self.update()
+
+    def clear_residual_density(self) -> None:
+        """Remove the residual-density isosurface from the view."""
+        self._density_map = None
+        self._density_verts = np.empty(0, dtype=np.float32)
+        self._density_idx = np.empty(0, dtype=np.uint32)
+        self._density_pos_count = 0
+        self._density_neg_count = 0
+        self._density_dirty = True
+        self.update()
+
+    @property
+    def residual_density_map(self):
+        """The computed :class:`~fastmolwidget.density.ResidualDensityMap`.
+
+        ``None`` until :meth:`show_residual_density` has been called.  Useful
+        for reporting the map statistics (``max``, ``min``, ``rms``).
+        """
+        return self._density_map
+
+    def _build_density_geometry(self) -> None:
+        """Contour the cached map and pack both lobes into one line buffer.
+
+        The isosurface is restricted to the neighbourhood of the displayed
+        atoms, so grown or packed structures get density around every atom
+        while an isolated asymmetric unit does not drag in the whole cell.
+        """
+        if self._density_map is None:
+            self.clear_residual_density()
+            return
+
+        positions = np.array([atom.center for atom in self.atoms], dtype=float) \
+            if self.atoms else None
+
+        verts_list: list[np.ndarray] = []
+        edges_list: list[np.ndarray] = []
+        counts: list[int] = []
+        offset = 0
+        for level in (self._density_level, -self._density_level):
+            verts, edges = self._density_map.isosurface(level, atoms=positions)
+            if len(verts) and len(edges):
+                verts_list.append(np.asarray(verts, dtype=np.float32))
+                edges_list.append(np.asarray(edges, dtype=np.uint32) + offset)
+                counts.append(int(edges.size))
+                offset += len(verts)
+            else:
+                counts.append(0)
+
+        if verts_list:
+            self._density_verts = np.concatenate(verts_list).ravel()
+            self._density_idx = np.concatenate(edges_list).ravel()
+        else:
+            self._density_verts = np.empty(0, dtype=np.float32)
+            self._density_idx = np.empty(0, dtype=np.uint32)
+        self._density_pos_count, self._density_neg_count = counts
+        self._density_dirty = True
 
     def clear(self) -> None:
         """Remove all atoms and bonds."""

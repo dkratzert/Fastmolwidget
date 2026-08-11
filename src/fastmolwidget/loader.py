@@ -80,6 +80,9 @@ class MoleculeLoader:
             raise FileNotFoundError(f"File not found: {path}")
         loader = getattr(self, loader_name)
         loader(path, keep_view=keep_view)
+        # Let the widget know which file it is showing, so that features which
+        # need the model itself (e.g. residual-density maps) can find it.
+        self._widget._model_path = path
 
     _GROWABLE_FORMATS: frozenset[str] = frozenset({'.cif', '.res', '.ins'})
 

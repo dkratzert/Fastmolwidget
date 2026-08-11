@@ -26,7 +26,7 @@ from pathlib import Path
 
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QPainter, QColor, QImage
+from qtpy.QtGui import QColor, QImage, QPainter
 
 try:
     from qtpy.QtQuick import QQuickPaintedItem
@@ -171,3 +171,8 @@ class MoleculeQuickItem(MoleculeRendererMixin, QQuickPaintedItem):  # type: igno
             painter.end()
         image.save(str(filename.resolve()))
 
+    def show_residual_density(self, hkl_path: str | Path, level: float = 0.10) -> None:
+        """3D-only feature; residual-density isosurfaces are not rendered in Qt Quick."""
+
+    def clear_residual_density(self) -> None:
+        """3D-only feature; clearing residual-density isosurfaces is a no-op in Qt Quick."""

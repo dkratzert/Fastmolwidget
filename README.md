@@ -34,6 +34,7 @@ A Qt Quick backend is also available for embedding the 2D renderer inside a QML 
 - **Atom label display toggle** with adjustable font size
 - **Bond width** adjustment via spin box
 - **Configurable bond color** — set programmatically or via the control-bar color picker
+- **Residual (Fo−Fc) density maps (3D)** — computed on the fly from a SHELX `.hkl` (or an fcf-style CIF reflection loop) plus the refined model, and drawn as green/red wireframe isosurfaces; no pre-computed map file needed (see [Residual density maps](#residual-fofc-density-maps-3d))
 - **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) are plain `QWidget` subclasses; drop either into any layout
 - **Qt Quick support** — `MoleculeQuickItem` (`QQuickPaintedItem`) and `MoleculeViewerQuickWidget` allow embedding the 2D renderer in a QML scene
@@ -215,6 +216,9 @@ Both viewers expose the same two-row control bar:
 | Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)               |
 | Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
 | Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
+| Residual Density…     | —       | *(3D only)* Opens a reflection-file dialog and displays the Fo−Fc isosurface                  |
+| Level                 | 0.10    | *(3D only)* Contour level of the residual-density isosurface in e/Å³                          |
+| Hide Density          | —       | *(3D only)* Removes the residual-density isosurface                                           |
 | Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
@@ -313,6 +317,15 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 - **`align_best_view()`** — rotate the structure so the widest face points towards the viewer (PCA on visible atoms; H/D excluded when hydrogen visibility is off)
 - **`reset_rotation_center()`** — restore the rotation pivot to the molecule's geometric center (undoes a middle-click recentring)
 - **`save_image(filename: Path, image_scale: float = 1.5)`** — capture the current OpenGL framebuffer and write it to a PNG or JPEG file (format inferred from the file extension). The captured image is then scaled by `image_scale` using smooth bilinear filtering before saving. Labels appear in the saved image if they are active at the time of the call.
+
+#### Residual-density Methods
+
+- **`show_residual_density(hkl_path, level=0.10, *, model_path=None)`** — compute a residual (Fo−Fc) map from `hkl_path` and the loaded model and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `model_path` defaults to the file the widget last loaded. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing.
+- **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded.
+- **`clear_residual_density()`** — remove the isosurface.
+- **`residual_density_map`** *(property)* — the computed `ResidualDensityMap` (with `.max`, `.min`, `.rms`, `.d_min` and the raw `.array` grid), or `None`.
+
+> These are 3D-only. `MoleculeWidget` (2D) and `MoleculeQuickItem` implement `show_residual_density` / `clear_residual_density` as documented no-ops so that `MoleculeWidgetProtocol` checks keep working across all renderers.
 
 #### Example — feeding atom data directly to `MoleculeWidget3D`
 
@@ -494,6 +507,95 @@ main_window.setCentralWidget(central_widget)
 
 main_window.show()
 sys.exit(app.exec_())
+```
+
+## Residual (Fo−Fc) density maps (3D)
+
+`MoleculeWidget3D` can compute and display a residual electron-density map
+directly from a reflection file and the refined model — no `.fcf`, `.map` or
+any other pre-computed map file is required.
+
+```python
+from fastmolwidget import MoleculeViewer3DWidget
+
+viewer = MoleculeViewer3DWidget()
+viewer.load_file("structure.res")
+viewer.show_residual_density("structure.hkl", level=0.25)
+
+m = viewer.render_widget.residual_density_map
+print(f"peak {m.max:+.3f}, hole {m.min:+.3f}, rms {m.rms:.3f} e/Å³")
+```
+
+Positive density is drawn as a **green** wireframe at `+level`, negative
+density as a **red** wireframe at `-level`. The surface is clipped to the
+neighbourhood of the displayed atoms, so it follows grown and packed
+structures.
+
+### How it is calculated
+
+1. Reflections are read from a SHELX `.hkl` (`HKLF 4`) file, or from an
+   fcf-style CIF reflection loop, and merged into the reciprocal asymmetric
+   unit with 1/σ² weights.
+2. *F*<sub>c</sub> is taken from the reflection file when it already contains
+   phased calculated values, otherwise it is computed by direct summation with
+   [gemmi](https://gemmi.readthedocs.io), including the real anomalous term
+   *f′*.
+3. The refined overall scale factor (SHELXL's first `FVAR`) puts the two on a
+   common scale, and SHELXL's isotropic `EXTI` correction is applied when it
+   was refined.
+4. The map uses SHELXL's own **unweighted** difference coefficients,
+   `(|Fo|/OSF − |Fc|)·exp(iφc)` — the `WGHT` scheme deliberately is *not*
+   applied, because SHELXL uses it only for the least-squares objective and
+   not for Fourier maps.
+5. An FFT over the space group yields ρ in e/Å³, and the isosurface is
+   extracted with the `density_cpp` marching-cubes extension.
+
+### Where the refinement parameters come from
+
+The refined `FVAR` / `WGHT` / `EXTI` values are looked up in this order:
+
+1. the `.res` / `.ins` file itself, when that is what was loaded;
+2. a `.res` (then `.ins`) file of the same basename next to a loaded CIF;
+3. a complete SHELX `.res` block embedded in the CIF (`_shelx_res_file` or
+   `_iucr_refine_instructions_details`) — which most deposited CIFs carry, so
+   a CIF on its own is usually enough.
+
+If none of these exist, a least-squares scale factor is estimated from the
+data instead; this is an approximation and is documented as such in
+`fastmolwidget.density`.
+
+### Requirements and accuracy
+
+Isosurface extraction needs the optional compiled `density_cpp` extension:
+
+```bash
+uv pip install pybind11
+uv pip install -e . --no-build-isolation
+```
+
+Without it the feature degrades gracefully — the control-bar button is
+disabled and `show_residual_density()` raises a clear `RuntimeError` instead
+of crashing.
+
+For the bundled `p31c` test structure the computed map gives
+`max +0.32, min −0.36, rms 0.065 e/Å³` against SHELXL's reported
+`+0.224 / −0.252 / 0.053`, and the underlying structure-factor calculation
+reproduces the published *R*<sub>1</sub> of 0.0343. The remaining difference in
+the extremes comes from SHELXL merging Friedel pairs, neglecting *f″* and
+contouring on its own grid; the position and shape of the density features are
+unaffected.
+
+### Using the map without Qt
+
+`fastmolwidget.density` and `fastmolwidget.hkl_io` import no Qt at all, so the
+map can be computed in headless scripts:
+
+```python
+from fastmolwidget import calculate_residual_density
+
+m = calculate_residual_density("structure.res", "structure.hkl")
+print(m.array.shape, m.rms)          # raw numpy grid, one unit cell
+vertices, edges = m.isosurface(0.25)  # Cartesian wireframe
 ```
 
 ## Running the Examples

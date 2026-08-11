@@ -1,5 +1,5 @@
 """
-Minimal setup.py — only responsible for the sdm_cpp C++ extension.
+Minimal setup.py — only responsible for the optional C++ extensions.
 All project metadata lives in pyproject.toml.
 
 OpenMP detection
@@ -17,13 +17,23 @@ import sys
 from setuptools import setup, Extension
 
 try:
+    import numpy
+except ImportError as exc:
+    raise RuntimeError(
+        "numpy is required to build the C++ extensions. "
+        "Install it with:  pip install numpy"
+    ) from exc
+
+try:
     import pybind11
     pybind11_include = pybind11.get_include()
 except ImportError as exc:
     raise RuntimeError(
-        "pybind11 is required to build sdm_cpp. "
+        "pybind11 is required to build sdm_cpp and density_cpp. "
         "Install it with:  pip install pybind11"
     ) from exc
+
+numpy_include = numpy.get_include()
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +101,7 @@ else:
     base_compile = ["-O3", "-std=c++17"] + omp_compile
 
 # ---------------------------------------------------------------------------
-# Extension
+# Extensions
 # ---------------------------------------------------------------------------
 
 sdm_cpp_ext = Extension(
@@ -103,5 +113,12 @@ sdm_cpp_ext = Extension(
     language="c++",
 )
 
-setup(ext_modules=[sdm_cpp_ext])
+density_cpp_ext = Extension(
+    name="density_cpp",
+    sources=["src/density_cpp/density_cpp.cpp"],
+    include_dirs=[pybind11_include, numpy_include],
+    extra_compile_args=base_compile,
+    language="c++",
+)
 
+setup(ext_modules=[sdm_cpp_ext, density_cpp_ext])

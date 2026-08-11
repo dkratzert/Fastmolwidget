@@ -11,6 +11,16 @@ from typing import TYPE_CHECKING
 __version__ = "1.0.3"
 
 if TYPE_CHECKING:
+    from fastmolwidget.density import (
+        ResidualDensityMap,
+        calculate_residual_density,
+    )
+    from fastmolwidget.hkl_io import (
+        ReflectionData,
+        ShelxParameters,
+        read_reflections,
+        read_shelx_parameters,
+    )
     from fastmolwidget.loader import MoleculeLoader
     from fastmolwidget.molecule2D import MoleculeWidget
     from fastmolwidget.molecule3D import MoleculeWidget3D
@@ -39,6 +49,12 @@ _LAZY_IMPORTS = {
     "MoleculeWidgetProtocol": "fastmolwidget.molecule_base",
     "MoleculeRendererMixin": "fastmolwidget.molecule_painter",
     "Atomtuple": "fastmolwidget.sdm",
+    "ResidualDensityMap": "fastmolwidget.density",
+    "calculate_residual_density": "fastmolwidget.density",
+    "ReflectionData": "fastmolwidget.hkl_io",
+    "ShelxParameters": "fastmolwidget.hkl_io",
+    "read_reflections": "fastmolwidget.hkl_io",
+    "read_shelx_parameters": "fastmolwidget.hkl_io",
     "bundle_js": "fastmolwidget.web",
     "structure_json": "fastmolwidget.web",
     "render_html": "fastmolwidget.web",
@@ -57,8 +73,14 @@ __all__ = [
     "MoleculeWidget",
     "MoleculeWidget3D",
     "MoleculeWidgetProtocol",
+    "ReflectionData",
+    "ResidualDensityMap",
+    "ShelxParameters",
     "__version__",
     "bundle_js",
+    "calculate_residual_density",
+    "read_reflections",
+    "read_shelx_parameters",
     "render_html",
     "structure_json",
     "write_html",

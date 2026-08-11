@@ -139,6 +139,32 @@ class MoleculeWidgetProtocol(Protocol):
         """
         ...
 
+    def show_residual_density(self, hkl_path: str | Path, level: float = 0.10) -> None:
+        """Compute and display a residual (Fo−Fc) electron-density isosurface.
+
+        3D-only feature: real rendering is implemented in
+        :class:`~fastmolwidget.molecule3D.MoleculeWidget3D`. The 2-D
+        (:class:`~fastmolwidget.molecule2D.MoleculeWidget`) and Qt Quick
+        (:class:`~fastmolwidget.molecule_quick.MoleculeQuickItem`) renderers
+        implement this as a documented no-op so ``isinstance`` checks against
+        :class:`MoleculeWidgetProtocol` keep working uniformly across renderers.
+
+        :param hkl_path: Path to a raw SHELX ``.hkl`` reflection file (or a
+            ``.cif``/``.fcf`` file with an embedded reflection loop) paired
+            with the currently loaded structure.
+        :param level: Isosurface contour level in e/Å³ (default ``0.10``).
+            A positive-density surface is drawn at ``+level`` (green) and a
+            negative-density surface at ``-level`` (red).
+        """
+        ...
+
+    def clear_residual_density(self) -> None:
+        """Remove any residual-density isosurface currently displayed.
+
+        3D-only feature; a documented no-op on the 2-D and Qt Quick renderers.
+        """
+        ...
+
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
         """Render the current view to an image file."""
         ...

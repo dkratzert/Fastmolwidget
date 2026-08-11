@@ -27,15 +27,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy import QtWidgets, QtCore, QtGui
+from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
-from qtpy.QtGui import QPainter, QPalette, QColor, QImage, QResizeEvent
+from qtpy.QtGui import QColor, QImage, QPainter, QPalette, QResizeEvent
 
 from fastmolwidget.molecule_painter import (
+    Atom,  # re-exported for backwards compatibility
     MoleculeRendererMixin,
-    Atom,        # re-exported for backwards compatibility
     RenderItem,  # re-exported for backwards compatibility
-    calc_volume, # re-exported for backwards compatibility
+    calc_volume,  # re-exported for backwards compatibility
 )
 from fastmolwidget.sdm import Atomtuple  # noqa: F401
 
@@ -145,11 +145,17 @@ class MoleculeWidget(MoleculeRendererMixin, QtWidgets.QWidget):
         painter.end()
         image.save(str(filename.resolve()))
 
+    def show_residual_density(self, hkl_path: str | Path, level: float = 0.10) -> None:
+        """3D-only feature; residual-density isosurfaces are not rendered in 2-D."""
+
+    def clear_residual_density(self) -> None:
+        """3D-only feature; clearing residual-density isosurfaces is a no-op in 2-D."""
+
 
 # ---------------------------------------------------------------------------
 # Backwards-compatibility re-exports
 # ---------------------------------------------------------------------------
-__all__ = ['MoleculeWidget', 'Atom', 'RenderItem', 'calc_volume']
+__all__ = ['Atom', 'MoleculeWidget', 'RenderItem', 'calc_volume']
 
 
 if __name__ == '__main__':

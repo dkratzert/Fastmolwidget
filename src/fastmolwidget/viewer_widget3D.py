@@ -18,11 +18,16 @@ from __future__ import annotations
 from argparse import ArgumentParser
 from pathlib import Path
 
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
-from fastmolwidget.part_combo import PartFilterWidget
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule3D import MoleculeWidget3D
+from fastmolwidget.part_combo import PartFilterWidget
+
+try:
+    from fastmolwidget.density import HAS_DENSITY_CPP
+except ImportError:
+    HAS_DENSITY_CPP = False
 
 
 class MoleculeViewer3DWidget(QtWidgets.QWidget):
@@ -40,6 +45,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
     * **Bond Color** – button opening a color picker for all non-selected bonds.
     * **Reset Rotation Center** – restores the rotation pivot to the molecule's
       geometric centre (undoes a middle-click recentring).
+    * **Residual Density** – load a reflection file and show Fo-Fc isosurfaces.
+    * **Level** – spinbox changing the residual-density contour level.
+    * **Hide Density** – remove the residual-density isosurfaces.
     * **Parts** *Shown only when disorder parts are present)* –
       a checkable combo box listing every disorder-part number found in the
       loaded structure.  All parts are selected by default; unticking a part
@@ -76,6 +84,22 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._best_view_button = QtWidgets.QPushButton("Best View")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
+        self._residual_density_button = QtWidgets.QPushButton("Residual Density…")
+        self._density_level_label = QtWidgets.QLabel("Level:")
+        self._density_level_spinbox = QtWidgets.QDoubleSpinBox()
+        self._density_level_spinbox.setRange(0.01, 9.99)
+        self._density_level_spinbox.setSingleStep(0.01)
+        self._density_level_spinbox.setDecimals(2)
+        self._density_level_spinbox.setValue(0.10)
+        self._density_level_spinbox.setSuffix(" e/Å³")
+        self._hide_density_button = QtWidgets.QPushButton("Hide Density")
+        if HAS_DENSITY_CPP:
+            self._residual_density_button.setToolTip("Load a residual Fo-Fc density map.")
+        else:
+            self._residual_density_button.setEnabled(False)
+            self._residual_density_button.setToolTip(
+                "Residual density requires the compiled density_cpp extension."
+            )
 
         # Initial checked state matches the renderer defaults
         # "Hide Hydrogens" unchecked → hydrogens are visible by default
@@ -94,6 +118,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._best_view_button.clicked.connect(self._render_widget.align_best_view)
         self._open_file_button.clicked.connect(self._open_file_dialog)
         self._save_image_button.clicked.connect(self._save_image_dialog)
+        self._residual_density_button.clicked.connect(self._open_residual_density_dialog)
+        self._density_level_spinbox.valueChanged.connect(self._render_widget.set_residual_density_level)
+        self._hide_density_button.clicked.connect(self.clear_residual_density)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
@@ -128,6 +155,10 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._reset_center_button)
         control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
+        control_bar2.addWidget(self._residual_density_button)
+        control_bar2.addWidget(self._density_level_label)
+        control_bar2.addWidget(self._density_level_spinbox)
+        control_bar2.addWidget(self._hide_density_button)
         control_bar2.addWidget(self._part_widget)
         control_bar2.addStretch()
 
@@ -173,10 +204,34 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._grow_checkbox.blockSignals(False)
         self._loader.set_grow(True)
 
-    def set_bond_color(self,
-                       color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int]) -> None:
+    def set_bond_color(
+        self,
+        color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
+    ) -> None:
         """Set the default colour used for non-selected 3-D bonds."""
         self._render_widget.set_bond_color(color)
+
+    def show_residual_density(self, hkl_path: str | Path, level: float = 0.10) -> None:
+        """Compute and show a residual electron-density map.
+
+        :param hkl_path: Path to the reflection file.
+        :param level: Absolute contour level in e/Å³.
+        :raises RuntimeError: If no model is loaded or density support is unavailable.
+        :raises ValueError: If the reflection data cannot be used.
+        """
+        self._render_widget.show_residual_density(hkl_path, level)
+        # Keep the spinbox in sync when called programmatically, without
+        # triggering a redundant re-contour.
+        self._density_level_spinbox.blockSignals(True)
+        self._density_level_spinbox.setValue(abs(level))
+        self._density_level_spinbox.blockSignals(False)
+        self._update_residual_density_tooltip()
+
+    def clear_residual_density(self) -> None:
+        """Remove the residual electron-density isosurface."""
+        self._render_widget.clear_residual_density()
+        if HAS_DENSITY_CPP:
+            self._residual_density_button.setToolTip("Load a residual Fo-Fc density map.")
 
     def _on_grow_toggled(self, checked: bool) -> None:
         """Activate grow mode; deactivate pack mode when grow is switched on."""
@@ -251,6 +306,51 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         if path:
             self._render_widget.save_image(Path(path))
 
+    def _open_residual_density_dialog(self) -> None:
+        """Open a reflection-file dialog and show residual electron density."""
+        start_path = self._residual_density_start_path()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Reflection File",
+            start_path,
+            "Reflection files (*.hkl *.fcf *.cif);;SHELX HKL (*.hkl);;All files (*)",
+        )
+        if not path:
+            return
+
+        error_message = ""
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            self.show_residual_density(path, self._density_level_spinbox.value())
+        except Exception as exc:  # noqa: BLE001 - never take the host app down
+            error_message = str(exc)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        if error_message:
+            QtWidgets.QMessageBox.warning(self, "Residual density", error_message)
+
+    def _residual_density_start_path(self) -> str:
+        """Return the best starting path for the residual-density file dialog."""
+        model_path = getattr(self._render_widget, "_model_path", None)
+        if model_path is None:
+            return ""
+
+        model_path = Path(model_path)
+        hkl_path = model_path.with_suffix(".hkl")
+        if hkl_path.exists():
+            return str(hkl_path)
+        return str(model_path.parent)
+
+    def _update_residual_density_tooltip(self) -> None:
+        """Show residual-density map statistics on the load button."""
+        density_map = self._render_widget.residual_density_map
+        if density_map is None:
+            return
+        self._residual_density_button.setToolTip(
+            f"max {density_map.max:+.3f}, min {density_map.min:+.3f}, "
+            f"rms {density_map.rms:.3f} e/Å³"
+        )
+
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication.instance()
@@ -264,9 +364,9 @@ if __name__ == "__main__":
     w = MoleculeViewer3DWidget()
     # Path is relative to the repository root; adjust as needed for your setup
     # w.load_file(Path("tests/test-data/p31c.cif"))
-    # w.load_file('tests/test-data/p21c.cif')
+    w.load_file('tests/test-data/p21c.cif')
     # w.load_file('tests/test-data/1000007.cif')
-    w.load_file('tests/test-data/1548072_many_atoms.cif')
+    # w.load_file('tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('tests/test-data/4060314.cif'))
     # w.load_file(Path('tests/test-data/1979688_small.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1367_ESM.cif'))

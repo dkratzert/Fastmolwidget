@@ -167,6 +167,9 @@ dependencies = [
 cpp = [
     { name = "pybind11" },
 ]
+density = [
+    { name = "pybind11" },
+]
 gl3d = [
     { name = "pyopengl" },
     { name = "pyopengl-accelerate" },
@@ -197,6 +200,7 @@ requires-dist = [
     { name = "gemmi", specifier = ">=0.7.5" },
     { name = "numpy", specifier = ">=2.2.0" },
     { name = "pybind11", marker = "extra == 'cpp'", specifier = ">=2.13" },
+    { name = "pybind11", marker = "extra == 'density'", specifier = ">=2.13" },
     { name = "pyopengl", marker = "extra == 'gl3d'", specifier = ">=3.1.7" },
     { name = "pyopengl-accelerate", marker = "extra == 'gl3d'", specifier = ">=3.1" },
     { name = "pyqt6", marker = "extra == 'pyqt6'", specifier = ">=6.9.0" },
@@ -204,7 +208,7 @@ requires-dist = [
     { name = "qtpy", specifier = ">=2.4.3" },
     { name = "shelxfile", specifier = ">=24" },
 ]
-provides-extras = ["pyside6", "pyqt6", "gl3d", "cpp"]
+provides-extras = ["pyside6", "pyqt6", "gl3d", "cpp", "density"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -14,6 +14,8 @@ The six public constants exported by this module are ready-to-compile strings:
 * :data:`CYLINDER_VERT` / :data:`CYLINDER_FRAG` — tessellated cylinder bonds
 * :data:`ELLIPSOID_BATCH_VERT` / :data:`ELLIPSOID_BATCH_FRAG` — ADP ellipsoid
   impostor (all atoms in one draw call)
+* :data:`LINE_VERT` / :data:`LINE_FRAG` — flat coloured lines, used for the
+  residual-density isosurface wireframe
 """
 
 from __future__ import annotations
@@ -330,3 +332,30 @@ void main() {
 }
 """)
 
+
+
+# ---------------------------------------------------------------------------
+# Flat coloured lines (residual-density isosurface wireframe)
+# ---------------------------------------------------------------------------
+
+LINE_VERT: str = _t("""\
+#version $VER
+$INV vec3 a_position;
+
+uniform mat4 u_mv;
+uniform mat4 u_proj;
+
+void main() {
+    gl_Position = u_proj * u_mv * vec4(a_position, 1.0);
+}
+""")
+
+LINE_FRAG: str = _t("""\
+#version $VER
+$FDECL
+uniform vec3 u_color;
+
+void main() {
+    $FOUT = vec4(u_color, 1.0);
+}
+""")
