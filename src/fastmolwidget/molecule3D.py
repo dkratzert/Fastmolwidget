@@ -275,6 +275,9 @@ _LINE_FRAG            = _shaders.LINE_FRAG
 _DENSITY_POS_COLOR: tuple[float, float, float] = (0.0, 0.85, 0.0)
 _DENSITY_NEG_COLOR: tuple[float, float, float] = (0.9, 0.0, 0.0)
 
+#: Residual density is only shown within this distance (Å) of a visible atom.
+DENSITY_MARGIN: float = 1.5
+
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
 
@@ -427,7 +430,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._density_map = None
         #: Path of the structure file last loaded, used to compute Fc.
         self._model_path: Path | None = None
-        self._density_level: float = 0.4
+        self._density_level: float = 0.30
         self._density_verts: np.ndarray = np.empty(0, dtype=np.float32)
         self._density_idx: np.ndarray = np.empty(0, dtype=np.uint32)
         #: Index counts of the positive and negative lobe, in that order.
@@ -1855,6 +1858,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self.show_hydrogens_flag = value
         if self.atoms:
             self._build_geometry()
+        if self._density_map is not None:
+            self._build_density_geometry()
         self.update()
 
     def set_visible_parts(self, parts: set[int] | None) -> None:
@@ -1868,6 +1873,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         self._visible_parts = parts
         if self.atoms:
             self._build_geometry()
+        if self._density_map is not None:
+            self._build_density_geometry()
         self.update()
 
     def show_adps(self, value: bool) -> None:
@@ -1888,28 +1895,30 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def show_residual_density(
         self,
-        hkl_path: str | Path,
-        level: float = 0.10,
+        hkl_path: str | Path | None = None,
+        level: float = 0.30,
         *,
         model_path: str | Path | None = None,
     ) -> None:
         """Compute and display a residual (Fo−Fc) electron-density isosurface.
 
-        The map is calculated from *hkl_path* together with the refined model
-        (see :mod:`fastmolwidget.density`); nothing has to be pre-computed by
-        another program.  Two wireframe surfaces are drawn: ``+level`` in
-        green and ``-level`` in red.
+        The map is calculated from the reflection data together with the
+        refined model (see :mod:`fastmolwidget.density`); nothing has to be
+        pre-computed by another program.  Two wireframe surfaces are drawn:
+        ``+level`` in green and ``-level`` in red.
 
         The result is cached, so :meth:`set_residual_density_level` can change
         the contour afterwards without recomputing the map.
 
         :param hkl_path: A SHELX ``.hkl`` file, or a CIF/fcf with a reflection
-            loop.
+            loop.  ``None`` (the default) finds the data automatically — from
+            the model file itself, or from a file of the same basename.
         :param level: Contour level in e/Å³.
         :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
             Defaults to the file this widget last loaded.
         :raises RuntimeError: If no model is available, or the compiled
             ``density_cpp`` extension is missing.
+        :raises FileNotFoundError: If no reflection data could be found.
         """
         from fastmolwidget.density import calculate_residual_density
 
@@ -1956,26 +1965,46 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """
         return self._density_map
 
+    def _visible_atom_positions(self) -> np.ndarray | None:
+        """Cartesian positions of the atoms that are currently drawn.
+
+        Applies the same hydrogen and disorder-part filters as the geometry
+        builders, so the residual density follows exactly what is on screen.
+
+        :returns: An ``(N, 3)`` array, or ``None`` when nothing is visible.
+        """
+        positions = [
+            atom.center for atom in self.atoms
+            if (self.show_hydrogens_flag or atom.type_ not in ("H", "D"))
+            and (self._visible_parts is None
+                 or atom.part in self._visible_parts)
+        ]
+        if not positions:
+            return None
+        return np.asarray(positions, dtype=float)
+
     def _build_density_geometry(self) -> None:
         """Contour the cached map and pack both lobes into one line buffer.
 
-        The isosurface is restricted to the neighbourhood of the displayed
-        atoms, so grown or packed structures get density around every atom
-        while an isolated asymmetric unit does not drag in the whole cell.
+        The isosurface is restricted to :data:`DENSITY_MARGIN` around the
+        *visible* atoms, so grown or packed structures get density around every
+        displayed atom while hidden hydrogens and filtered-out disorder parts
+        drag nothing in.
         """
         if self._density_map is None:
             self.clear_residual_density()
             return
 
-        positions = np.array([atom.center for atom in self.atoms], dtype=float) \
-            if self.atoms else None
+        positions = self._visible_atom_positions()
 
         verts_list: list[np.ndarray] = []
         edges_list: list[np.ndarray] = []
         counts: list[int] = []
         offset = 0
         for level in (self._density_level, -self._density_level):
-            verts, edges = self._density_map.isosurface(level, atoms=positions)
+            verts, edges = self._density_map.isosurface(
+                level, atoms=positions, margin=DENSITY_MARGIN,
+            )
             if len(verts) and len(edges):
                 verts_list.append(np.asarray(verts, dtype=np.float32))
                 edges_list.append(np.asarray(edges, dtype=np.uint32) + offset)

@@ -62,6 +62,89 @@ def test_show_without_model_raises():
 
 
 # ------------------------------------------------------------------
+# Automatic reflection-data discovery
+# ------------------------------------------------------------------
+
+@needs_cpp
+def test_hkl_is_found_automatically(widget):
+    """No argument needed - the sibling .hkl is located by itself."""
+    widget.show_residual_density(level=0.15)
+
+    assert widget.residual_density_map is not None
+    assert widget._density_pos_count > 0
+    assert widget._density_neg_count > 0
+
+
+@needs_cpp
+def test_self_contained_cif_needs_no_arguments():
+    """p21c.cif embeds its own reflections."""
+    view = MoleculeWidget3D()
+    MoleculeLoader(view).load_file(DATA / 'p21c.cif')
+
+    view.show_residual_density()
+
+    assert view.residual_density_map is not None
+
+
+def test_missing_reflection_data_raises(tmp_path):
+    """Without any data the caller gets a clear error, not a silent no-op."""
+    import shutil
+
+    lonely = tmp_path / 'lonely.res'
+    shutil.copy(RES, lonely)
+
+    view = MoleculeWidget3D()
+    MoleculeLoader(view).load_file(lonely)
+
+    with pytest.raises(FileNotFoundError, match='No reflection data'):
+        view.show_residual_density()
+
+
+@needs_cpp
+def test_default_level_is_0_3(widget):
+    widget.show_residual_density()
+
+    assert widget._density_level == pytest.approx(0.30)
+
+
+@needs_cpp
+def test_viewer_uses_embedded_reflections_without_a_dialog():
+    """A self-contained CIF must not pop up a file dialog."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(DATA / 'p21c.cif')
+
+    assert viewer._auto_reflection_file() == DATA / 'p21c.cif'
+    assert viewer._density_level_spinbox.value() == pytest.approx(0.30)
+
+
+def test_viewer_asks_when_a_separate_hkl_is_needed():
+    """A .res with a sibling .hkl must still go through the dialog.
+
+    Silently picking up a neighbouring file would hide which dataset is
+    actually being used.
+    """
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(RES)
+
+    assert HKL.exists()                       # the sibling really is there
+    assert viewer._auto_reflection_file() is None
+
+
+def test_dialog_preselects_the_sibling_hkl():
+    """The user should not have to hunt for the obvious file."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(RES)
+
+    assert viewer._residual_density_start_path() == str(HKL)
+
+
+def test_viewer_auto_lookup_is_none_without_a_model():
+    viewer = MoleculeViewer3DWidget()
+
+    assert viewer._auto_reflection_file() is None
+
+
+# ------------------------------------------------------------------
 # Computing and clearing
 # ------------------------------------------------------------------
 
@@ -113,6 +196,58 @@ def test_set_level_without_map_is_a_no_op(widget):
 
     assert widget.residual_density_map is None
     assert widget._density_pos_count == 0
+
+
+# ------------------------------------------------------------------
+# Only around the visible atoms
+# ------------------------------------------------------------------
+
+@needs_cpp
+def test_density_only_near_visible_atoms(widget):
+    """Every vertex must sit within DENSITY_MARGIN of a *visible* atom."""
+    import numpy as np
+
+    from fastmolwidget.molecule3D import DENSITY_MARGIN
+
+    widget.show_residual_density(HKL, level=0.2)
+    vertices = widget._density_verts.reshape(-1, 3)
+    assert len(vertices) > 0
+
+    visible = widget._visible_atom_positions()
+    distances = np.linalg.norm(
+        vertices[:, None, :] - visible[None, :, :], axis=2).min(axis=1)
+    assert distances.max() <= DENSITY_MARGIN + 1e-3
+
+
+@needs_cpp
+def test_hiding_hydrogens_recontours_the_density(widget):
+    """Hidden atoms must stop pulling density into the view."""
+    widget.show_residual_density(HKL, level=0.15)
+    with_hydrogens = widget._density_verts.size
+
+    widget.show_hydrogens(False)
+
+    assert widget._density_verts.size <= with_hydrogens
+    assert widget.residual_density_map is not None  # not recomputed
+
+
+@needs_cpp
+def test_part_filter_recontours_the_density(widget):
+    widget.show_residual_density(HKL, level=0.15)
+    all_parts = widget._density_verts.size
+
+    widget.set_visible_parts({0})
+
+    assert widget._density_verts.size <= all_parts
+
+
+def test_visible_positions_follow_the_filters(widget):
+    everything = len(widget._visible_atom_positions())
+
+    widget.show_hydrogens(False)
+    without_h = len(widget._visible_atom_positions())
+
+    assert without_h < everything
 
 
 @needs_cpp

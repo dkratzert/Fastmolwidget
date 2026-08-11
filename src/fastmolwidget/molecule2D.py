@@ -145,7 +145,8 @@ class MoleculeWidget(MoleculeRendererMixin, QtWidgets.QWidget):
         painter.end()
         image.save(str(filename.resolve()))
 
-    def show_residual_density(self, hkl_path: str | Path, level: float = 0.10) -> None:
+    def show_residual_density(self, hkl_path: str | Path | None = None,
+                              level: float = 0.30) -> None:
         """3D-only feature; residual-density isosurfaces are not rendered in 2-D."""
 
     def clear_residual_density(self) -> None:

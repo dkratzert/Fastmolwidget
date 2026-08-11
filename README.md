@@ -216,8 +216,8 @@ Both viewers expose the same two-row control bar:
 | Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)               |
 | Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
 | Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
-| Residual Density…     | —       | *(3D only)* Opens a reflection-file dialog and displays the Fo−Fc isosurface                  |
-| Level                 | 0.10    | *(3D only)* Contour level of the residual-density isosurface in e/Å³                          |
+| Residual Density…     | —       | *(3D only)* Uses reflections embedded in the model file directly; opens a file dialog when a separate reflection file is needed |
+| Level                 | 0.30    | *(3D only)* Contour level of the residual-density isosurface in e/Å³                          |
 | Hide Density          | —       | *(3D only)* Removes the residual-density isosurface                                           |
 | Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
 
@@ -320,7 +320,7 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 
 #### Residual-density Methods
 
-- **`show_residual_density(hkl_path, level=0.10, *, model_path=None)`** — compute a residual (Fo−Fc) map from `hkl_path` and the loaded model and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `model_path` defaults to the file the widget last loaded. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing.
+- **`show_residual_density(hkl_path=None, level=0.30, *, model_path=None)`** — compute a residual (Fo−Fc) map and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `hkl_path=None` finds the reflections automatically — the model file itself, then siblings of the same basename; `model_path` defaults to the file the widget last loaded. Note the *control-bar button* is deliberately stricter and only auto-uses reflections embedded in the model, asking for anything else. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing, and `FileNotFoundError` when no reflection data can be found.
 - **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded.
 - **`clear_residual_density()`** — remove the isosurface.
 - **`residual_density_map`** *(property)* — the computed `ResidualDensityMap` (with `.max`, `.min`, `.rms`, `.d_min` and the raw `.array` grid), or `None`.
@@ -519,27 +519,61 @@ any other pre-computed map file is required.
 from fastmolwidget import MoleculeViewer3DWidget
 
 viewer = MoleculeViewer3DWidget()
-viewer.load_file("structure.res")
-viewer.show_residual_density("structure.hkl", level=0.25)
+viewer.load_file("structure.cif")   # a self-contained SHELXL CIF
+viewer.show_residual_density()      # reflections come from the CIF itself
+```
+
+The reflection data is used **without asking only when it lives inside the
+model file** — self-contained SHELXL CIFs carry the whole `.hkl` in
+`_shelx_hkl_file`, and fcf-style files carry a `_refln_*` loop.
+
+When the reflections are in a **separate file** (the usual `.res` + `.hkl`
+pair) the button opens a file dialog, with a matching `.hkl` next to the model
+pre-selected — so it is always visible which dataset a map was computed from.
+
+Pass an explicit path to skip the dialog:
+
+```python
+viewer.show_residual_density("other.hkl", level=0.5)
 
 m = viewer.render_widget.residual_density_map
 print(f"peak {m.max:+.3f}, hole {m.min:+.3f}, rms {m.rms:.3f} e/Å³")
 ```
 
+Called programmatically without arguments, `show_residual_density()` searches
+more widely than the button does: the model file itself first, then files of
+the same basename with a `.hkl`, `.fcf`, `.fco` or `.cif` extension
+(`fastmolwidget.hkl_io.find_reflection_file`).
+
 Positive density is drawn as a **green** wireframe at `+level`, negative
-density as a **red** wireframe at `-level`. The surface is clipped to the
-neighbourhood of the displayed atoms, so it follows grown and packed
-structures.
+density as a **red** wireframe at `-level`; the default level is
+**0.3 e/Å³**. Only density **within 1.5 Å of a visible atom** is shown, so
+hiding hydrogens or filtering disorder parts re-contours the surface
+accordingly, and no density is drawn in empty regions of the unit cell.
+
+### Grid size
+
+The FFT grid uses a **fixed 0.2 Å spacing derived from the unit cell alone**,
+so the number of grid points never depends on how high the data resolution is
+— sub-Ångström data does not make the grid explode. Reflections finer than the
+grid can represent are dropped rather than aliased. Pass `grid_spacing=` to
+`calculate_residual_density()` to trade detail against speed and memory.
 
 ### How it is calculated
 
-1. Reflections are read from a SHELX `.hkl` (`HKLF 4`) file, or from an
-   fcf-style CIF reflection loop, and merged into the reciprocal asymmetric
-   unit with 1/σ² weights.
+1. Reflections are read from a SHELX `.hkl` (`HKLF 4`) file, from an
+   fcf-style CIF reflection loop, or from a `_shelx_hkl_file` block embedded
+   in the CIF, and merged into the reciprocal asymmetric unit with 1/σ²
+   weights. **Systematically absent** reflections are discarded — their `Fc`
+   is zero by symmetry, so their measured noise would enter the map amplified
+   by `1/scale`.
 2. *F*<sub>c</sub> is taken from the reflection file when it already contains
    phased calculated values, otherwise it is computed by direct summation with
    [gemmi](https://gemmi.readthedocs.io), including the real anomalous term
-   *f′*.
+   *f′*. Atoms whose anisotropic ADP tensor is not positive definite are
+   downgraded to isotropic with a `RuntimeWarning` — a negative eigenvalue
+   makes the Debye-Waller factor *grow* with resolution and would otherwise
+   bury the map under a huge dipole at that atom.
 3. The refined overall scale factor (SHELXL's first `FVAR`) puts the two on a
    common scale, and SHELXL's isotropic `EXTI` correction is applied when it
    was refined.
@@ -549,6 +583,9 @@ structures.
    not for Fourier maps.
 5. An FFT over the space group yields ρ in e/Å³, and the isosurface is
    extracted with the `density_cpp` marching-cubes extension.
+
+A leading `global_` block in a CIF is ignored; the first block with atom sites
+is used.
 
 ### Where the refinement parameters come from
 
@@ -578,12 +615,13 @@ disabled and `show_residual_density()` raises a clear `RuntimeError` instead
 of crashing.
 
 For the bundled `p31c` test structure the computed map gives
-`max +0.32, min −0.36, rms 0.065 e/Å³` against SHELXL's reported
+`max +0.32, min −0.30, rms 0.063 e/Å³` against SHELXL's reported
 `+0.224 / −0.252 / 0.053`, and the underlying structure-factor calculation
 reproduces the published *R*<sub>1</sub> of 0.0343. The remaining difference in
 the extremes comes from SHELXL merging Friedel pairs, neglecting *f″* and
 contouring on its own grid; the position and shape of the density features are
-unaffected.
+unaffected. A ~130-atom structure with 43 000 reflections (`p21c.cif`) takes
+about 0.4 s.
 
 ### Using the map without Qt
 
@@ -593,9 +631,9 @@ map can be computed in headless scripts:
 ```python
 from fastmolwidget import calculate_residual_density
 
-m = calculate_residual_density("structure.res", "structure.hkl")
+m = calculate_residual_density("structure.res")   # reflections found automatically
 print(m.array.shape, m.rms)          # raw numpy grid, one unit cell
-vertices, edges = m.isosurface(0.25)  # Cartesian wireframe
+vertices, edges = m.isosurface(0.3)   # Cartesian wireframe
 ```
 
 ## Running the Examples

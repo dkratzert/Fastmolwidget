@@ -11,6 +11,8 @@ import pytest
 
 from fastmolwidget.hkl_io import (
     embedded_shelx_res,
+    find_reflection_file,
+    has_reflections,
     read_cif_reflections,
     read_reflections,
     read_shelx_hkl,
@@ -157,3 +159,60 @@ def test_read_shelx_parameters_missing_returns_none(tmp_path):
     lonely.write_text('data_x\n_cell_length_a 10\n')
 
     assert read_shelx_parameters(lonely) is None
+
+
+# ---------------------------------------------------------------------------
+# Automatic discovery of the reflection data
+# ---------------------------------------------------------------------------
+
+P21C = DATA / 'p21c.cif'
+
+
+def test_has_reflections_detects_each_source():
+    assert has_reflections(HKL)          # plain SHELX .hkl
+    assert has_reflections(P21C)         # embedded _shelx_hkl_file
+    assert not has_reflections(DATA / 'does-not-exist.hkl')
+
+
+def test_has_reflections_false_for_a_plain_cif(tmp_path):
+    plain = tmp_path / 'plain.cif'
+    plain.write_text('data_x\n_cell_length_a 10\n')
+
+    assert not has_reflections(plain)
+
+
+def test_find_reflection_file_prefers_the_model_itself():
+    """A self-contained CIF needs nothing else."""
+    assert find_reflection_file(P21C) == P21C
+
+
+def test_find_reflection_file_finds_the_sibling_hkl():
+    assert find_reflection_file(RES) == HKL
+
+
+def test_find_reflection_file_returns_none_when_nothing_is_there(tmp_path):
+    lonely = tmp_path / 'lonely.res'
+    lonely.write_text('CELL 0.71073 10 10 10 90 90 90\nFVAR 0.5\nHKLF 4\n')
+
+    assert find_reflection_file(lonely) is None
+
+
+def test_find_reflection_file_ignores_an_empty_sibling(tmp_path):
+    """A sibling of the right name but without reflections must be rejected."""
+    import shutil
+
+    model = tmp_path / 'x.res'
+    shutil.copy(RES, model)
+    (tmp_path / 'x.cif').write_text('data_x\n_cell_length_a 10\n')
+
+    assert find_reflection_file(model) is None
+
+
+def test_find_reflection_file_picks_the_sibling_cif_when_it_has_data(tmp_path):
+    import shutil
+
+    model = tmp_path / 'x.res'
+    shutil.copy(RES, model)
+    shutil.copy(P21C, tmp_path / 'x.cif')
+
+    assert find_reflection_file(model) == tmp_path / 'x.cif'

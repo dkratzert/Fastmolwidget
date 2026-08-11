@@ -90,7 +90,7 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._density_level_spinbox.setRange(0.01, 9.99)
         self._density_level_spinbox.setSingleStep(0.01)
         self._density_level_spinbox.setDecimals(2)
-        self._density_level_spinbox.setValue(0.10)
+        self._density_level_spinbox.setValue(0.30)
         self._density_level_spinbox.setSuffix(" e/Å³")
         self._hide_density_button = QtWidgets.QPushButton("Hide Density")
         if HAS_DENSITY_CPP:
@@ -211,12 +211,15 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         """Set the default colour used for non-selected 3-D bonds."""
         self._render_widget.set_bond_color(color)
 
-    def show_residual_density(self, hkl_path: str | Path, level: float = 0.10) -> None:
+    def show_residual_density(self, hkl_path: str | Path | None = None,
+                              level: float = 0.30) -> None:
         """Compute and show a residual electron-density map.
 
-        :param hkl_path: Path to the reflection file.
+        :param hkl_path: Path to the reflection file.  ``None`` finds the data
+            automatically from the loaded model.
         :param level: Absolute contour level in e/Å³.
         :raises RuntimeError: If no model is loaded or density support is unavailable.
+        :raises FileNotFoundError: If no reflection data could be found.
         :raises ValueError: If the reflection data cannot be used.
         """
         self._render_widget.show_residual_density(hkl_path, level)
@@ -307,27 +310,63 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
             self._render_widget.save_image(Path(path))
 
     def _open_residual_density_dialog(self) -> None:
-        """Open a reflection-file dialog and show residual electron density."""
-        start_path = self._residual_density_start_path()
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Open Reflection File",
-            start_path,
-            "Reflection files (*.hkl *.fcf *.cif);;SHELX HKL (*.hkl);;All files (*)",
-        )
-        if not path:
-            return
+        """Show residual electron density, asking for a file when one is needed.
+
+        Reflections stored *inside* the loaded model are used straight away —
+        self-contained SHELXL CIFs embed the whole ``.hkl`` in
+        ``_shelx_hkl_file``, and fcf-style files carry a ``_refln_*`` loop.
+        When the data lives in a separate file the user is asked for it, with
+        a matching ``.hkl`` next to the model pre-selected in the dialog.
+        """
+        hkl_path = self._auto_reflection_file()
+        if hkl_path is None:
+            hkl_path = self._ask_for_reflection_file()
+            if hkl_path is None:
+                return
 
         error_message = ""
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            self.show_residual_density(path, self._density_level_spinbox.value())
+            self.show_residual_density(hkl_path,
+                                       self._density_level_spinbox.value())
         except Exception as exc:  # noqa: BLE001 - never take the host app down
             error_message = str(exc)
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         if error_message:
             QtWidgets.QMessageBox.warning(self, "Residual density", error_message)
+
+    def _auto_reflection_file(self) -> Path | None:
+        """Return the model file when it carries its own reflection data.
+
+        Deliberately does *not* look at sibling files: picking up a separate
+        ``.hkl`` silently would hide which dataset is being used, so that case
+        goes through the file dialog instead.
+
+        :returns: The model path when it contains reflections, else ``None``.
+        """
+        model_path = getattr(self._render_widget, "_model_path", None)
+        if model_path is None:
+            return None
+        try:
+            from fastmolwidget.hkl_io import has_reflections
+
+            model_path = Path(model_path)
+            if model_path.suffix.lower() != ".hkl" and has_reflections(model_path):
+                return model_path
+        except Exception:  # noqa: BLE001 - fall back to asking the user
+            return None
+        return None
+
+    def _ask_for_reflection_file(self) -> Path | None:
+        """Last resort: let the user pick a reflection file."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Reflection File",
+            self._residual_density_start_path(),
+            "Reflection files (*.hkl *.fcf *.cif);;SHELX HKL (*.hkl);;All files (*)",
+        )
+        return Path(path) if path else None
 
     def _residual_density_start_path(self) -> str:
         """Return the best starting path for the residual-density file dialog."""
