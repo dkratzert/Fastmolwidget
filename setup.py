@@ -96,7 +96,7 @@ else:
 
 sdm_cpp_ext = Extension(
     name="sdm_cpp",
-    sources=["src/sdm_cpp/sdm_cpp.cpp"],
+    sources=["src/fastmolwidget/sdm_cpp/sdm_cpp.cpp"],
     include_dirs=[pybind11_include],
     extra_compile_args=base_compile,
     extra_link_args=omp_link,
