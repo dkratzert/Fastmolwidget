@@ -12,7 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-density_cpp = pytest.importorskip("density_cpp", reason="density_cpp C++ extension not built — skipping")
+density_cpp = pytest.importorskip("fastmolwidget.density_cpp",
+                                  reason="density_cpp C++ extension not built — skipping")
 
 
 def _sphere_grid(size: int = 32, radius: float = 10.0, center: tuple[float, float, float] = (16.0, 16.0, 16.0)) -> np.ndarray:

@@ -294,3 +294,87 @@ def test_viewer_forwards_to_render_widget():
 
     viewer.clear_residual_density()
     assert viewer.render_widget.residual_density_map is None
+
+
+# ------------------------------------------------------------------
+# The button shows the on/off state
+# ------------------------------------------------------------------
+
+def test_density_button_is_a_toggle():
+    viewer = MoleculeViewer3DWidget()
+
+    assert viewer._residual_density_button.isCheckable()
+    assert not viewer._residual_density_button.isChecked()
+    # nothing to contour yet, so the level control is inert
+    assert not viewer._density_level_spinbox.isEnabled()
+
+
+@needs_cpp
+def test_button_reflects_the_density_state():
+    """Clicking toggles the density on and off, and the button shows it."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(DATA / 'p21c.cif')      # reflections embedded, no dialog
+    button = viewer._residual_density_button
+
+    button.click()
+    assert button.isChecked()
+    assert viewer.render_widget.residual_density_map is not None
+    assert viewer._density_level_spinbox.isEnabled()
+
+    button.click()
+    assert not button.isChecked()
+    assert viewer.render_widget.residual_density_map is None
+    assert not viewer._density_level_spinbox.isEnabled()
+
+
+@needs_cpp
+def test_api_calls_keep_the_button_in_sync():
+    """Showing/clearing from code must not leave a stale button state."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(DATA / 'p21c.cif')
+
+    viewer.show_residual_density()
+    assert viewer._residual_density_button.isChecked()
+
+    viewer.clear_residual_density()
+    assert not viewer._residual_density_button.isChecked()
+
+
+def test_button_pops_back_out_when_the_dialog_is_cancelled(tmp_path):
+    """A cancelled file dialog must not leave the button looking active."""
+    import shutil
+
+    lonely = tmp_path / 'lonely.res'
+    shutil.copy(RES, lonely)
+
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(lonely)
+    viewer._ask_for_reflection_file = lambda: None   # user cancels
+
+    viewer._residual_density_button.click()
+
+    assert not viewer._residual_density_button.isChecked()
+    assert not viewer._density_level_spinbox.isEnabled()
+
+
+def test_button_pops_back_out_on_failure(monkeypatch, tmp_path):
+    """A failed computation must not leave the button looking active."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(RES)
+    viewer._ask_for_reflection_file = lambda: tmp_path / 'missing.hkl'
+    monkeypatch.setattr(QtWidgets.QMessageBox, 'warning',
+                        staticmethod(lambda *a, **k: None))
+
+    viewer._residual_density_button.click()
+
+    assert not viewer._residual_density_button.isChecked()
+    assert viewer.render_widget.residual_density_map is None
+
+
+def test_checked_button_has_a_distinct_appearance():
+    """Relief alone is easy to miss - the checked state is also coloured."""
+    viewer = MoleculeViewer3DWidget()
+    style = viewer._residual_density_button.styleSheet()
+
+    assert 'checked' in style
+    assert 'background-color' in style

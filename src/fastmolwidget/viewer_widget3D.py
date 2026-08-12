@@ -30,6 +30,24 @@ except ImportError:
     HAS_DENSITY_CPP = False
 
 
+#: Stylesheet for the checkable "Residual Density" button.  The checked state
+#: gets the same green as the positive isosurface plus a sunken border, so it
+#: is obvious whether density is currently displayed — relief alone is easy to
+#: miss, and is barely visible in some Qt styles.
+_DENSITY_BUTTON_STYLE = """
+QPushButton:checked {
+    background-color: #cdebcd;
+    border: 2px inset #3c8c3c;
+    font-weight: bold;
+}
+QPushButton:checked:hover {
+    background-color: #bce0bc;
+}
+"""
+
+_DENSITY_TOOLTIP_OFF = "Show the residual Fo-Fc density map."
+
+
 class MoleculeViewer3DWidget(QtWidgets.QWidget):
     """A ready-to-use 3-D viewer that combines a :class:`MoleculeWidget3D`
     with a control bar.
@@ -45,9 +63,11 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
     * **Bond Color** – button opening a color picker for all non-selected bonds.
     * **Reset Rotation Center** – restores the rotation pivot to the molecule's
       geometric centre (undoes a middle-click recentring).
-    * **Residual Density** – load a reflection file and show Fo-Fc isosurfaces.
-    * **Level** – spinbox changing the residual-density contour level.
-    * **Hide Density** – remove the residual-density isosurfaces.
+    * **Residual Density** – checkable button; when pressed (shown sunken and
+      tinted green) the Fo-Fc isosurfaces are displayed, clicking again hides
+      them.
+    * **Level** – spinbox changing the residual-density contour level; enabled
+      only while density is shown.
     * **Parts** *Shown only when disorder parts are present)* –
       a checkable combo box listing every disorder-part number found in the
       loaded structure.  All parts are selected by default; unticking a part
@@ -84,7 +104,12 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._best_view_button = QtWidgets.QPushButton("Best View")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
-        self._residual_density_button = QtWidgets.QPushButton("Residual Density…")
+        self._residual_density_button = QtWidgets.QPushButton("Residual Density")
+        # Checkable so the button itself shows whether density is on: Qt draws
+        # a checked QPushButton sunken, and the stylesheet adds a green tint on
+        # top so the state is obvious at a glance and not only by relief.
+        self._residual_density_button.setCheckable(True)
+        self._residual_density_button.setStyleSheet(_DENSITY_BUTTON_STYLE)
         self._density_level_label = QtWidgets.QLabel("Level:")
         self._density_level_spinbox = QtWidgets.QDoubleSpinBox()
         self._density_level_spinbox.setRange(0.01, 9.99)
@@ -92,9 +117,11 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._density_level_spinbox.setDecimals(2)
         self._density_level_spinbox.setValue(0.30)
         self._density_level_spinbox.setSuffix(" e/Å³")
-        self._hide_density_button = QtWidgets.QPushButton("Hide Density")
+        # Nothing to contour until a map is loaded.
+        self._density_level_spinbox.setEnabled(False)
+        self._density_level_label.setEnabled(False)
         if HAS_DENSITY_CPP:
-            self._residual_density_button.setToolTip("Load a residual Fo-Fc density map.")
+            self._residual_density_button.setToolTip(_DENSITY_TOOLTIP_OFF)
         else:
             self._residual_density_button.setEnabled(False)
             self._residual_density_button.setToolTip(
@@ -118,9 +145,8 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._best_view_button.clicked.connect(self._render_widget.align_best_view)
         self._open_file_button.clicked.connect(self._open_file_dialog)
         self._save_image_button.clicked.connect(self._save_image_dialog)
-        self._residual_density_button.clicked.connect(self._open_residual_density_dialog)
+        self._residual_density_button.toggled.connect(self._on_density_toggled)
         self._density_level_spinbox.valueChanged.connect(self._render_widget.set_residual_density_level)
-        self._hide_density_button.clicked.connect(self.clear_residual_density)
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
@@ -158,7 +184,6 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._residual_density_button)
         control_bar2.addWidget(self._density_level_label)
         control_bar2.addWidget(self._density_level_spinbox)
-        control_bar2.addWidget(self._hide_density_button)
         control_bar2.addWidget(self._part_widget)
         control_bar2.addStretch()
 
@@ -215,6 +240,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
                               level: float = 0.30) -> None:
         """Compute and show a residual electron-density map.
 
+        The control-bar button is switched to its pressed (green) state so the
+        view and the controls stay consistent when this is called from code.
+
         :param hkl_path: Path to the reflection file.  ``None`` finds the data
             automatically from the loaded model.
         :param level: Absolute contour level in e/Å³.
@@ -228,13 +256,67 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._density_level_spinbox.blockSignals(True)
         self._density_level_spinbox.setValue(abs(level))
         self._density_level_spinbox.blockSignals(False)
-        self._update_residual_density_tooltip()
+        self._set_density_controls_active(True)
 
     def clear_residual_density(self) -> None:
         """Remove the residual electron-density isosurface."""
         self._render_widget.clear_residual_density()
-        if HAS_DENSITY_CPP:
-            self._residual_density_button.setToolTip("Load a residual Fo-Fc density map.")
+        self._set_density_controls_active(False)
+
+    def _on_density_toggled(self, checked: bool) -> None:
+        """Show or hide the residual density when the button is toggled.
+
+        The button is the single source of truth for the on/off state, so any
+        failure (no model, no reflection data, or a cancelled file dialog)
+        pops it back out again.
+        """
+        if not checked:
+            self.clear_residual_density()
+            return
+
+        hkl_path = self._auto_reflection_file()
+        if hkl_path is None:
+            hkl_path = self._ask_for_reflection_file()
+            if hkl_path is None:  # dialog cancelled
+                self._set_density_button_checked(False)
+                self._set_density_controls_active(False)
+                return
+
+        error_message = ""
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            self.show_residual_density(hkl_path,
+                                       self._density_level_spinbox.value())
+        except Exception as exc:  # noqa: BLE001 - never take the host app down
+            error_message = str(exc)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        if error_message:
+            self._set_density_button_checked(False)
+            self._set_density_controls_active(False)
+            QtWidgets.QMessageBox.warning(self, "Residual density", error_message)
+
+    def _set_density_button_checked(self, checked: bool) -> None:
+        """Set the button's checked state without re-entering the handler."""
+        self._residual_density_button.blockSignals(True)
+        self._residual_density_button.setChecked(checked)
+        self._residual_density_button.blockSignals(False)
+
+    def _set_density_controls_active(self, active: bool) -> None:
+        """Reflect the on/off state in the button, tooltip and level spinbox.
+
+        :param active: ``True`` when a density map is currently displayed.
+        """
+        self._set_density_button_checked(active)
+        self._density_level_spinbox.setEnabled(active)
+        self._density_level_label.setEnabled(active)
+        if not HAS_DENSITY_CPP:
+            return
+        if active:
+            self._update_residual_density_tooltip()
+        else:
+            self._residual_density_button.setToolTip(_DENSITY_TOOLTIP_OFF)
 
     def _on_grow_toggled(self, checked: bool) -> None:
         """Activate grow mode; deactivate pack mode when grow is switched on."""
@@ -309,33 +391,6 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         if path:
             self._render_widget.save_image(Path(path))
 
-    def _open_residual_density_dialog(self) -> None:
-        """Show residual electron density, asking for a file when one is needed.
-
-        Reflections stored *inside* the loaded model are used straight away —
-        self-contained SHELXL CIFs embed the whole ``.hkl`` in
-        ``_shelx_hkl_file``, and fcf-style files carry a ``_refln_*`` loop.
-        When the data lives in a separate file the user is asked for it, with
-        a matching ``.hkl`` next to the model pre-selected in the dialog.
-        """
-        hkl_path = self._auto_reflection_file()
-        if hkl_path is None:
-            hkl_path = self._ask_for_reflection_file()
-            if hkl_path is None:
-                return
-
-        error_message = ""
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
-        try:
-            self.show_residual_density(hkl_path,
-                                       self._density_level_spinbox.value())
-        except Exception as exc:  # noqa: BLE001 - never take the host app down
-            error_message = str(exc)
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-        if error_message:
-            QtWidgets.QMessageBox.warning(self, "Residual density", error_message)
-
     def _auto_reflection_file(self) -> Path | None:
         """Return the model file when it carries its own reflection data.
 
@@ -381,11 +436,12 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         return str(model_path.parent)
 
     def _update_residual_density_tooltip(self) -> None:
-        """Show residual-density map statistics on the load button."""
+        """Show the map statistics on the button while density is displayed."""
         density_map = self._render_widget.residual_density_map
         if density_map is None:
             return
         self._residual_density_button.setToolTip(
+            f"Residual density shown - click to hide.\n"
             f"max {density_map.max:+.3f}, min {density_map.min:+.3f}, "
             f"rms {density_map.rms:.3f} e/Å³"
         )

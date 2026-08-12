@@ -114,8 +114,8 @@ sdm_cpp_ext = Extension(
 )
 
 density_cpp_ext = Extension(
-    name="density_cpp",
-    sources=["src/density_cpp/density_cpp.cpp"],
+    name="fastmolwidget.density_cpp",
+    sources=["src/fastmolwidget/density_cpp/density_cpp.cpp"],
     include_dirs=[pybind11_include, numpy_include],
     extra_compile_args=base_compile,
     language="c++",

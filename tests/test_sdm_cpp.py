@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-sdm_cpp = pytest.importorskip("sdm_cpp", reason="sdm_cpp C++ extension not built — skipping")
+sdm_cpp = pytest.importorskip("fastmolwidget.sdm_cpp",
+                              reason="sdm_cpp C++ extension not built — skipping")
 
 from fastmolwidget.cif.cif_file_io import CifReader
 from fastmolwidget.atoms import get_radius_from_element

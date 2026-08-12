@@ -55,9 +55,13 @@ from fastmolwidget.hkl_io import (
 )
 
 try:
-    import density_cpp
+    from fastmolwidget import density_cpp
 
-    HAS_DENSITY_CPP: bool = True
+    #: ``True`` only when the compiled extension is really importable.  The
+    #: attribute is checked rather than just the import, so that a stale or
+    #: not-yet-built extension degrades to a clear error instead of an
+    #: ``AttributeError`` deep inside :meth:`ResidualDensityMap.isosurface`.
+    HAS_DENSITY_CPP: bool = hasattr(density_cpp, 'marching_cubes')
 except ImportError:  # pragma: no cover - depends on the compiled extension
     HAS_DENSITY_CPP = False
 
