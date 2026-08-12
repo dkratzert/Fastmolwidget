@@ -72,8 +72,11 @@ class ReflectionData:
         factors, present only when the source file already contained them
         (an fcf-style CIF).  ``None`` means *compute them yourself*.
     :param batch: Optional ``(N,)`` integer array with the sixth ``.hkl``
-        column.  For ``HKLF 5`` data this is the twin-component number, with a
-        negative sign on every record but the last of an overlap group.
+        column.  Its meaning depends on the ``HKLF`` format: for ``HKLF 5`` it
+        is the twin-component number, negative on every record of an overlap
+        group but the last; for ``HKLF 4`` it is the batch number, which some
+        programs make negative to flag a reflection for the *R*\\ :sub:`free`
+        set.  The two must not be confused.
     """
 
     hkl: np.ndarray
@@ -92,7 +95,14 @@ class ReflectionData:
 
     @property
     def has_overlap_groups(self) -> bool:
-        """``True`` when the batch column marks ``HKLF 5`` overlap groups."""
+        """``True`` when some batch numbers are negative.
+
+        .. warning::
+           Only meaningful once the file is known to be ``HKLF 5``.  In
+           ``HKLF 4`` data a negative batch number marks an
+           *R*\\ :sub:`free` reflection instead, so callers must check the
+           declared format first.
+        """
         return self.batch is not None and bool(np.any(self.batch < 0))
 
 
@@ -118,12 +128,21 @@ class ShelxParameters:
     :param twin_matrix: The ``TWIN`` 3×3 matrix in row-major order, or
         ``None`` when the structure is not twinned.  A bare ``TWIN`` card
         means inversion (racemic) twinning.
-    :param twin_components: ``|n|`` from the ``TWIN`` card (default 2).
-    :param twin_components_signed: ``n`` as written, kept because a negative
-        value selects a different component ordering that is not supported.
+    :param twin_components: ``|n|`` from the ``TWIN`` card (default 2) — the
+        total number of components.
+    :param twin_racemic: ``True`` when the ``TWIN`` count was negative, i.e.
+        general and racemic twinning are refined together.  Components
+        ``m+1…2m`` are then the Friedel opposites of components ``1…m``.
     :param basf: The ``BASF`` batch scale factors — the volume fractions of
-        twin components 2…n.
+        twin components 2…n.  An empty list means 'perfect' twinning with all
+        components equal.
     :param hklf: The ``HKLF`` format number (4 or 5).
+    :param hklf_scale: ``S`` from the ``HKLF`` card; multiplies F² and σ(F²).
+    :param hklf_matrix: The ``HKLF`` 3×3 index-transformation matrix in
+        row-major order, or ``None`` for the identity.  Applied *before* the
+        twin law, and required whenever the reflection file is indexed on a
+        different setting from the model.
+    :param hklf_sigma_scale: ``sm`` from the ``HKLF`` card; multiplies σ.
     """
 
     osf: float = 1.0
@@ -134,9 +153,12 @@ class ShelxParameters:
     free_variables: list[float] = field(default_factory=list)
     twin_matrix: tuple[float, ...] | None = None
     twin_components: int = 2
-    twin_components_signed: int = 2
+    twin_racemic: bool = False
     basf: list[float] = field(default_factory=list)
     hklf: int = 4
+    hklf_scale: float = 1.0
+    hklf_matrix: tuple[float, ...] | None = None
+    hklf_sigma_scale: float = 1.0
 
     @property
     def is_twinned(self) -> bool:
@@ -146,13 +168,16 @@ class ShelxParameters:
     def twin_fractions(self) -> list[float]:
         """Return the volume fraction of every twin component.
 
-        ``BASF`` gives the fractions of components 2…n; the first component
-        takes the remainder.  Values are clamped to ``[0, 1]`` because a
+        ``BASF`` gives the fractions of components 2…n and the first component
+        takes the remainder.  An absent ``BASF`` means 'perfect' twinning, so
+        all components share the volume equally.  Values are clamped because a
         refinement that has not converged can leave nonsense in ``BASF``.
 
         :returns: ``n`` fractions summing to 1.
         """
         count = max(self.twin_components, len(self.basf) + 1)
+        if not self.basf:
+            return [1.0 / count] * count
         others = [min(max(value, 0.0), 1.0) for value in self.basf[:count - 1]]
         others += [0.0] * (count - 1 - len(others))
         first = 1.0 - sum(others)
@@ -572,18 +597,31 @@ def _parse_shelx_text(text: str) -> ShelxParameters:
                 params.twin_matrix = tuple(values[:9])
             else:  # a bare TWIN card means inversion (racemic) twinning
                 params.twin_matrix = _DEFAULT_TWIN_MATRIX
+            count = None
             if len(values) >= 10:
-                params.twin_components_signed = int(values[9])
-                params.twin_components = abs(int(values[9]))
+                count = int(values[9])
             elif len(values) == 1:  # "TWIN n" - matrix omitted, count given
-                params.twin_components_signed = int(values[0])
-                params.twin_components = abs(int(values[0]))
+                count = int(values[0])
+            if count is not None:
+                # A negative count means general *and* racemic twinning: |n|
+                # components in total, the second half being the Friedel
+                # opposites of the first.
+                params.twin_components = max(abs(count), 2)
+                params.twin_racemic = count < 0
         elif upper.startswith('BASF'):
             params.basf = _floats(line[4:])
         elif upper.startswith('HKLF'):
             values = _floats(line[4:])
             if values:
-                params.hklf = int(values[0])
+                params.hklf = abs(int(values[0]))
+            if len(values) >= 2:
+                params.hklf_scale = values[1]
+            if len(values) >= 11:
+                matrix = tuple(values[2:11])
+                if matrix != (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0):
+                    params.hklf_matrix = matrix
+            if len(values) >= 12:
+                params.hklf_sigma_scale = values[11]
             break  # atom list and instructions are finished
 
     if fvars:

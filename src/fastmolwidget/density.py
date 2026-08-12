@@ -69,11 +69,11 @@ except ImportError:  # pragma: no cover - depends on the compiled extension
 #: Grid spacing of the FFT map in Å.  Deliberately a fixed length rather than
 #: a multiple of ``d_min``, so that the number of grid points depends only on
 #: the size of the unit cell and never on how high the data resolution is.
-#: 0.2 Å resolves the shape of individual residual-density features; coarser
+#: 0.15 Å resolves the shape of individual residual-density features; coarser
 #: grids (0.3-0.4 Å) are noticeably blockier once contoured.  Pass
 #: ``grid_spacing=`` to :func:`calculate_residual_density` to trade detail
 #: against speed and memory.
-DEFAULT_GRID_SPACING: float = 0.2
+DEFAULT_GRID_SPACING: float = 0.15
 
 #: Default padding around the displayed atoms, in Å.
 DEFAULT_MARGIN: float = 1.5
@@ -531,26 +531,88 @@ def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
 # The calculation
 # ---------------------------------------------------------------------------
 
+def _apply_hklf_transform(
+    reflections: ReflectionData,
+    params: ShelxParameters,
+) -> ReflectionData:
+    """Apply the ``HKLF`` index transformation and scale factors.
+
+    ``HKLF N S r11…r33 sm`` lets the reflection file be indexed on a different
+    setting from the model: the new indices are ``h' = R h`` (so
+    ``h' = r11·h + r12·k + r13·l``).  The cell, symmetry and coordinates in the
+    ``.res`` refer to the *transformed* indices, so this has to happen before
+    anything else touches the data.  ``S`` scales F² and σ, ``sm`` scales σ
+    again.
+
+    :param reflections: The data as read from the file.
+    :param params: Refinement parameters carrying the ``HKLF`` card.
+    :returns: The transformed data, or the input unchanged when the card is
+        the default ``HKLF 4``.
+    :raises ValueError: If the transformation matrix is singular or has a
+        negative determinant, which SHELXL does not allow.
+    """
+    matrix = params.hklf_matrix
+    scale = params.hklf_scale
+    sigma_scale = params.hklf_sigma_scale
+    if matrix is None and scale == 1.0 and sigma_scale == 1.0:
+        return reflections
+
+    hkl = reflections.hkl
+    if matrix is not None:
+        law = np.array(matrix, dtype=float).reshape(3, 3)
+        determinant = float(np.linalg.det(law))
+        if determinant <= 0.0:
+            raise ValueError(
+                f'HKLF matrix must have a positive determinant, got '
+                f'{determinant:.3f}'
+            )
+        # h'_i = sum_j R_ij h_j  ->  row vectors transform with R transposed.
+        transformed = np.asarray(hkl, dtype=float) @ law.T
+        hkl = np.rint(transformed).astype(np.int32)
+
+    return ReflectionData(
+        hkl=hkl,
+        f_sq_meas=reflections.f_sq_meas * scale,
+        sigma=reflections.sigma * scale * sigma_scale,
+        f_calc=reflections.f_calc,
+        batch=reflections.batch,
+    )
+
+
 def _twin_domain_indices(
     hkl: np.ndarray,
     matrix: tuple[float, ...],
     components: int,
+    *,
+    racemic: bool = False,
 ) -> list[np.ndarray]:
     """Return the Miller indices of every twin domain for each reflection.
 
-    Domain *k* is reached by applying the ``TWIN`` matrix *k* times, following
-    SHELXL's row-vector convention ``h' = h · M``.  Domain 1 is the input.
+    Domain *k* is reached by applying the ``TWIN`` matrix *k* times to the
+    prime indices, using the same convention as the ``HKLF`` card:
+    ``h' = r11·h + r12·k + r13·l``, i.e. ``h' = M h`` for a column vector.
+    When *racemic* is set the ``TWIN`` count was negative, meaning general and
+    racemic twinning together: the matrix generates components ``1…m`` (with
+    ``m = components / 2``) and components ``m+1…2m`` are their Friedel
+    opposites.
 
-    :param hkl: ``(N, 3)`` primary indices.
+    :param hkl: ``(N, 3)`` prime indices.
     :param matrix: The ``TWIN`` matrix in row-major order.
-    :param components: Number of twin components.
+    :param components: Total number of twin components.
+    :param racemic: Whether the second half are the inverted components.
     :returns: A list of ``components`` ``(N, 3)`` float arrays.
     """
     law = np.array(matrix, dtype=float).reshape(3, 3)
+    generated = components // 2 if racemic else components
+
+    # Row-vector arrays transform with the transpose of the column-vector law.
     indices = [np.asarray(hkl, dtype=float)]
-    for _ in range(components - 1):
-        indices.append(indices[-1] @ law)
-    return indices
+    for _ in range(max(generated - 1, 0)):
+        indices.append(indices[-1] @ law.T)
+
+    if racemic:
+        indices += [-block for block in indices[:generated]]
+    return indices[:components]
 
 
 class _StructureFactorCache:
@@ -602,7 +664,9 @@ def _detwin_observations(
       indices are generated from the twin law.
     * **HKLF 5** — the domains are listed explicitly, one record each, with a
       negative component number on every record of an overlap group except the
-      last.
+      last.  ``HKLF 5`` may not be combined with ``TWIN``, so the format alone
+      decides which layout applies — a negative batch number in ``HKLF 4``
+      data means something else entirely (an *R*\\ :sub:`free` flag).
 
     :param reflections: The measured data.
     :param structure: The refined model, used to apportion the intensities.
@@ -625,7 +689,7 @@ def _detwin_observations(
     cache = _StructureFactorCache(structure, calculator)
     fractions = params.twin_fractions()
 
-    if reflections.has_overlap_groups:
+    if params.hklf == 5:
         groups = _hklf5_groups(reflections)
     else:
         groups = _hklf4_groups(reflections, params)
@@ -664,7 +728,8 @@ def _hklf4_groups(reflections: ReflectionData, params: ShelxParameters):
     """
     matrix = params.twin_matrix or _DEFAULT_TWIN_MATRIX
     domains = _twin_domain_indices(reflections.hkl, matrix,
-                                   params.twin_components)
+                                   params.twin_components,
+                                   racemic=params.twin_racemic)
     rounded = [np.rint(block).astype(int) for block in domains]
 
     for position in range(len(reflections)):
@@ -744,19 +809,15 @@ def calculate_residual_density(
 
     reflections = read_reflections(hkl_path)
 
-    # Twinned data has to be split into single-domain intensities before the
-    # difference map is built, otherwise the other domains' scattering shows
-    # up as residual density all over the map.
-    if params.is_twinned and not reflections.has_f_calc:
-        if params.twin_components_signed < 0:
-            warnings.warn(
-                'TWIN with a negative component count is not supported; the '
-                'data is used without detwinning and the residual density '
-                'will come out too large.',
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        else:
+    if not reflections.has_f_calc:
+        # HKLF can re-index the data into the model's setting; everything
+        # downstream assumes that has already happened.
+        reflections = _apply_hklf_transform(reflections, params)
+
+        # Twinned data has to be split into single-domain intensities before
+        # the map is built, otherwise the other domains' scattering shows up
+        # as residual density all over the map.
+        if params.is_twinned:
             reflections = _detwin_observations(reflections, structure, params)
 
     hkl, f_obs = _merge_to_asu(reflections, structure.spacegroup, d_min,

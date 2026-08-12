@@ -565,7 +565,7 @@ of the unit cell.
 
 ### Grid size
 
-The FFT grid uses a **fixed 0.2 Å spacing derived from the unit cell alone**,
+The FFT grid uses a **fixed 0.15 Å spacing derived from the unit cell alone**,
 so the number of grid points never depends on how high the data resolution is
 — sub-Ångström data does not make the grid explode. Reflections finer than the
 grid can represent are dropped rather than aliased. Pass `grid_spacing=` to
@@ -589,8 +589,12 @@ grid can represent are dropped rather than aliased. Pass `grid_spacing=` to
 3. **Twinned data is detwinned** against the model: each observed intensity is
    apportioned between the domains as `Fo²(h₁) = Io · |Fc(h₁)|² / Σ b_k |Fc(h_k)|²`.
    `HKLF 4` files generate the other domains from the `TWIN` matrix, `HKLF 5`
-   files list them explicitly. Without this the other domains' scattering
-   appears as residual density across the whole map.
+   files list them explicitly. A negative `TWIN` count means general *and*
+   racemic twinning, with the second half of the components being the Friedel
+   opposites of the first. An `HKLF` index-transformation matrix is applied
+   first, so reflection files indexed on a different setting from the model
+   are handled. Without this the other domains' scattering appears as residual
+   density across the whole map.
 4. The refined overall scale factor (SHELXL's first `FVAR`) puts the two on a
    common scale, and SHELXL's isotropic `EXTI` correction is applied when it
    was refined.
@@ -643,13 +647,14 @@ about 0.4 s; detwinning a twinned dataset costs roughly one extra second.
 
 Two twinning cases are **not** fully handled:
 
-* A **negative** `TWIN` component count selects a component ordering that is
-  not implemented; the data is then used undetwinned and a `RuntimeWarning`
-  is issued.
 * A pure **inversion (racemic) twin** is a no-op, because `h` and `−h` only
   differ through the imaginary anomalous term *f″*, which gemmi's real-valued
   addends cannot express. The map is left marginally too large — the size of
   the anomalous signal, which is small for light atoms.
+* `HKLF 1`/`2`/`3`/`6` (including the SHELX-76 'condensed' format and the
+  `m` offset) are not read; only `HKLF 4` and `HKLF 5` are supported.
+  Reflection data embedded in the `.ins` file itself (negative `HKLF N`,
+  deprecated by SHELXL) is likewise not read.
 
 ### Using the map without Qt
 

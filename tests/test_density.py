@@ -525,30 +525,214 @@ def test_detwinning_changes_the_map(tmp_path):
 
 
 def test_twin_domain_indices_follow_the_law():
-    """SHELXL applies the twin matrix as ``h' = h M`` (row vector)."""
+    """``TWIN`` uses the same convention as ``HKLF``: ``h' = M h``.
+
+    The matrix here is deliberately **asymmetric** — a symmetric twin law
+    gives the same answer under either convention, so it would not catch a
+    transposed matrix.
+    """
     from fastmolwidget.density import _twin_domain_indices
 
-    law = (0, 1, 0, 1, 0, 0, 0, 0, -1)      # swaps h and k, negates l
+    # h' = h + 2k, k' = k, l' = l   (determinant +1, not symmetric)
+    law = (1, 2, 0,
+           0, 1, 0,
+           0, 0, 1)
     hkl = np.array([[1, 2, 3]], dtype=np.int32)
 
     domains = _twin_domain_indices(hkl, law, 2)
 
     assert len(domains) == 2
     assert list(domains[0][0]) == [1, 2, 3]
-    assert list(domains[1][0]) == [2, 1, -3]
+    # M h = (1 + 2*2, 2, 3); the transposed convention would give (1, 4, 3)
+    assert list(domains[1][0]) == [5, 2, 3]
 
 
-def test_negative_component_count_warns(tmp_path):
-    """The alternative ordering it selects is not implemented."""
+def test_twin_and_hklf_use_the_same_convention():
+    """Both cards must transform an index the same way."""
+    from fastmolwidget.density import _apply_hklf_transform, _twin_domain_indices
+    from fastmolwidget.hkl_io import ReflectionData, ShelxParameters
+
+    law = (1, 2, 0, 0, 1, 0, 0, 0, 1)
+    hkl = np.array([[1, 2, 3]], dtype=np.int32)
+
+    via_twin = _twin_domain_indices(hkl, law, 2)[1][0]
+    via_hklf = _apply_hklf_transform(
+        ReflectionData(hkl=hkl, f_sq_meas=np.array([1.0]),
+                       sigma=np.array([1.0])),
+        ShelxParameters(hklf_matrix=law),
+    ).hkl[0]
+
+    assert list(via_twin) == list(via_hklf)
+
+
+def test_negative_component_count_is_racemic(tmp_path):
+    """A negative TWIN count means general *and* racemic twinning.
+
+    ``|n|`` components in total: the matrix generates ``1…m`` and components
+    ``m+1…2m`` are their Friedel opposites.
+    """
+    from fastmolwidget.hkl_io import read_shelx_parameters
+
     text = RES.read_text(errors='replace').replace(
-        'HKLF 4', 'TWIN 0 1 0 1 0 0 0 0 -1 -4\nBASF 0.2 0.2 0.2\nHKLF 4')
+        'HKLF 4', 'TWIN 0 1 0 1 0 0 0 0 -1 -4\nBASF 0.2 0.1 0.05\nHKLF 4')
     model = tmp_path / 'negtwin.res'
     model.write_text(text)
     import shutil
     shutil.copy(HKL, tmp_path / 'negtwin.hkl')
 
-    with pytest.warns(RuntimeWarning, match='negative component count'):
-        calculate_residual_density(model, tmp_path / 'negtwin.hkl')
+    params = read_shelx_parameters(model)
+    assert params.twin_racemic
+    assert params.twin_components == 4
+    assert params.twin_fractions() == pytest.approx([0.65, 0.2, 0.1, 0.05])
+
+    # must compute without warning about an unsupported ordering
+    density = calculate_residual_density(model, tmp_path / 'negtwin.hkl')
+    assert density.rms > 0
+
+
+def test_racemic_components_are_friedel_opposites():
+    from fastmolwidget.density import _twin_domain_indices
+
+    law = (0, 1, 0, 1, 0, 0, 0, 0, -1)
+    hkl = np.array([[1, 2, 3]], dtype=np.int32)
+
+    domains = _twin_domain_indices(hkl, law, 4, racemic=True)
+
+    assert len(domains) == 4
+    assert list(domains[0][0]) == [1, 2, 3]
+    assert list(domains[1][0]) == [2, 1, -3]
+    assert list(domains[2][0]) == [-1, -2, -3]     # Friedel of component 1
+    assert list(domains[3][0]) == [-2, -1, 3]      # Friedel of component 2
+
+
+def test_missing_basf_means_perfect_twinning(tmp_path):
+    """Without BASF all components share the volume equally."""
+    from fastmolwidget.hkl_io import read_shelx_parameters
+
+    text = RES.read_text(errors='replace').replace(
+        'HKLF 4', 'TWIN 0 1 0 1 0 0 0 0 -1 3\nHKLF 4')
+    model = tmp_path / 'perfect.res'
+    model.write_text(text)
+
+    params = read_shelx_parameters(model)
+
+    assert params.twin_fractions() == pytest.approx([1 / 3, 1 / 3, 1 / 3])
+
+
+def test_negative_batch_in_hklf4_is_not_an_overlap_group(tmp_path):
+    """In HKLF 4 a negative batch number flags an R-free reflection.
+
+    Treating it as an HKLF 5 overlap marker would silently merge unrelated
+    reflections into one observation.
+    """
+    import shutil
+
+    from fastmolwidget.hkl_io import read_shelx_hkl
+
+    data = read_shelx_hkl(HKL)
+    lines = []
+    for position, ((h, k, l), f_sq, sigma) in enumerate(
+            zip(data.hkl, data.f_sq_meas, data.sigma)):
+        batch = -1 if position % 3 == 0 else 1     # every third is R-free
+        lines.append(f'{h:4d}{k:4d}{l:4d}{f_sq:8.2f}{sigma:8.2f}{batch:4d}')
+    lines.append(f'{0:4d}{0:4d}{0:4d}{0.0:8.2f}{0.0:8.2f}{0:4d}')
+    (tmp_path / 'rfree.hkl').write_text('\n'.join(lines))
+    shutil.copy(RES, tmp_path / 'rfree.res')
+
+    flagged = read_shelx_hkl(tmp_path / 'rfree.hkl')
+    assert flagged.has_overlap_groups          # negative numbers are present
+
+    plain = calculate_residual_density(RES, HKL)
+    with_flags = calculate_residual_density(tmp_path / 'rfree.res',
+                                            tmp_path / 'rfree.hkl')
+
+    assert with_flags.rms == pytest.approx(plain.rms, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# HKLF index transformation
+# ---------------------------------------------------------------------------
+
+def test_hklf_matrix_reindexes_the_data(tmp_path):
+    """``HKLF 4 1 r11..r33`` transforms h before anything else uses it."""
+    from fastmolwidget.hkl_io import read_shelx_hkl, read_shelx_parameters
+
+    # Swap h and k in the file, and declare the inverse swap on the HKLF card
+    # so the data lands back on the model's setting.
+    data = read_shelx_hkl(HKL)
+    lines = []
+    for (h, k, l), f_sq, sigma in zip(data.hkl, data.f_sq_meas, data.sigma):
+        lines.append(f'{k:4d}{h:4d}{-l:4d}{f_sq:8.2f}{sigma:8.2f}{1:4d}')
+    lines.append(f'{0:4d}{0:4d}{0:4d}{0.0:8.2f}{0.0:8.2f}{0:4d}')
+    (tmp_path / 'swap.hkl').write_text('\n'.join(lines))
+
+    text = RES.read_text(errors='replace').replace(
+        'HKLF 4', 'HKLF 4 1 0 1 0 1 0 0 0 0 -1')
+    (tmp_path / 'swap.res').write_text(text)
+
+    params = read_shelx_parameters(tmp_path / 'swap.res')
+    assert params.hklf_matrix == (0, 1, 0, 1, 0, 0, 0, 0, -1)
+
+    plain = calculate_residual_density(RES, HKL)
+    reindexed = calculate_residual_density(tmp_path / 'swap.res',
+                                           tmp_path / 'swap.hkl')
+
+    assert reindexed.rms == pytest.approx(plain.rms, abs=1e-3)
+    assert reindexed.max == pytest.approx(plain.max, abs=0.01)
+
+
+def test_hklf_transform_follows_the_row_convention():
+    """``h' = r11·h + r12·k + r13·l``, as the SHELXL manual states."""
+    from fastmolwidget.density import _apply_hklf_transform
+    from fastmolwidget.hkl_io import ReflectionData, ShelxParameters
+
+    data = ReflectionData(hkl=np.array([[1, 2, 3]], dtype=np.int32),
+                          f_sq_meas=np.array([10.0]),
+                          sigma=np.array([1.0]))
+    # swaps h and k; determinant is +1 with the l row negated twice over
+    params = ShelxParameters(hklf_matrix=(0, 1, 0, 1, 0, 0, 0, 0, -1))
+
+    out = _apply_hklf_transform(data, params)
+
+    assert list(out.hkl[0]) == [2, 1, -3]
+
+
+def test_hklf_scale_factors_are_applied():
+    from fastmolwidget.density import _apply_hklf_transform
+    from fastmolwidget.hkl_io import ReflectionData, ShelxParameters
+
+    data = ReflectionData(hkl=np.array([[1, 0, 0]], dtype=np.int32),
+                          f_sq_meas=np.array([10.0]),
+                          sigma=np.array([2.0]))
+    params = ShelxParameters(hklf_scale=3.0, hklf_sigma_scale=5.0)
+
+    out = _apply_hklf_transform(data, params)
+
+    assert out.f_sq_meas[0] == pytest.approx(30.0)
+    assert out.sigma[0] == pytest.approx(2.0 * 3.0 * 5.0)
+
+
+def test_hklf_matrix_must_have_positive_determinant():
+    from fastmolwidget.density import _apply_hklf_transform
+    from fastmolwidget.hkl_io import ReflectionData, ShelxParameters
+
+    data = ReflectionData(hkl=np.array([[1, 0, 0]], dtype=np.int32),
+                          f_sq_meas=np.array([10.0]),
+                          sigma=np.array([1.0]))
+    params = ShelxParameters(hklf_matrix=(-1, 0, 0, 0, 1, 0, 0, 0, 1))
+
+    with pytest.raises(ValueError, match='positive determinant'):
+        _apply_hklf_transform(data, params)
+
+
+def test_default_hklf_card_changes_nothing():
+    from fastmolwidget.hkl_io import read_shelx_parameters
+
+    params = read_shelx_parameters(RES)
+
+    assert params.hklf == 4
+    assert params.hklf_matrix is None
+    assert params.hklf_scale == 1.0
 
 
 def test_hklf5_groups_are_parsed(tmp_path):
