@@ -155,6 +155,7 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
         :raises FileNotFoundError: If the file does not exist.
         """
         self._loader.load_file(filename)
+        self.setWindowTitle(str(Path(filename).resolve()))
         # Loading a different structure drops its residual density; make the
         # control bar follow whatever the renderer actually ended up with.
         self._sync_density_controls()

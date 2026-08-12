@@ -516,6 +516,7 @@ class MoleculeViewerQuickWidget(QtWidgets.QWidget):
         """
         if self._backend:
             self._backend.load_file(filename)
+            self.setWindowTitle(str(Path(filename).resolve()))
 
     def set_bond_color(
             self,
