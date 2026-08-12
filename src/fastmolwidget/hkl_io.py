@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import gemmi
@@ -38,15 +39,57 @@ import numpy as np
 __all__ = [
     'ReflectionData',
     'ShelxParameters',
+    'clear_cif_cache',
     'embedded_shelx_hkl',
     'embedded_shelx_res',
     'find_reflection_file',
     'has_reflections',
+    'read_cif_document',
     'read_cif_reflections',
     'read_reflections',
     'read_shelx_hkl',
     'read_shelx_parameters',
 ]
+
+
+@lru_cache(maxsize=2)
+def _parse_cif_document(path: str, fingerprint: tuple[int, int]):
+    """Parse a CIF, memoised on *path* and *fingerprint*.
+
+    *fingerprint* is not used in the body — it is only part of the cache key,
+    so that an edited file is re-read instead of served from the cache.
+    """
+    return gemmi.cif.read(path)
+
+
+def read_cif_document(path: str | Path):
+    """Read a CIF into a :class:`gemmi.cif.Document`, with a small cache.
+
+    Building one residual-density map needs the same CIF up to five times
+    over — to find the reflection data, to read the embedded ``.hkl``, to read
+    the embedded SHELX instructions and to build the model — and for a
+    self-contained SHELXL CIF that file is megabytes large.  Parsing it once
+    and handing out the same document is worth more than any of those readers
+    can save individually.
+
+    The cache key includes the file's modification time and size, so an edited
+    file is always re-read.  Only the two most recent documents are kept, to
+    bound the memory a large CIF can occupy.
+
+    :param path: Path to the CIF.
+    :returns: The parsed document.  Treat it as read-only; it is shared.
+    """
+    name = str(path)
+    try:
+        stat = Path(name).stat()
+    except OSError:  # not a real file - let gemmi produce the error
+        return gemmi.cif.read(name)
+    return _parse_cif_document(name, (stat.st_mtime_ns, stat.st_size))
+
+
+def clear_cif_cache() -> None:
+    """Forget every CIF document cached by :func:`read_cif_document`."""
+    _parse_cif_document.cache_clear()
 
 
 def _data_blocks(doc) -> list:
@@ -212,16 +255,27 @@ def parse_shelx_hkl(text: str, *, source: str | Path = '<text>') -> ReflectionDa
     Used both for standalone ``.hkl`` files and for the ``_shelx_hkl_file``
     block embedded in a CIF.
 
+    Real files run to tens of thousands of records, so the fixed-format layout
+    is first parsed column-wise with NumPy (:func:`_parse_fixed_format`).  That
+    fast path only applies when *every* record is fixed-format; free-format or
+    otherwise irregular files fall back to the record-by-record parser, which
+    produces exactly the same result.
+
     :param text: The reflection records.
     :param source: Only used in the error message.
     :raises ValueError: If no usable reflection could be parsed.
     """
+    lines = text.splitlines()
+    data = _parse_fixed_format(lines)
+    if data is not None:
+        return data
+
     hkl: list[tuple[int, int, int]] = []
     f_sq: list[float] = []
     sig: list[float] = []
     batch: list[int] = []
 
-    for raw in text.splitlines():
+    for raw in lines:
         line = raw.rstrip('\r')
         if not line.strip():
             continue
@@ -245,6 +299,74 @@ def parse_shelx_hkl(text: str, *, source: str | Path = '<text>') -> ReflectionDa
         sigma=np.array(sig, dtype=float),
         batch=np.array(batch, dtype=np.int32),
     )
+
+
+#: Column boundaries of a SHELX ``HKLF`` record (``3I4,2F8.2`` + batch).
+_HKL_COLUMNS: tuple[tuple[int, int], ...] = (
+    (0, 4), (4, 8), (8, 12), (12, 20), (20, 28), (28, 32),
+)
+_HKL_RECORD_WIDTH: int = 32
+
+
+def _parse_fixed_format(lines: list[str]) -> ReflectionData | None:
+    """Parse fixed-format ``HKLF`` records column-wise with NumPy.
+
+    Every record is turned into a row of a fixed-width byte matrix, so each
+    column can be converted in one C-level cast instead of one Python call per
+    line.  This is the difference between ~0.1 s and a few ms for a 40 000
+    reflection file, and that cost is paid every time a residual-density map is
+    computed.
+
+    :param lines: The raw records, blank ones included.
+    :returns: The reflections, or ``None`` when the data is not strictly
+        fixed-format and the record-by-record parser has to take over.
+    """
+    try:
+        rows = np.array(lines, dtype=f'S{_HKL_RECORD_WIDTH}')
+    except (UnicodeEncodeError, ValueError):  # non-ASCII text
+        return None
+    if rows.size == 0:
+        return None
+
+    # np.array() pads short records with NUL, so blank lines become empty.
+    rows = rows[np.char.strip(rows) != b'']
+    if rows.size == 0:
+        return None
+
+    chars = rows.view('S1').reshape(len(rows), _HKL_RECORD_WIDTH)
+
+    def column(start: int, stop: int) -> np.ndarray:
+        block = np.ascontiguousarray(chars[:, start:stop])
+        return block.view(f'S{stop - start}').ravel()
+
+    try:
+        hkl = np.stack(
+            [column(*bounds).astype(np.int32) for bounds in _HKL_COLUMNS[:3]],
+            axis=1,
+        )
+    except ValueError:
+        return None
+
+    # SHELX stops reading at the terminating 0 0 0 record.
+    end = np.flatnonzero(~hkl.any(axis=1))
+    stop = int(end[0]) if end.size else len(hkl)
+    if stop == 0:
+        return None
+    hkl = hkl[:stop]
+    chars = chars[:stop]
+
+    try:
+        f_sq = column(*_HKL_COLUMNS[3]).astype(float)
+        sigma = column(*_HKL_COLUMNS[4]).astype(float)
+        raw_batch = np.char.strip(column(*_HKL_COLUMNS[5]))
+        batch = np.ones(stop, dtype=np.int32)
+        given = raw_batch != b''
+        if given.any():
+            batch[given] = raw_batch[given].astype(np.int32)
+    except ValueError:
+        return None
+
+    return ReflectionData(hkl=hkl, f_sq_meas=f_sq, sigma=sigma, batch=batch)
 
 
 def _parse_hkl_line(line: str) -> tuple[int, int, int, float, float, int] | None:
@@ -299,7 +421,7 @@ def read_cif_reflections(path: str | Path) -> ReflectionData | None:
     :returns: The reflections, or ``None`` when the file contains no
         reflection loop at all.
     """
-    doc = gemmi.cif.read(str(path))
+    doc = read_cif_document(path)
     for block in _data_blocks(doc):
         h_col = block.find_values('_refln_index_h')
         if not h_col:
@@ -394,7 +516,7 @@ def embedded_shelx_hkl(path: str | Path) -> str | None:
     :returns: The embedded reflection records, or ``None`` when absent.
     """
     try:
-        doc = gemmi.cif.read(str(path))
+        doc = read_cif_document(path)
     except Exception:  # noqa: BLE001 - a non-CIF file simply has no HKL block
         return None
     for block in _data_blocks(doc):
@@ -453,7 +575,7 @@ def has_reflections(path: str | Path) -> bool:
     if path.suffix.lower() == '.hkl':
         return True
     try:
-        doc = gemmi.cif.read(str(path))
+        doc = read_cif_document(path)
     except Exception:  # noqa: BLE001 - unreadable or not a CIF
         return False
     for block in _data_blocks(doc):
@@ -513,7 +635,7 @@ def embedded_shelx_res(path: str | Path) -> str | None:
     :returns: The embedded SHELX text, or ``None`` when absent.
     """
     try:
-        doc = gemmi.cif.read(str(path))
+        doc = read_cif_document(path)
     except Exception:  # noqa: BLE001 - a non-CIF file simply has no SHELX block
         return None
     for block in _data_blocks(doc):

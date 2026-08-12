@@ -39,12 +39,18 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace py = pybind11;
 
@@ -494,6 +500,216 @@ py::tuple marching_cubes(
     throw py::type_error("grid must have dtype float32 or float64");
 }
 
+// ---------------------------------------------------------------------------
+// Direct summation of structure factors
+// ---------------------------------------------------------------------------
+//
+// Same formula as gemmi's StructureFactorCalculator, but the phase factor
+//     exp(2 pi i (h x + k y + l z))
+// is not evaluated with a cos/sin pair per (reflection, symmetry image, site).
+// Since h, k and l are integers, the factor separates into
+//     Ex[h] * Ey[k] * Ez[l]
+// and those three tables can be tabulated once per symmetry-transformed site
+// over the Miller-index range of the data.  The inner loop is then two complex
+// multiplications instead of two transcendental calls.
+
+using Complex = std::complex<double>;
+
+constexpr double kTwoPi = 6.283185307179586476925286766559;
+constexpr double kTwoPiSq = 19.739208802178717237668981999752;  // 2 pi^2
+constexpr double kUtoB = 78.956835208714868950675927999008;     // 8 pi^2
+
+// Tabulate exp(2 pi i * n * value) for n in [low, high].
+void fill_phase_table(double value, int low, int high, Complex* out) {
+    for (int n = low; n <= high; ++n) {
+        const double angle = kTwoPi * static_cast<double>(n) * value;
+        out[n - low] = Complex(std::cos(angle), std::sin(angle));
+    }
+}
+
+py::array_t<Complex> structure_factors(
+    py::array_t<int, py::array::c_style | py::array::forcecast> hkl,
+    py::array_t<double, py::array::c_style | py::array::forcecast> stol2,
+    py::array_t<double, py::array::c_style | py::array::forcecast> rotations,
+    py::array_t<double, py::array::c_style | py::array::forcecast> translations,
+    py::array_t<double, py::array::c_style | py::array::forcecast> fract,
+    py::array_t<double, py::array::c_style | py::array::forcecast> occupancies,
+    py::array_t<double, py::array::c_style | py::array::forcecast> u_iso,
+    py::array_t<double, py::array::c_style | py::array::forcecast> aniso,
+    py::array_t<int, py::array::c_style | py::array::forcecast> form_index,
+    py::array_t<double, py::array::c_style | py::array::forcecast> form_factors,
+    std::array<double, 3> reciprocal
+) {
+    if (hkl.ndim() != 2 || hkl.shape(1) != 3) {
+        throw py::value_error("hkl must have shape (N, 3)");
+    }
+    if (rotations.ndim() != 3 || rotations.shape(1) != 3 || rotations.shape(2) != 3) {
+        throw py::value_error("rotations must have shape (M, 3, 3)");
+    }
+    if (fract.ndim() != 2 || fract.shape(1) != 3) {
+        throw py::value_error("fract must have shape (S, 3)");
+    }
+    if (aniso.ndim() != 2 || aniso.shape(1) != 6) {
+        throw py::value_error("aniso must have shape (S, 6)");
+    }
+    if (form_factors.ndim() != 2) {
+        throw py::value_error("form_factors must have shape (F, N)");
+    }
+
+    const py::ssize_t n_refl = hkl.shape(0);
+    const py::ssize_t n_ops = rotations.shape(0);
+    const py::ssize_t n_sites = fract.shape(0);
+
+    if (translations.ndim() != 2 || translations.shape(0) != n_ops
+            || translations.shape(1) != 3) {
+        throw py::value_error("translations must have shape (M, 3)");
+    }
+    if (stol2.shape(0) != n_refl || form_factors.shape(1) != n_refl) {
+        throw py::value_error("stol2 and form_factors must cover every reflection");
+    }
+    if (occupancies.shape(0) != n_sites || u_iso.shape(0) != n_sites
+            || aniso.shape(0) != n_sites || form_index.shape(0) != n_sites) {
+        throw py::value_error("per-site arrays must cover every site");
+    }
+
+    auto result = py::array_t<Complex>(n_refl);
+    if (n_refl == 0 || n_ops == 0 || n_sites == 0) {
+        std::fill_n(result.mutable_data(), n_refl, Complex(0.0, 0.0));
+        return result;
+    }
+
+    const int* hkl_data = hkl.data();
+    const double* stol2_data = stol2.data();
+    const double* rot_data = rotations.data();
+    const double* tran_data = translations.data();
+    const double* fract_data = fract.data();
+    const double* occ_data = occupancies.data();
+    const double* uiso_data = u_iso.data();
+    const double* aniso_data = aniso.data();
+    const int* form_index_data = form_index.data();
+    const double* form_data = form_factors.data();
+
+    int low[3] = {hkl_data[0], hkl_data[1], hkl_data[2]};
+    int high[3] = {hkl_data[0], hkl_data[1], hkl_data[2]};
+    for (py::ssize_t n = 1; n < n_refl; ++n) {
+        for (int axis = 0; axis < 3; ++axis) {
+            const int value = hkl_data[n * 3 + axis];
+            low[axis] = std::min(low[axis], value);
+            high[axis] = std::max(high[axis], value);
+        }
+    }
+    const py::ssize_t span[3] = {
+        high[0] - low[0] + 1, high[1] - low[1] + 1, high[2] - low[2] + 1,
+    };
+
+    // One symmetry image of one site, with its three phase tables.
+    const py::ssize_t n_images = n_ops * n_sites;
+    const py::ssize_t stride = span[0] + span[1] + span[2];
+    std::vector<Complex> tables(static_cast<std::size_t>(n_images * stride));
+    std::vector<double> occ_by_image(static_cast<std::size_t>(n_images));
+    std::vector<int> form_by_image(static_cast<std::size_t>(n_images));
+
+    for (py::ssize_t m = 0; m < n_ops; ++m) {
+        const double* rot = rot_data + m * 9;
+        const double* tran = tran_data + m * 3;
+        for (py::ssize_t s = 0; s < n_sites; ++s) {
+            const double* x = fract_data + s * 3;
+            double image[3];
+            for (int axis = 0; axis < 3; ++axis) {
+                image[axis] = rot[axis * 3 + 0] * x[0] + rot[axis * 3 + 1] * x[1]
+                            + rot[axis * 3 + 2] * x[2] + tran[axis];
+            }
+            const py::ssize_t p = m * n_sites + s;
+            Complex* table = tables.data() + p * stride;
+            fill_phase_table(image[0], low[0], high[0], table);
+            fill_phase_table(image[1], low[1], high[1], table + span[0]);
+            fill_phase_table(image[2], low[2], high[2], table + span[0] + span[1]);
+            occ_by_image[static_cast<std::size_t>(p)] = occ_data[s];
+            form_by_image[static_cast<std::size_t>(p)] = form_index_data[s];
+        }
+    }
+
+    std::vector<char> is_aniso(static_cast<std::size_t>(n_sites), 0);
+    bool any_aniso = false;
+    for (py::ssize_t s = 0; s < n_sites; ++s) {
+        const double* u = aniso_data + s * 6;
+        for (int i = 0; i < 6; ++i) {
+            if (u[i] != 0.0) {
+                is_aniso[static_cast<std::size_t>(s)] = 1;
+                any_aniso = true;
+                break;
+            }
+        }
+    }
+
+    Complex* out = result.mutable_data();
+
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+    {
+        std::vector<double> weight(static_cast<std::size_t>(n_sites));
+
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+        for (py::ssize_t n = 0; n < n_refl; ++n) {
+            const int h = hkl_data[n * 3 + 0];
+            const int k = hkl_data[n * 3 + 1];
+            const int l = hkl_data[n * 3 + 2];
+            const py::ssize_t ih = h - low[0];
+            const py::ssize_t ik = span[0] + (k - low[1]);
+            const py::ssize_t il = span[0] + span[1] + (l - low[2]);
+            const double s2 = stol2_data[n];
+
+            // occupancy * scattering factor, and for isotropic sites also the
+            // Debye-Waller factor, which does not depend on the symmetry image.
+            for (py::ssize_t s = 0; s < n_sites; ++s) {
+                double value = occ_data[s]
+                    * form_data[static_cast<py::ssize_t>(form_index_data[s]) * n_refl + n];
+                if (!is_aniso[static_cast<std::size_t>(s)]) {
+                    value *= std::exp(-kUtoB * s2 * uiso_data[s]);
+                }
+                weight[static_cast<std::size_t>(s)] = value;
+            }
+
+            Complex total(0.0, 0.0);
+            for (py::ssize_t m = 0; m < n_ops; ++m) {
+                double quad[6] = {0, 0, 0, 0, 0, 0};
+                if (any_aniso) {
+                    const double* rot = rot_data + m * 9;
+                    // Miller indices transform as row vectors: h' = h . R.
+                    const double hx = (h * rot[0] + k * rot[3] + l * rot[6]) * reciprocal[0];
+                    const double hy = (h * rot[1] + k * rot[4] + l * rot[7]) * reciprocal[1];
+                    const double hz = (h * rot[2] + k * rot[5] + l * rot[8]) * reciprocal[2];
+                    quad[0] = hx * hx;
+                    quad[1] = hy * hy;
+                    quad[2] = hz * hz;
+                    quad[3] = 2.0 * hx * hy;
+                    quad[4] = 2.0 * hx * hz;
+                    quad[5] = 2.0 * hy * hz;
+                }
+                const Complex* base = tables.data() + m * n_sites * stride;
+                for (py::ssize_t s = 0; s < n_sites; ++s) {
+                    double value = weight[static_cast<std::size_t>(s)];
+                    if (is_aniso[static_cast<std::size_t>(s)]) {
+                        const double* u = aniso_data + s * 6;
+                        const double r_u_r = quad[0] * u[0] + quad[1] * u[1]
+                                           + quad[2] * u[2] + quad[3] * u[3]
+                                           + quad[4] * u[4] + quad[5] * u[5];
+                        value *= std::exp(-kTwoPiSq * r_u_r);
+                    }
+                    const Complex* table = base + s * stride;
+                    total += value * (table[ih] * table[ik] * table[il]);
+                }
+            }
+            out[n] = total;
+        }
+    }
+
+    return result;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(density_cpp, m) {
@@ -544,6 +760,62 @@ Notes
 Vertices are shared across neighbouring cubes by hashing the canonical identity
 of the intersected grid edge. Empty or fully solid grids return zero-row output
 arrays with the documented dtypes and shapes.
+)doc"
+    );
+
+    m.def(
+        "structure_factors",
+        &structure_factors,
+        py::arg("hkl"),
+        py::arg("stol2"),
+        py::arg("rotations"),
+        py::arg("translations"),
+        py::arg("fract"),
+        py::arg("occupancies"),
+        py::arg("u_iso"),
+        py::arg("aniso"),
+        py::arg("form_index"),
+        py::arg("form_factors"),
+        py::arg("reciprocal"),
+        R"doc(
+Sum calculated structure factors over a small-molecule model.
+
+Implements the same formula as gemmi's StructureFactorCalculator, but
+tabulates the separable phase factor exp(2 pi i (hx + ky + lz)) over the
+Miller-index range of the data, so the inner loop costs two complex
+multiplications instead of a sine and a cosine.
+
+Parameters
+----------
+hkl : numpy.ndarray
+    (N, 3) int32 Miller indices.
+stol2 : numpy.ndarray
+    (N,) float64 array of (sin(theta) / lambda)^2.
+rotations : numpy.ndarray
+    (M, 3, 3) float64 symmetry rotation matrices, identity included.
+translations : numpy.ndarray
+    (M, 3) float64 symmetry translations, matching `rotations`.
+fract : numpy.ndarray
+    (S, 3) float64 fractional coordinates of the sites.
+occupancies, u_iso : numpy.ndarray
+    (S,) float64 site occupancies and isotropic ADPs.
+aniso : numpy.ndarray
+    (S, 6) float64 anisotropic ADPs as U11, U22, U33, U12, U13, U23 in the
+    small-molecule (CIF) convention. An all-zero row means the site is
+    isotropic and `u_iso` is used instead.
+form_index : numpy.ndarray
+    (S,) int32 row of `form_factors` to use for each site.
+form_factors : numpy.ndarray
+    (F, N) float64 scattering factor of every distinct scatterer for every
+    reflection, including any addend such as f'.
+reciprocal : tuple[float, float, float]
+    Reciprocal cell lengths a*, b*, c*, used for the anisotropic
+    Debye-Waller factor.
+
+Returns
+-------
+numpy.ndarray
+    (N,) complex128 array of calculated structure factors.
 )doc"
     );
 }

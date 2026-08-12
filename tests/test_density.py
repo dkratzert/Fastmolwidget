@@ -874,3 +874,103 @@ def test_systematically_absent_reflections_are_dropped():
     assert not any(ops.is_systematically_absent(list(h)) for h in hkl)
     # p21c.cif reports _reflns_number_total 10786
     assert len(hkl) == 10786
+
+
+# ---------------------------------------------------------------------------
+# Performance-critical rewrites: the fast paths must equal the reference ones
+# ---------------------------------------------------------------------------
+
+@needs_cpp
+@pytest.mark.parametrize('model, reflections', [(RES, HKL), (P21C, P21C)])
+def test_fast_structure_factors_match_gemmi(model, reflections):
+    """The C++ summation must reproduce gemmi's reference implementation."""
+    from fastmolwidget.density import (
+        _load_model,
+        _merge_to_asu,
+        _summed_structure_factors,
+    )
+    from fastmolwidget.hkl_io import read_reflections
+
+    structure, params = _load_model(Path(model))
+    data = read_reflections(reflections)
+    hkl, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+
+    calculator = gemmi.StructureFactorCalculatorX(structure.cell)
+    if params.wavelength:
+        calculator.addends.add_cl_fprime(gemmi.hc / params.wavelength)
+    expected = np.array([
+        calculator.calculate_sf_from_small_structure(structure, list(h))
+        for h in hkl
+    ])
+
+    result = _summed_structure_factors(structure, hkl, calculator)
+
+    # gemmi stores the IT92 coefficients as float32, so the two differ by
+    # single-precision round-off and no more.
+    assert result.shape == expected.shape
+    assert np.abs(result - expected).max() < 1e-6 * np.abs(expected).max()
+
+
+@needs_cpp
+def test_structure_factors_handle_an_isotropic_only_model():
+    """The anisotropic branch must not be needed for an all-isotropic model."""
+    from fastmolwidget.density import _merge_to_asu, _summed_structure_factors
+    from fastmolwidget.hkl_io import read_reflections
+
+    structure = small_structure_from_cif(CIF)
+    for site in structure.sites:
+        site.aniso = gemmi.SMat33d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        site.u_iso = 0.03
+    data = read_reflections(HKL)
+    hkl, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+
+    calculator = gemmi.StructureFactorCalculatorX(structure.cell)
+    expected = np.array([
+        calculator.calculate_sf_from_small_structure(structure, list(h))
+        for h in hkl
+    ])
+
+    result = _summed_structure_factors(structure, hkl, calculator)
+
+    assert np.abs(result - expected).max() < 1e-6 * np.abs(expected).max()
+
+
+def test_merged_reflections_carry_the_weighted_mean():
+    """Merging must average symmetry equivalents with 1/sigma^2 weights."""
+    from fastmolwidget.density import _merge_to_asu
+    from fastmolwidget.hkl_io import ReflectionData
+
+    structure = small_structure_from_cif(CIF)
+    # (1, 2, 3) and its Friedel mate are one unique reflection.
+    data = ReflectionData(
+        hkl=np.array([[1, 2, 3], [-1, -2, -3]], dtype=np.int32),
+        f_sq_meas=np.array([100.0, 200.0]),
+        sigma=np.array([1.0, 2.0]),
+    )
+
+    hkl, f_obs = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+
+    weights = np.array([1.0, 0.25])
+    expected = np.sqrt((weights * [100.0, 200.0]).sum() / weights.sum())
+    assert len(hkl) == 1
+    assert f_obs[0] == pytest.approx(expected)
+
+
+def test_equivalence_classes_agree_with_gemmis_asu():
+    """Every class must be exactly one reciprocal-asymmetric-unit reflection."""
+    from fastmolwidget.density import _equivalence_classes
+    from fastmolwidget.hkl_io import read_reflections
+
+    structure = small_structure_from_cif(P21C)
+    ops = structure.spacegroup.operations()
+    asu = gemmi.ReciprocalAsu(structure.spacegroup)
+    hkl = read_reflections(P21C).hkl[:2000]
+
+    labels, representatives = _equivalence_classes(hkl, ops)
+
+    reference = np.array([asu.to_asu([int(h), int(k), int(l)], ops)[0]
+                          for h, k, l in hkl])
+    # Two observations share a label exactly when they share an ASU index.
+    by_label = np.array([asu.to_asu([int(h), int(k), int(l)], ops)[0]
+                         for h, k, l in representatives])
+    assert np.array_equal(by_label[labels], reference)

@@ -216,3 +216,109 @@ def test_find_reflection_file_picks_the_sibling_cif_when_it_has_data(tmp_path):
     shutil.copy(P21C, tmp_path / 'x.cif')
 
     assert find_reflection_file(model) == tmp_path / 'x.cif'
+
+
+# ---------------------------------------------------------------------------
+# The vectorised fixed-format fast path
+# ---------------------------------------------------------------------------
+
+def _reference_parse(text: str):
+    """Parse with the record-by-record fallback only."""
+    from fastmolwidget.hkl_io import ReflectionData, _parse_hkl_line
+
+    hkl, f_sq, sigma, batch = [], [], [], []
+    for raw in text.splitlines():
+        line = raw.rstrip('\r')
+        if not line.strip():
+            continue
+        parsed = _parse_hkl_line(line)
+        if parsed is None:
+            continue
+        h, k, l, fsq, s, n = parsed
+        if h == 0 and k == 0 and l == 0:
+            break
+        hkl.append((h, k, l))
+        f_sq.append(fsq)
+        sigma.append(s)
+        batch.append(n)
+    return ReflectionData(
+        hkl=np.array(hkl, dtype=np.int32),
+        f_sq_meas=np.array(f_sq, dtype=float),
+        sigma=np.array(sigma, dtype=float),
+        batch=np.array(batch, dtype=np.int32),
+    )
+
+
+@pytest.mark.parametrize('text, uses_fast_path', [
+    ('   1   2   3   12.34    1.23\n   0   0   0    0.00    0.00\n', True),
+    ('   1   2   3   12.34    1.23\r\n   1   2   4    5.00    0.50   2\r\n', True),
+    ('   1   2   3   12.34    1.23\n\n   1   2   4    5.00    0.50   2\n', True),
+    ('  -1  -2  -3   12.34    1.23\n 100  99 -99  5.00     0.50\n', True),
+    ('1 2 3 12.34 1.23\n1 2 4 5.0 0.5 2\n', False),           # free format
+    ('   1   2   3   12.34    1.23\nrubbish, and plenty of it here\n', False),
+])
+def test_fixed_format_fast_path_matches_the_fallback(text, uses_fast_path):
+    from fastmolwidget.hkl_io import _parse_fixed_format, parse_shelx_hkl
+
+    assert (_parse_fixed_format(text.splitlines()) is not None) is uses_fast_path
+
+    fast = parse_shelx_hkl(text)
+    slow = _reference_parse(text)
+
+    assert np.array_equal(fast.hkl, slow.hkl)
+    assert np.array_equal(fast.f_sq_meas, slow.f_sq_meas)
+    assert np.array_equal(fast.sigma, slow.sigma)
+    assert np.array_equal(fast.batch, slow.batch)
+
+
+def test_fast_path_matches_the_fallback_on_a_real_file():
+    from fastmolwidget.hkl_io import parse_shelx_hkl
+
+    text = HKL.read_text(errors='replace')
+
+    fast = parse_shelx_hkl(text)
+    slow = _reference_parse(text)
+
+    assert len(fast) == len(slow) > 30000
+    assert np.array_equal(fast.hkl, slow.hkl)
+    assert np.array_equal(fast.f_sq_meas, slow.f_sq_meas)
+    assert np.array_equal(fast.sigma, slow.sigma)
+    assert np.array_equal(fast.batch, slow.batch)
+
+
+# ---------------------------------------------------------------------------
+# CIF document cache
+# ---------------------------------------------------------------------------
+
+def test_cif_document_cache_returns_the_same_document():
+    from fastmolwidget.hkl_io import read_cif_document
+
+    assert read_cif_document(CIF) is read_cif_document(CIF)
+
+
+def test_cif_document_cache_notices_an_edited_file(tmp_path):
+    """The cache is keyed on mtime and size, so a rewrite must be picked up."""
+    import os
+
+    from fastmolwidget.hkl_io import read_cif_document
+
+    path = tmp_path / 'edited.cif'
+    path.write_text('data_one\n_cell_length_a 10.0\n')
+    first = read_cif_document(path)
+    assert first.sole_block().find_value('_cell_length_a') == '10.0'
+
+    path.write_text('data_one\n_cell_length_a 20.0\n_cell_length_b 5.0\n')
+    os.utime(path, (0, 0))  # force a different mtime even on a coarse clock
+
+    second = read_cif_document(path)
+
+    assert second.sole_block().find_value('_cell_length_a') == '20.0'
+
+
+def test_clear_cif_cache_forgets_everything():
+    from fastmolwidget.hkl_io import clear_cif_cache, read_cif_document
+
+    first = read_cif_document(CIF)
+    clear_cif_cache()
+
+    assert read_cif_document(CIF) is not first

@@ -51,6 +51,7 @@ from fastmolwidget.hkl_io import (
     ShelxParameters,
     _data_blocks,
     find_reflection_file,
+    read_cif_document,
     read_reflections,
     read_shelx_parameters,
 )
@@ -259,37 +260,68 @@ def _clip_to_atoms(
     Distances are evaluated with a uniform spatial hash of cell size *margin*,
     so only the 27 neighbouring buckets of each vertex have to be checked.
     That keeps this linear in the number of vertices instead of the
-    ``len(vertices) x len(atoms)`` a brute-force test would need.
+    ``len(vertices) x len(atoms)`` a brute-force test would need.  The whole
+    search is vectorised — the buckets are a sorted array of cell keys that all
+    vertices query at once with :func:`numpy.searchsorted`, one pass per
+    neighbour offset — because this runs on the interactive path: every change
+    of the contour level, of the hydrogen filter or of the visible disorder
+    parts re-clips both lobes.
 
     :returns: ``(vertices, edges)`` renumbered to the surviving vertices.
     """
     if len(vertices) == 0 or len(edges) == 0:
         return vertices, edges
+    if margin <= 0.0:
+        return (np.empty((0, 3), dtype=vertices.dtype),
+                np.empty((0, 2), dtype=edges.dtype))
 
     atoms = np.asarray(atoms, dtype=np.float32)
+    vertices = np.asarray(vertices)
     origin = atoms.min(axis=0) - margin
-    buckets: dict[tuple[int, int, int], list[int]] = {}
-    atom_cells = np.floor((atoms - origin) / margin).astype(int)
-    for index, cell in enumerate(map(tuple, atom_cells)):
-        buckets.setdefault(cell, []).append(index)
 
-    vertex_cells = np.floor((vertices - origin) / margin).astype(int)
+    # Bucket the atoms by cell and sort them, so a bucket is a contiguous
+    # slice that searchsorted can locate in O(log n).
+    atom_cells = np.floor((atoms - origin) / margin).astype(np.int64)
+    shape = atom_cells.max(axis=0) + 1
+    atom_keys = (atom_cells[:, 0] * shape[1] + atom_cells[:, 1]) * shape[2] \
+        + atom_cells[:, 2]
+    order = np.argsort(atom_keys, kind='stable')
+    atom_keys = atom_keys[order]
+    sorted_atoms = atoms[order]
+
+    vertex_cells = np.floor((vertices - origin) / margin).astype(np.int64)
     limit = margin * margin
     keep = np.zeros(len(vertices), dtype=bool)
-    offsets = [(dx, dy, dz)
-               for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)]
 
-    for index, (point, cell) in enumerate(zip(vertices, vertex_cells)):
-        near: list[int] = []
-        for dx, dy, dz in offsets:
-            found = buckets.get((cell[0] + dx, cell[1] + dy, cell[2] + dz))
-            if found:
-                near.extend(found)
-        if not near:
-            continue
-        delta = atoms[near] - point
-        if np.min(np.einsum('ij,ij->i', delta, delta)) <= limit:
-            keep[index] = True
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                query = vertex_cells + (dx, dy, dz)
+                # Only vertices not yet accepted, whose neighbour cell exists.
+                todo = np.flatnonzero(
+                    ~keep & np.all((query >= 0) & (query < shape), axis=1))
+                if todo.size == 0:
+                    continue
+                cells = query[todo]
+                keys = (cells[:, 0] * shape[1] + cells[:, 1]) * shape[2] \
+                    + cells[:, 2]
+                start = np.searchsorted(atom_keys, keys, side='left')
+                stop = np.searchsorted(atom_keys, keys, side='right')
+                counts = stop - start
+                nonempty = counts > 0
+                if not nonempty.any():
+                    continue
+                todo, start, counts = (todo[nonempty], start[nonempty],
+                                       counts[nonempty])
+                # Flatten the ragged (vertex -> its bucket's atoms) pairs.
+                total = int(counts.sum())
+                offsets = np.repeat(np.cumsum(counts) - counts, counts)
+                atom_index = np.repeat(start, counts) + \
+                    (np.arange(total) - offsets)
+                vertex_index = np.repeat(todo, counts)
+                delta = sorted_atoms[atom_index] - vertices[vertex_index]
+                close = np.einsum('ij,ij->i', delta, delta) <= limit
+                keep[vertex_index[close]] = True
 
     if keep.all():
         return vertices, edges
@@ -385,7 +417,7 @@ def small_structure_from_cif(path: str | Path) -> gemmi.SmallStructure:
     :param path: Path to the CIF file.
     :raises ValueError: If the file has no block with atom sites.
     """
-    doc = gemmi.cif.read(str(path))
+    doc = read_cif_document(path)
     for block in _data_blocks(doc):
         structure = gemmi.make_small_structure_from_block(block)
         if structure.sites:
@@ -844,7 +876,7 @@ def calculate_residual_density(
                                hkl, delta.astype(np.complex64))
     grid = asu.transform_f_phi_to_map(exact_size=size)
 
-    resolution = min(structure.cell.calculate_d(list(h)) for h in hkl)
+    resolution = float(structure.cell.calculate_d_array(hkl).min())
     cell = structure.cell
     return ResidualDensityMap(
         array=np.array(grid, copy=True),
@@ -939,39 +971,88 @@ def _merge_to_asu(
     map as a coefficient of ``|Fo| / scale`` — with a small scale factor that
     produces enormous spurious peaks.
 
+    The grouping is done without a Python loop over the (often > 10\\ :sup:`4`)
+    observations: :func:`_equivalence_classes` labels the symmetry-equivalence
+    classes with pure NumPy, and the weighted means are accumulated with
+    :func:`numpy.bincount`.  Only one
+    :meth:`gemmi.ReciprocalAsu.to_asu` call per *unique* reflection is left,
+    instead of one per observation.
+
     :returns: ``(hkl, |Fo|)`` for the unique reflections.
     """
     ops = spacegroup.operations()
     asu = gemmi.ReciprocalAsu(spacegroup)
 
-    sums: dict[tuple[int, int, int], list[float]] = {}
-    for (h, k, l), f_sq, sigma in zip(reflections.hkl,
-                                      reflections.f_sq_meas,
-                                      reflections.sigma):
-        index = [int(h), int(k), int(l)]
-        if ops.is_systematically_absent(index):
-            continue
-        asu_index, _ = asu.to_asu(index, ops)
-        weight = 1.0 / max(float(sigma), 1e-6) ** 2
-        key = (int(asu_index[0]), int(asu_index[1]), int(asu_index[2]))
-        entry = sums.get(key)
-        if entry is None:
-            entry = [0.0, 0.0]
-            sums[key] = entry
-        entry[0] += weight * float(f_sq)
-        entry[1] += weight
+    hkl = np.asarray(reflections.hkl, dtype=np.int32).reshape(-1, 3)
+    f_sq = np.asarray(reflections.f_sq_meas, dtype=float)
+    sigma = np.asarray(reflections.sigma, dtype=float)
 
-    hkl_list, f_obs = [], []
-    for index, (weighted, total) in sums.items():
-        if total <= 0:
-            continue
-        if d_min is not None and cell.calculate_d(list(index)) < d_min:
-            continue
-        hkl_list.append(index)
-        f_obs.append(sqrt(max(weighted / total, 0.0)))
+    present = ~np.asarray(ops.systematic_absences(hkl), dtype=bool)
+    hkl, f_sq, sigma = hkl[present], f_sq[present], sigma[present]
+    if len(hkl) == 0:
+        return np.empty((0, 3), dtype=np.int32), np.empty(0, dtype=float)
 
-    return (np.array(hkl_list, dtype=np.int32).reshape(-1, 3),
-            np.array(f_obs, dtype=float))
+    labels, representatives = _equivalence_classes(hkl, ops)
+    asu_hkl = np.array(
+        [asu.to_asu([int(h), int(k), int(l)], ops)[0]
+         for h, k, l in representatives],
+        dtype=np.int32,
+    ).reshape(-1, 3)
+
+    weight = 1.0 / np.maximum(sigma, 1e-6) ** 2
+    count = len(asu_hkl)
+    weighted = np.bincount(labels, weights=weight * f_sq, minlength=count)
+    total = np.bincount(labels, weights=weight, minlength=count)
+
+    usable = total > 0
+    if d_min is not None:
+        usable &= cell.calculate_d_array(asu_hkl) >= d_min
+
+    asu_hkl = asu_hkl[usable]
+    f_obs = np.sqrt(np.maximum(weighted[usable] / total[usable], 0.0))
+    return asu_hkl, f_obs
+
+
+def _equivalence_classes(
+    hkl: np.ndarray,
+    ops: gemmi.GroupOps,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Label the symmetry-equivalence classes of *hkl*.
+
+    Two reflections belong to the same class when a rotation of the space
+    group (optionally combined with inversion) maps one onto the other —
+    exactly the grouping :meth:`gemmi.ReciprocalAsu.to_asu` produces, which
+    always merges Friedel pairs.  Translations, including lattice centring, do
+    not act on Miller indices and are therefore ignored.
+
+    Each class is identified by its lexicographically largest member, encoded
+    as a single integer so that :func:`numpy.unique` can do the grouping.
+
+    :param hkl: ``(N, 3)`` integer Miller indices.
+    :param ops: The symmetry operations of the space group.
+    :returns: ``(labels, representatives)`` — an ``(N,)`` array of class
+        numbers and the ``(U, 3)`` representative of every class, in the order
+        the labels refer to.
+    """
+    indices = hkl.astype(np.int64)
+    rotations = np.array([np.array(op.rot, dtype=np.int64)
+                          for op in ops.sym_ops])
+    # Miller indices transform as row vectors: h' = h . R  (gemmi stores the
+    # rotation parts multiplied by Op.DEN).
+    equivalents = np.einsum('nj,mjk->mnk', indices, rotations) // gemmi.Op.DEN
+    equivalents = np.concatenate((equivalents, -equivalents))
+
+    # Lexicographic ordering as one number; the base is wide enough that the
+    # lower two indices can never outweigh a higher one.
+    base = 4 * (int(np.abs(equivalents).max()) + 1)
+    codes = ((equivalents[..., 0] * base + equivalents[..., 1]) * base
+             + equivalents[..., 2])
+    best = codes.argmax(axis=0)
+    columns = np.arange(len(indices))
+
+    _, first, labels = np.unique(codes[best, columns], return_index=True,
+                                 return_inverse=True)
+    return labels, equivalents[best[first], first]
 
 
 def _calculated_structure_factors(
@@ -999,11 +1080,107 @@ def _calculated_structure_factors(
     if params.wavelength:
         calculator.addends.add_cl_fprime(gemmi.hc / params.wavelength)
 
-    f_calc = np.array([
-        calculator.calculate_sf_from_small_structure(structure, list(h))
-        for h in hkl
-    ])
+    f_calc = _summed_structure_factors(structure, hkl, calculator)
     return _apply_extinction(f_calc, hkl, structure.cell, params)
+
+
+def _summed_structure_factors(
+    structure: gemmi.SmallStructure,
+    hkl: np.ndarray,
+    calculator: gemmi.StructureFactorCalculatorX,
+) -> np.ndarray:
+    """Sum *F*\\ :sub:`c` over the model for every reflection in *hkl*.
+
+    Direct summation is the single most expensive step of a residual-density
+    map, and gemmi's implementation deliberately leaves it unoptimised (it is
+    only meant as a reference for the FFT route, which needs a macromolecular
+    ``Model`` and does not apply to a :class:`gemmi.SmallStructure`).  So the
+    summation is handed to :func:`density_cpp.structure_factors`, which
+    tabulates the separable phase factor over the Miller-index range instead of
+    evaluating a sine and a cosine per atom, symmetry image and reflection.
+
+    Falls back to gemmi whenever the compiled extension is unavailable or the
+    model uses a scatterer gemmi has no IT92 parametrisation for, so the result
+    is always defined.
+
+    :returns: ``(N,)`` complex array of calculated structure factors.
+    """
+    prepared = _structure_factor_arrays(structure, hkl, calculator)
+    if prepared is None:
+        return np.array([
+            calculator.calculate_sf_from_small_structure(structure, list(h))
+            for h in hkl
+        ])
+    return density_cpp.structure_factors(**prepared)
+
+
+def _structure_factor_arrays(
+    structure: gemmi.SmallStructure,
+    hkl: np.ndarray,
+    calculator: gemmi.StructureFactorCalculatorX,
+) -> dict | None:
+    """Flatten the model into the plain arrays :mod:`density_cpp` expects.
+
+    :returns: The keyword arguments for
+        :func:`density_cpp.structure_factors`, or ``None`` when the fast path
+        cannot be used and gemmi has to do the summation.
+    """
+    if not HAS_DENSITY_CPP or not hasattr(density_cpp, 'structure_factors'):
+        return None
+    sites = structure.sites
+    if not sites or len(hkl) == 0:
+        return None
+
+    cell = structure.cell
+    hkl = np.ascontiguousarray(hkl, dtype=np.int32)
+    stol2 = 0.25 * np.asarray(cell.calculate_1_d2_array(hkl), dtype=float)
+
+    # gemmi keeps the identity out of UnitCell.images.
+    rotations = [np.eye(3)]
+    translations = [np.zeros(3)]
+    for image in cell.images:
+        rotations.append(np.array(image.mat.tolist(), dtype=float))
+        translations.append(np.array(image.vec.tolist(), dtype=float))
+
+    # One scattering-factor curve per distinct element, as gemmi caches them.
+    form_rows: list[np.ndarray] = []
+    form_of_element: dict[str, int] = {}
+    form_index = np.empty(len(sites), dtype=np.int32)
+    for position, site in enumerate(sites):
+        name = site.element.name
+        row = form_of_element.get(name)
+        if row is None:
+            coefficients = site.element.it92
+            if coefficients is None:  # no IT92 parametrisation - let gemmi fail
+                return None
+            a = np.asarray(coefficients.a, dtype=float)[:, None]
+            b = np.asarray(coefficients.b, dtype=float)[:, None]
+            row = len(form_rows)
+            form_rows.append(
+                (a * np.exp(-b * stol2[None, :])).sum(axis=0)
+                + coefficients.c + calculator.addends.get(site.element)
+            )
+            form_of_element[name] = row
+        form_index[position] = row
+
+    reciprocal = cell.reciprocal()
+    return {
+        'hkl': hkl,
+        'stol2': stol2,
+        'rotations': np.array(rotations, dtype=float),
+        'translations': np.array(translations, dtype=float),
+        'fract': np.array([[s.fract.x, s.fract.y, s.fract.z] for s in sites],
+                          dtype=float),
+        'occupancies': np.array([s.occ for s in sites], dtype=float),
+        'u_iso': np.array([s.u_iso for s in sites], dtype=float),
+        'aniso': np.array(
+            [[s.aniso.u11, s.aniso.u22, s.aniso.u33,
+              s.aniso.u12, s.aniso.u13, s.aniso.u23] for s in sites],
+            dtype=float),
+        'form_index': form_index,
+        'form_factors': np.array(form_rows, dtype=float),
+        'reciprocal': (reciprocal.a, reciprocal.b, reciprocal.c),
+    }
 
 
 def _apply_extinction(
