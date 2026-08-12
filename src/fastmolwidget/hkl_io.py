@@ -71,12 +71,16 @@ class ReflectionData:
     :param f_calc: Optional ``(N,)`` complex array of calculated structure
         factors, present only when the source file already contained them
         (an fcf-style CIF).  ``None`` means *compute them yourself*.
+    :param batch: Optional ``(N,)`` integer array with the sixth ``.hkl``
+        column.  For ``HKLF 5`` data this is the twin-component number, with a
+        negative sign on every record but the last of an overlap group.
     """
 
     hkl: np.ndarray
     f_sq_meas: np.ndarray
     sigma: np.ndarray
     f_calc: np.ndarray | None = None
+    batch: np.ndarray | None = None
 
     def __len__(self) -> int:
         return len(self.hkl)
@@ -85,6 +89,18 @@ class ReflectionData:
     def has_f_calc(self) -> bool:
         """``True`` when calculated structure factors came with the data."""
         return self.f_calc is not None
+
+    @property
+    def has_overlap_groups(self) -> bool:
+        """``True`` when the batch column marks ``HKLF 5`` overlap groups."""
+        return self.batch is not None and bool(np.any(self.batch < 0))
+
+
+#: The ``TWIN`` matrix SHELXL assumes when the card carries no numbers:
+#: inversion, i.e. racemic twinning.
+_DEFAULT_TWIN_MATRIX: tuple[float, ...] = (-1.0, 0.0, 0.0,
+                                           0.0, -1.0, 0.0,
+                                           0.0, 0.0, -1.0)
 
 
 @dataclass
@@ -99,6 +115,15 @@ class ShelxParameters:
     :param wavelength: Radiation wavelength in Å, from the ``CELL`` card.
     :param free_variables: The full ``FVAR`` list (``free_variables[0]`` is
         the OSF), used to decode SHELX occupancy codes.
+    :param twin_matrix: The ``TWIN`` 3×3 matrix in row-major order, or
+        ``None`` when the structure is not twinned.  A bare ``TWIN`` card
+        means inversion (racemic) twinning.
+    :param twin_components: ``|n|`` from the ``TWIN`` card (default 2).
+    :param twin_components_signed: ``n`` as written, kept because a negative
+        value selects a different component ordering that is not supported.
+    :param basf: The ``BASF`` batch scale factors — the volume fractions of
+        twin components 2…n.
+    :param hklf: The ``HKLF`` format number (4 or 5).
     """
 
     osf: float = 1.0
@@ -107,6 +132,33 @@ class ShelxParameters:
     exti: float = 0.0
     wavelength: float = 0.71073
     free_variables: list[float] = field(default_factory=list)
+    twin_matrix: tuple[float, ...] | None = None
+    twin_components: int = 2
+    twin_components_signed: int = 2
+    basf: list[float] = field(default_factory=list)
+    hklf: int = 4
+
+    @property
+    def is_twinned(self) -> bool:
+        """``True`` when the refinement used a twin law or ``HKLF 5`` data."""
+        return self.twin_matrix is not None or self.hklf == 5
+
+    def twin_fractions(self) -> list[float]:
+        """Return the volume fraction of every twin component.
+
+        ``BASF`` gives the fractions of components 2…n; the first component
+        takes the remainder.  Values are clamped to ``[0, 1]`` because a
+        refinement that has not converged can leave nonsense in ``BASF``.
+
+        :returns: ``n`` fractions summing to 1.
+        """
+        count = max(self.twin_components, len(self.basf) + 1)
+        others = [min(max(value, 0.0), 1.0) for value in self.basf[:count - 1]]
+        others += [0.0] * (count - 1 - len(others))
+        first = 1.0 - sum(others)
+        if first < 0.0:  # inconsistent BASF - fall back to equal fractions
+            return [1.0 / count] * count
+        return [first, *others]
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +194,7 @@ def parse_shelx_hkl(text: str, *, source: str | Path = '<text>') -> ReflectionDa
     hkl: list[tuple[int, int, int]] = []
     f_sq: list[float] = []
     sig: list[float] = []
+    batch: list[int] = []
 
     for raw in text.splitlines():
         line = raw.rstrip('\r')
@@ -150,12 +203,13 @@ def parse_shelx_hkl(text: str, *, source: str | Path = '<text>') -> ReflectionDa
         parsed = _parse_hkl_line(line)
         if parsed is None:
             continue
-        h, k, l, fsq, s = parsed
+        h, k, l, fsq, s, n = parsed
         if h == 0 and k == 0 and l == 0:
             break
         hkl.append((h, k, l))
         f_sq.append(fsq)
         sig.append(s)
+        batch.append(n)
 
     if not hkl:
         raise ValueError(f'No reflections found in {source}')
@@ -164,29 +218,39 @@ def parse_shelx_hkl(text: str, *, source: str | Path = '<text>') -> ReflectionDa
         hkl=np.array(hkl, dtype=np.int32),
         f_sq_meas=np.array(f_sq, dtype=float),
         sigma=np.array(sig, dtype=float),
+        batch=np.array(batch, dtype=np.int32),
     )
 
 
-def _parse_hkl_line(line: str) -> tuple[int, int, int, float, float] | None:
+def _parse_hkl_line(line: str) -> tuple[int, int, int, float, float, int] | None:
     """Parse one SHELX ``.hkl`` record, fixed-format first, free-format after.
 
-    :returns: ``(h, k, l, F², σ)`` or ``None`` when the line is not a
+    The sixth column (batch / twin-component number) is optional and defaults
+    to ``1``; for ``HKLF 5`` data it carries the domain number and the overlap
+    grouping.
+
+    :returns: ``(h, k, l, F², σ, batch)`` or ``None`` when the line is not a
         reflection record.
     """
     if len(line) >= 28:
         try:
+            batch = 1
+            tail = line[28:32].strip()
+            if tail:
+                batch = int(tail)
             return (
                 int(line[0:4]), int(line[4:8]), int(line[8:12]),
-                float(line[12:20]), float(line[20:28]),
+                float(line[12:20]), float(line[20:28]), batch,
             )
         except ValueError:
             pass
     fields = line.split()
     if len(fields) >= 5:
         try:
+            batch = int(fields[5]) if len(fields) > 5 else 1
             return (
                 int(fields[0]), int(fields[1]), int(fields[2]),
-                float(fields[3]), float(fields[4]),
+                float(fields[3]), float(fields[4]), batch,
             )
         except ValueError:
             return None
@@ -502,7 +566,24 @@ def _parse_shelx_text(text: str) -> ShelxParameters:
             values = _floats(line[4:])
             if values:
                 params.exti = values[0]
+        elif upper.startswith('TWIN'):
+            values = _floats(line[4:])
+            if len(values) >= 9:
+                params.twin_matrix = tuple(values[:9])
+            else:  # a bare TWIN card means inversion (racemic) twinning
+                params.twin_matrix = _DEFAULT_TWIN_MATRIX
+            if len(values) >= 10:
+                params.twin_components_signed = int(values[9])
+                params.twin_components = abs(int(values[9]))
+            elif len(values) == 1:  # "TWIN n" - matrix omitted, count given
+                params.twin_components_signed = int(values[0])
+                params.twin_components = abs(int(values[0]))
+        elif upper.startswith('BASF'):
+            params.basf = _floats(line[4:])
         elif upper.startswith('HKLF'):
+            values = _floats(line[4:])
+            if values:
+                params.hklf = int(values[0])
             break  # atom list and instructions are finished
 
     if fvars:

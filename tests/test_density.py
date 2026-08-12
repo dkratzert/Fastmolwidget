@@ -26,6 +26,7 @@ import pytest
 
 from fastmolwidget.density import (
     DEFAULT_GRID_SPACING,
+    DEFAULT_SIGMA,
     HAS_DENSITY_CPP,
     ResidualDensityMap,
     calculate_residual_density,
@@ -393,6 +394,209 @@ def test_map_dataclass_is_constructible():
 
     assert density.rms == 0.0
     assert density.max == 0.0
+
+
+def test_sigma_level_scales_with_the_map(density_map):
+    assert density_map.sigma_level(3.0) == pytest.approx(
+        round(3.0 * density_map.rms, 2))
+    assert density_map.sigma_level(1.0) < density_map.sigma_level(3.0)
+
+
+def test_sigma_level_is_never_zero():
+    """A featureless map must still give the spin box a usable value."""
+    flat = ResidualDensityMap(array=np.zeros((4, 4, 4), dtype=np.float32),
+                              cell=(10, 10, 10, 90, 90, 90),
+                              d_min=1.0, scale=1.0)
+
+    assert flat.sigma_level() == 0.01
+
+
+def test_default_sigma_is_the_crystallographic_three():
+    assert DEFAULT_SIGMA == 3.0
+
+
+# ---------------------------------------------------------------------------
+# SHELX lattice centring
+# ---------------------------------------------------------------------------
+
+def test_latt_centring_is_applied(tmp_path):
+    """``LATT`` adds centring translations that ``SYMM`` alone does not.
+
+    Dropping them silently yields a primitive subgroup — C2/c would become
+    P2/c — which halves the symmetry mates and makes every Fc wrong.
+    """
+    from shelxfile import Shelxfile
+
+    res = tmp_path / 'c2c.res'
+    res.write_text(
+        'TITL c2c\n'
+        'CELL 0.71073 28.8539 11.3652 9.0813 90 93.83 90\n'
+        'ZERR 8 0 0 0 0 0 0\n'
+        'LATT 7\n'                     # C-centred, centrosymmetric
+        'SYMM -X, Y, 1/2-Z\n'
+        'SFAC C\n'
+        'UNIT 8\n'
+        'FVAR 0.3\n'
+        'C1 1 0.1 0.2 0.3 11.0 0.05\n'
+        'HKLF 4\n'
+    )
+    shx = Shelxfile()
+    shx.read_file(str(res))
+
+    structure = small_structure_from_shelx(shx)
+
+    assert structure.spacegroup is not None
+    assert structure.spacegroup.xhm() == 'C 1 2/c 1'
+    assert len(structure.spacegroup.operations()) == 8
+
+
+def test_primitive_latt_is_unchanged():
+    """LATT -1 has no centring and no inversion; P31c must stay P31c."""
+    from shelxfile import Shelxfile
+
+    shx = Shelxfile()
+    shx.read_file(str(RES))
+
+    structure = small_structure_from_shelx(shx)
+
+    assert structure.spacegroup.xhm() == 'P 3 1 c'
+
+
+# ---------------------------------------------------------------------------
+# Twinning
+# ---------------------------------------------------------------------------
+
+def _twinned_copy(tmp_path, *, basf: float, hklf: int = 4,
+                  matrix: str = '0 1 0 1 0 0 0 0 -1') -> Path:
+    """Return a copy of the p31c model declared as a twin."""
+    import shutil
+
+    text = RES.read_text(errors='replace')
+    text = text.replace('HKLF 4', f'TWIN {matrix} 2\nBASF {basf}\nHKLF {hklf}')
+    model = tmp_path / 'twin.res'
+    model.write_text(text)
+    shutil.copy(HKL, tmp_path / 'twin.hkl')
+    return model
+
+
+def test_twin_law_is_read(tmp_path):
+    from fastmolwidget.hkl_io import read_shelx_parameters
+
+    params = read_shelx_parameters(_twinned_copy(tmp_path, basf=0.25))
+
+    assert params.is_twinned
+    assert params.twin_components == 2
+    assert params.basf == pytest.approx([0.25])
+    assert params.twin_fractions() == pytest.approx([0.75, 0.25])
+
+
+def test_bare_twin_card_means_racemic(tmp_path):
+    """``TWIN`` without a matrix is SHELXL's inversion twin."""
+    from fastmolwidget.hkl_io import _DEFAULT_TWIN_MATRIX, read_shelx_parameters
+
+    text = RES.read_text(errors='replace').replace(
+        'HKLF 4', 'TWIN\nBASF 0.4\nHKLF 4')
+    model = tmp_path / 'racemic.res'
+    model.write_text(text)
+
+    params = read_shelx_parameters(model)
+
+    assert params.twin_matrix == _DEFAULT_TWIN_MATRIX
+
+
+def test_zero_basf_detwinning_changes_nothing(tmp_path):
+    """A twin whose second domain has zero volume is the untwinned case."""
+    model = _twinned_copy(tmp_path, basf=0.0)
+
+    plain = calculate_residual_density(RES, HKL)
+    twinned = calculate_residual_density(model, tmp_path / 'twin.hkl')
+
+    assert twinned.rms == pytest.approx(plain.rms, abs=1e-3)
+    assert twinned.max == pytest.approx(plain.max, abs=5e-3)
+
+
+def test_detwinning_changes_the_map(tmp_path):
+    """A real twin fraction must actually redistribute the intensities."""
+    plain = calculate_residual_density(RES, HKL)
+    twinned = calculate_residual_density(_twinned_copy(tmp_path, basf=0.35),
+                                         tmp_path / 'twin.hkl')
+
+    assert twinned.rms != pytest.approx(plain.rms, rel=0.02)
+
+
+def test_twin_domain_indices_follow_the_law():
+    """SHELXL applies the twin matrix as ``h' = h M`` (row vector)."""
+    from fastmolwidget.density import _twin_domain_indices
+
+    law = (0, 1, 0, 1, 0, 0, 0, 0, -1)      # swaps h and k, negates l
+    hkl = np.array([[1, 2, 3]], dtype=np.int32)
+
+    domains = _twin_domain_indices(hkl, law, 2)
+
+    assert len(domains) == 2
+    assert list(domains[0][0]) == [1, 2, 3]
+    assert list(domains[1][0]) == [2, 1, -3]
+
+
+def test_negative_component_count_warns(tmp_path):
+    """The alternative ordering it selects is not implemented."""
+    text = RES.read_text(errors='replace').replace(
+        'HKLF 4', 'TWIN 0 1 0 1 0 0 0 0 -1 -4\nBASF 0.2 0.2 0.2\nHKLF 4')
+    model = tmp_path / 'negtwin.res'
+    model.write_text(text)
+    import shutil
+    shutil.copy(HKL, tmp_path / 'negtwin.hkl')
+
+    with pytest.warns(RuntimeWarning, match='negative component count'):
+        calculate_residual_density(model, tmp_path / 'negtwin.hkl')
+
+
+def test_hklf5_groups_are_parsed(tmp_path):
+    """Consecutive records ending in a positive batch form one observation."""
+    from fastmolwidget.density import _hklf5_groups
+    from fastmolwidget.hkl_io import parse_shelx_hkl
+
+    text = (
+        '   1   2   3   10.00    1.00  -2\n'
+        '   1   2   3   10.00    1.00   1\n'
+        '   4   5   6   20.00    2.00   1\n'
+        '   0   0   0    0.00    0.00   0\n'
+    )
+    data = parse_shelx_hkl(text)
+    assert data.has_overlap_groups
+
+    groups = list(_hklf5_groups(data))
+
+    assert len(groups) == 2
+    primary, members, f_sq, _sigma = groups[0]
+    assert primary == (1, 2, 3)          # the domain-1 record
+    assert [c for c, _ in members] == [1, 0]
+    assert f_sq == pytest.approx(10.0)
+    assert groups[1][0] == (4, 5, 6)
+
+
+def test_hklf5_reproduces_the_untwinned_map(tmp_path):
+    """An HKLF 5 file whose second domain has zero weight is a round trip."""
+    from fastmolwidget.hkl_io import read_shelx_hkl
+
+    text = RES.read_text(errors='replace').replace(
+        'HKLF 4', 'BASF 0.0\nHKLF 5')
+    model = tmp_path / 'twin5.res'
+    model.write_text(text)
+
+    data = read_shelx_hkl(HKL)
+    lines = []
+    for (h, k, l), f_sq, sigma in zip(data.hkl, data.f_sq_meas, data.sigma):
+        lines.append(f'{h:4d}{k:4d}{l:4d}{f_sq:8.2f}{sigma:8.2f}{-2:4d}')
+        lines.append(f'{h:4d}{k:4d}{l:4d}{f_sq:8.2f}{sigma:8.2f}{1:4d}')
+    lines.append(f'{0:4d}{0:4d}{0:4d}{0.0:8.2f}{0.0:8.2f}{0:4d}')
+    (tmp_path / 'twin5.hkl').write_text('\n'.join(lines))
+
+    plain = calculate_residual_density(RES, HKL)
+    from_hklf5 = calculate_residual_density(model, tmp_path / 'twin5.hkl')
+
+    assert from_hklf5.array.shape == plain.array.shape
+    assert np.abs(from_hklf5.array - plain.array).max() < 0.01
 
 
 # ---------------------------------------------------------------------------

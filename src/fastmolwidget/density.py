@@ -45,6 +45,7 @@ import gemmi
 import numpy as np
 
 from fastmolwidget.hkl_io import (
+    _DEFAULT_TWIN_MATRIX,
     _REFLECTION_SUFFIXES,
     ReflectionData,
     ShelxParameters,
@@ -77,9 +78,17 @@ DEFAULT_GRID_SPACING: float = 0.2
 #: Default padding around the displayed atoms, in Å.
 DEFAULT_MARGIN: float = 1.5
 
+#: Default contour level, as a multiple of the map's RMS.  A fixed absolute
+#: level cannot suit every dataset — the RMS of a residual map varies by an
+#: order of magnitude between structures — whereas 3σ is the usual
+#: crystallographic threshold for "significant" residual density and gives a
+#: comparable picture for good and poor refinements alike.
+DEFAULT_SIGMA: float = 3.0
+
 __all__ = [
     'DEFAULT_GRID_SPACING',
     'DEFAULT_MARGIN',
+    'DEFAULT_SIGMA',
     'HAS_DENSITY_CPP',
     'ResidualDensityMap',
     'calculate_residual_density',
@@ -126,6 +135,19 @@ class ResidualDensityMap:
     def min(self) -> float:
         """Lowest (most negative) density in the map, in e/Å³."""
         return float(self.array.min())
+
+    def sigma_level(self, sigma: float = DEFAULT_SIGMA) -> float:
+        """Return the contour level *sigma* times the map RMS, in e/Å³.
+
+        Residual maps differ hugely in scale between structures, so a level
+        expressed in σ transfers between datasets where an absolute one does
+        not.  The value is rounded to two decimals to match the precision the
+        viewer's spin box offers, and never returns zero.
+
+        :param sigma: Multiple of the RMS to contour at.
+        """
+        level = round(sigma * self.rms, 2)
+        return max(level, 0.01)
 
     @property
     def orth_matrix(self) -> np.ndarray:
@@ -381,6 +403,60 @@ def small_structure_from_cif(path: str | Path) -> gemmi.SmallStructure:
     raise ValueError(f'No atom sites found in {path}')
 
 
+#: SHELX ``LATT`` centring translations, in fractional coordinates.  The sign
+#: of the ``LATT`` number selects centrosymmetry, its magnitude the lattice
+#: type.  ``LATT 1`` (primitive) has no extra translation.
+_LATT_CENTRING: dict[int, tuple[tuple[float, float, float], ...]] = {
+    1: (),                                                    # P
+    2: ((0.5, 0.5, 0.5),),                                    # I
+    3: ((2 / 3, 1 / 3, 1 / 3), (1 / 3, 2 / 3, 2 / 3)),        # R (obverse)
+    4: ((0.0, 0.5, 0.5), (0.5, 0.0, 0.5), (0.5, 0.5, 0.0)),   # F
+    5: ((0.0, 0.5, 0.5),),                                    # A
+    6: ((0.5, 0.0, 0.5),),                                    # B
+    7: ((0.5, 0.5, 0.0),),                                    # C
+}
+
+
+def _shelx_spacegroup(shx) -> gemmi.SpaceGroup | None:
+    """Derive the space group of a SHELX model.
+
+    The ``SYMM`` cards alone are **not** the full group: ``LATT`` adds the
+    lattice centring translations, and a positive ``LATT`` additionally implies
+    an inversion centre.  Leaving the centring out silently yields a primitive
+    subgroup (``C2/c`` becomes ``P2/c``), which halves the number of symmetry
+    mates and makes every calculated structure factor wrong.
+
+    :param shx: A parsed :class:`shelxfile.Shelxfile`.
+    :returns: The space group, or ``None`` if gemmi cannot identify it.
+    """
+    base = [gemmi.Op(card.to_shelxl().replace(' ', '')) for card in shx.symmcards]
+
+    latt = shx.latt.N if shx.latt is not None else 1
+    centring = _LATT_CENTRING.get(abs(int(latt)), ())
+
+    denominator = gemmi.Op.DEN
+    shifts = [(0, 0, 0)] + [
+        tuple(round(component * denominator) for component in vector)
+        for vector in centring
+    ]
+
+    ops: list[gemmi.Op] = []
+    for op in base:
+        for shift in shifts:
+            translated = gemmi.Op(op.triplet())
+            translated.tran = [
+                (value + offset) % denominator
+                for value, offset in zip(op.tran, shift)
+            ]
+            ops.append(translated)
+
+    group = gemmi.GroupOps(ops)
+    if latt > 0:  # positive LATT => centrosymmetric
+        group.add_inversion()
+    group.add_missing_elements()
+    return gemmi.find_spacegroup_by_ops(group)
+
+
 def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
     """Build a :class:`gemmi.SmallStructure` from a parsed SHELX model.
 
@@ -404,11 +480,7 @@ def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
 
     cell = gemmi.UnitCell(shx.cell.a, shx.cell.b, shx.cell.c,
                           shx.cell.alpha, shx.cell.beta, shx.cell.gamma)
-    ops = [gemmi.Op(s.to_shelxl().replace(' ', '')) for s in shx.symmcards]
-    group = gemmi.GroupOps(ops)
-    if shx.latt is not None and shx.latt.centric:
-        group.add_inversion()
-    spacegroup = gemmi.find_spacegroup_by_ops(group)
+    spacegroup = _shelx_spacegroup(shx)
 
     structure = gemmi.SmallStructure()
     structure.cell = cell
@@ -459,6 +531,181 @@ def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
 # The calculation
 # ---------------------------------------------------------------------------
 
+def _twin_domain_indices(
+    hkl: np.ndarray,
+    matrix: tuple[float, ...],
+    components: int,
+) -> list[np.ndarray]:
+    """Return the Miller indices of every twin domain for each reflection.
+
+    Domain *k* is reached by applying the ``TWIN`` matrix *k* times, following
+    SHELXL's row-vector convention ``h' = h · M``.  Domain 1 is the input.
+
+    :param hkl: ``(N, 3)`` primary indices.
+    :param matrix: The ``TWIN`` matrix in row-major order.
+    :param components: Number of twin components.
+    :returns: A list of ``components`` ``(N, 3)`` float arrays.
+    """
+    law = np.array(matrix, dtype=float).reshape(3, 3)
+    indices = [np.asarray(hkl, dtype=float)]
+    for _ in range(components - 1):
+        indices.append(indices[-1] @ law)
+    return indices
+
+
+class _StructureFactorCache:
+    """Memoised ``|Fc|²`` lookups for a structure.
+
+    Twin domains map many reflections onto indices that are already needed
+    elsewhere, and direct summation is the expensive part of the calculation,
+    so results are cached by Miller index.
+    """
+
+    def __init__(self, structure: gemmi.SmallStructure,
+                 calculator: gemmi.StructureFactorCalculatorX) -> None:
+        self._structure = structure
+        self._calculator = calculator
+        self._cache: dict[tuple[int, int, int], float] = {}
+
+    def intensity(self, index: tuple[int, int, int]) -> float:
+        """Return ``|Fc|²`` for one Miller index."""
+        value = self._cache.get(index)
+        if value is None:
+            amplitude = self._calculator.calculate_sf_from_small_structure(
+                self._structure, list(index))
+            value = float(abs(amplitude) ** 2)
+            self._cache[index] = value
+        return value
+
+
+def _detwin_observations(
+    reflections: ReflectionData,
+    structure: gemmi.SmallStructure,
+    params: ShelxParameters,
+) -> ReflectionData:
+    """Split twinned intensities into the contribution of the first domain.
+
+    Each measured intensity of a twinned crystal is the sum over domains,
+    ``Io = Σ_k b_k |Fc(h_k)|²``.  The model tells us how that sum divides, so
+    the part belonging to the domain we are mapping is recovered as
+
+    .. math::
+        F_o^2(h_1) = I_{obs}\\,\\frac{|F_c(h_1)|^2}{\\sum_k b_k |F_c(h_k)|^2}
+
+    which reduces to ``|Fc(h₁)|²`` for a perfect model — i.e. the detwinned
+    data is on the same scale as the single-domain calculated values, exactly
+    what the difference map needs.
+
+    Two data layouts are handled:
+
+    * **HKLF 4 + TWIN** — one record per observation; the other domains'
+      indices are generated from the twin law.
+    * **HKLF 5** — the domains are listed explicitly, one record each, with a
+      negative component number on every record of an overlap group except the
+      last.
+
+    :param reflections: The measured data.
+    :param structure: The refined model, used to apportion the intensities.
+    :param params: Refinement parameters carrying ``TWIN`` / ``BASF``.
+    :returns: New :class:`ReflectionData` holding one detwinned observation per
+        group, indexed by the primary domain.
+
+    .. note::
+       A pure **inversion (racemic) twin** is a no-op here.  Splitting the
+       intensity relies on the domains having different ``|Fc|``, but for
+       ``h`` and ``-h`` that difference comes entirely from the imaginary
+       anomalous term *f″*, which gemmi's real-valued addends cannot express.
+       The map is therefore left slightly too large for racemic twins — an
+       error of the size of the anomalous signal, which is small for light
+       atoms.
+    """
+    calculator = gemmi.StructureFactorCalculatorX(structure.cell)
+    if params.wavelength:
+        calculator.addends.add_cl_fprime(gemmi.hc / params.wavelength)
+    cache = _StructureFactorCache(structure, calculator)
+    fractions = params.twin_fractions()
+
+    if reflections.has_overlap_groups:
+        groups = _hklf5_groups(reflections)
+    else:
+        groups = _hklf4_groups(reflections, params)
+
+    hkl_out: list[tuple[int, int, int]] = []
+    f_sq_out: list[float] = []
+    sigma_out: list[float] = []
+
+    for primary, members, f_sq, sigma in groups:
+        total = 0.0
+        for component, index in members:
+            weight = fractions[component] if component < len(fractions) else 0.0
+            total += weight * cache.intensity(index)
+        if total <= 0.0:
+            continue
+        share = cache.intensity(primary) / total
+        hkl_out.append(primary)
+        f_sq_out.append(f_sq * share)
+        sigma_out.append(sigma * share)
+
+    if not hkl_out:
+        raise ValueError('Detwinning left no usable reflections')
+
+    return ReflectionData(
+        hkl=np.array(hkl_out, dtype=np.int32),
+        f_sq_meas=np.array(f_sq_out, dtype=float),
+        sigma=np.array(sigma_out, dtype=float),
+    )
+
+
+def _hklf4_groups(reflections: ReflectionData, params: ShelxParameters):
+    """Yield ``(primary, members, F², σ)`` for ``HKLF 4`` data with a twin law.
+
+    The domains are generated from the ``TWIN`` matrix, so every record is one
+    complete observation.
+    """
+    matrix = params.twin_matrix or _DEFAULT_TWIN_MATRIX
+    domains = _twin_domain_indices(reflections.hkl, matrix,
+                                   params.twin_components)
+    rounded = [np.rint(block).astype(int) for block in domains]
+
+    for position in range(len(reflections)):
+        members = []
+        for component, block in enumerate(rounded):
+            index = (int(block[position, 0]), int(block[position, 1]),
+                     int(block[position, 2]))
+            members.append((component, index))
+        yield (members[0][1], members,
+               float(reflections.f_sq_meas[position]),
+               float(reflections.sigma[position]))
+
+
+def _hklf5_groups(reflections: ReflectionData):
+    """Yield ``(primary, members, F², σ)`` for ``HKLF 5`` overlap groups.
+
+    Records belonging to one measured intensity are consecutive; all but the
+    last carry a negative component number.  They share ``F²`` and ``σ``, so
+    the values of the closing record are used.  The map is built for domain 1,
+    so that record is chosen as the primary one when the group contains it —
+    groups without a domain-1 contribution fall back to their first record.
+    """
+    batch = reflections.batch
+    members: list[tuple[int, tuple[int, int, int]]] = []
+
+    for position in range(len(reflections)):
+        component = max(abs(int(batch[position])) - 1, 0)  # BASF is 0-based
+        index = (int(reflections.hkl[position, 0]),
+                 int(reflections.hkl[position, 1]),
+                 int(reflections.hkl[position, 2]))
+        members.append((component, index))
+
+        if batch[position] > 0:  # last record of the group
+            primary = next((idx for comp, idx in members if comp == 0),
+                           members[0][1])
+            yield (primary, members,
+                   float(reflections.f_sq_meas[position]),
+                   float(reflections.sigma[position]))
+            members = []
+
+
 def calculate_residual_density(
     model_path: str | Path,
     hkl_path: str | Path | None = None,
@@ -496,6 +743,22 @@ def calculate_residual_density(
             )
 
     reflections = read_reflections(hkl_path)
+
+    # Twinned data has to be split into single-domain intensities before the
+    # difference map is built, otherwise the other domains' scattering shows
+    # up as residual density all over the map.
+    if params.is_twinned and not reflections.has_f_calc:
+        if params.twin_components_signed < 0:
+            warnings.warn(
+                'TWIN with a negative component count is not supported; the '
+                'data is used without detwinning and the residual density '
+                'will come out too large.',
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        else:
+            reflections = _detwin_observations(reflections, structure, params)
+
     hkl, f_obs = _merge_to_asu(reflections, structure.spacegroup, d_min,
                                structure.cell)
     if len(hkl) == 0:

@@ -217,7 +217,7 @@ Both viewers expose the same two-row control bar:
 | Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
 | Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
 | Residual Density      | off     | *(3D only)* Checkable — pressed (sunken, green) while the Fo−Fc isosurface is shown; click again to hide it. Uses reflections embedded in the model file directly, and opens a file dialog when a separate reflection file is needed |
-| Level                 | 0.30    | *(3D only)* Contour level of the residual-density isosurface in e/Å³; enabled only while density is shown |
+| Level                 | 3σ      | *(3D only)* Contour level of the residual-density isosurface in e/Å³; defaults to 3× the map RMS and is enabled only while density is shown |
 | Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
@@ -319,7 +319,7 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 
 #### Residual-density Methods
 
-- **`show_residual_density(hkl_path=None, level=0.30, *, model_path=None)`** — compute a residual (Fo−Fc) map and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `hkl_path=None` finds the reflections automatically — the model file itself, then siblings of the same basename; `model_path` defaults to the file the widget last loaded. Note the *control-bar button* is deliberately stricter and only auto-uses reflections embedded in the model, asking for anything else. On `MoleculeViewer3DWidget` this also presses the Residual Density button in, so the controls never disagree with the view. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing, and `FileNotFoundError` when no reflection data can be found.
+- **`show_residual_density(hkl_path=None, level=None, *, model_path=None)`** — compute a residual (Fo−Fc) map and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `level=None` contours at **3σ of the map**, which adapts to each structure; `hkl_path=None` finds the reflections automatically — the model file itself, then siblings of the same basename; `model_path` defaults to the file the widget last loaded. Note the *control-bar button* is deliberately stricter and only auto-uses reflections embedded in the model, asking for anything else. On `MoleculeViewer3DWidget` this also presses the Residual Density button in and updates the Level spin box, so the controls never disagree with the view. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing, and `FileNotFoundError` when no reflection data can be found.
 - **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded.
 - **`clear_residual_density()`** — remove the isosurface.
 - **`residual_density_map`** *(property)* — the computed `ResidualDensityMap` (with `.max`, `.min`, `.rms`, `.d_min` and the raw `.array` grid), or `None`.
@@ -555,10 +555,13 @@ the same basename with a `.hkl`, `.fcf`, `.fco` or `.cif` extension
 (`fastmolwidget.hkl_io.find_reflection_file`).
 
 Positive density is drawn as a **green** wireframe at `+level`, negative
-density as a **red** wireframe at `-level`; the default level is
-**0.3 e/Å³**. Only density **within 1.5 Å of a visible atom** is shown, so
-hiding hydrogens or filtering disorder parts re-contours the surface
-accordingly, and no density is drawn in empty regions of the unit cell.
+density as a **red** wireframe at `-level`. The level defaults to **3σ of the
+map** (three times its RMS), computed per structure — a single absolute level
+cannot suit every dataset, because the RMS of a residual map varies by an
+order of magnitude between refinements. Only density **within 1.5 Å of a
+visible atom** is shown, so hiding hydrogens or filtering disorder parts
+re-contours the surface accordingly, and no density is drawn in empty regions
+of the unit cell.
 
 ### Grid size
 
@@ -583,18 +586,24 @@ grid can represent are dropped rather than aliased. Pass `grid_spacing=` to
    downgraded to isotropic with a `RuntimeWarning` — a negative eigenvalue
    makes the Debye-Waller factor *grow* with resolution and would otherwise
    bury the map under a huge dipole at that atom.
-3. The refined overall scale factor (SHELXL's first `FVAR`) puts the two on a
+3. **Twinned data is detwinned** against the model: each observed intensity is
+   apportioned between the domains as `Fo²(h₁) = Io · |Fc(h₁)|² / Σ b_k |Fc(h_k)|²`.
+   `HKLF 4` files generate the other domains from the `TWIN` matrix, `HKLF 5`
+   files list them explicitly. Without this the other domains' scattering
+   appears as residual density across the whole map.
+4. The refined overall scale factor (SHELXL's first `FVAR`) puts the two on a
    common scale, and SHELXL's isotropic `EXTI` correction is applied when it
    was refined.
-4. The map uses SHELXL's own **unweighted** difference coefficients,
+5. The map uses SHELXL's own **unweighted** difference coefficients,
    `(|Fo|/OSF − |Fc|)·exp(iφc)` — the `WGHT` scheme deliberately is *not*
    applied, because SHELXL uses it only for the least-squares objective and
    not for Fourier maps.
-5. An FFT over the space group yields ρ in e/Å³, and the isosurface is
+6. An FFT over the space group yields ρ in e/Å³, and the isosurface is
    extracted with the `density_cpp` marching-cubes extension.
 
 A leading `global_` block in a CIF is ignored; the first block with atom sites
-is used.
+is used. SHELX `LATT` lattice centring is applied on top of the `SYMM` cards —
+omitting it would silently reduce, say, C2/c to P2/c.
 
 ### Where the refinement parameters come from
 
@@ -630,7 +639,17 @@ reproduces the published *R*<sub>1</sub> of 0.0343. The remaining difference in
 the extremes comes from SHELXL merging Friedel pairs, neglecting *f″* and
 contouring on its own grid; the position and shape of the density features are
 unaffected. A ~130-atom structure with 43 000 reflections (`p21c.cif`) takes
-about 0.4 s.
+about 0.4 s; detwinning a twinned dataset costs roughly one extra second.
+
+Two twinning cases are **not** fully handled:
+
+* A **negative** `TWIN` component count selects a component ordering that is
+  not implemented; the data is then used undetwinned and a `RuntimeWarning`
+  is issued.
+* A pure **inversion (racemic) twin** is a no-op, because `h` and `−h` only
+  differ through the imaginary anomalous term *f″*, which gemmi's real-valued
+  addends cannot express. The map is left marginally too large — the size of
+  the anomalous signal, which is small for light atoms.
 
 ### Using the map without Qt
 

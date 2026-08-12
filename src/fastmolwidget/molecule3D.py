@@ -1901,7 +1901,7 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     def show_residual_density(
         self,
         hkl_path: str | Path | None = None,
-        level: float = 0.30,
+        level: float | None = None,
         *,
         model_path: str | Path | None = None,
     ) -> None:
@@ -1918,7 +1918,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         :param hkl_path: A SHELX ``.hkl`` file, or a CIF/fcf with a reflection
             loop.  ``None`` (the default) finds the data automatically — from
             the model file itself, or from a file of the same basename.
-        :param level: Contour level in e/Å³.
+        :param level: Contour level in e/Å³.  ``None`` (the default) uses
+            :data:`~fastmolwidget.density.DEFAULT_SIGMA` times the map's RMS,
+            which adapts to the quality of the structure instead of imposing
+            one absolute value on every dataset.
         :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
             Defaults to the file this widget last loaded.
         :raises RuntimeError: If no model is available, or the compiled
@@ -1934,7 +1937,8 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
                 'before showing residual density.'
             )
         self._density_map = calculate_residual_density(model, hkl_path)
-        self._density_level = abs(float(level))
+        self._density_level = (self._density_map.sigma_level()
+                               if level is None else abs(float(level)))
         self._build_density_geometry()
         self.update()
 

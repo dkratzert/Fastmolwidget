@@ -101,10 +101,47 @@ def test_missing_reflection_data_raises(tmp_path):
 
 
 @needs_cpp
-def test_default_level_is_0_3(widget):
+def test_default_level_is_three_sigma(widget):
+    """A fixed absolute level cannot suit every dataset; 3σ adapts."""
     widget.show_residual_density()
 
-    assert widget._density_level == pytest.approx(0.30)
+    density = widget.residual_density_map
+    assert widget._density_level == pytest.approx(3.0 * density.rms, abs=0.005)
+
+
+@needs_cpp
+def test_explicit_level_overrides_the_sigma_default(widget):
+    widget.show_residual_density(level=0.42)
+
+    assert widget._density_level == pytest.approx(0.42)
+
+
+@needs_cpp
+def test_level_adapts_to_the_structure():
+    """Two structures with different residual scales get different levels."""
+    first = MoleculeWidget3D()
+    MoleculeLoader(first).load_file(RES)
+    first.show_residual_density()
+
+    second = MoleculeWidget3D()
+    MoleculeLoader(second).load_file(DATA / 'p21c.cif')
+    second.show_residual_density()
+
+    assert first.residual_density_map.rms != pytest.approx(
+        second.residual_density_map.rms, rel=0.1)
+    assert first._density_level != pytest.approx(second._density_level, rel=0.1)
+
+
+@needs_cpp
+def test_viewer_spinbox_shows_the_level_actually_used():
+    """The spin box must not keep claiming a stale default."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(DATA / 'p21c.cif')
+
+    viewer.show_residual_density()
+
+    assert viewer._density_level_spinbox.value() == pytest.approx(
+        viewer.render_widget._density_level)
 
 
 @needs_cpp
@@ -114,7 +151,6 @@ def test_viewer_uses_embedded_reflections_without_a_dialog():
     viewer.load_file(DATA / 'p21c.cif')
 
     assert viewer._auto_reflection_file() == DATA / 'p21c.cif'
-    assert viewer._density_level_spinbox.value() == pytest.approx(0.30)
 
 
 def test_viewer_asks_when_a_separate_hkl_is_needed():

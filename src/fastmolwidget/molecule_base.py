@@ -140,7 +140,7 @@ class MoleculeWidgetProtocol(Protocol):
         ...
 
     def show_residual_density(self, hkl_path: str | Path | None = None,
-                              level: float = 0.30) -> None:
+                              level: float | None = None) -> None:
         """Compute and display a residual (Fo−Fc) electron-density isosurface.
 
         3D-only feature: real rendering is implemented in
@@ -154,7 +154,8 @@ class MoleculeWidgetProtocol(Protocol):
             ``.cif``/``.fcf`` file with an embedded reflection loop) paired
             with the currently loaded structure.  ``None`` finds the data
             automatically.
-        :param level: Isosurface contour level in e/Å³ (default ``0.30``).
+        :param level: Isosurface contour level in e/Å³.  ``None`` contours at
+            3σ of the map, which adapts to each structure.
             A positive-density surface is drawn at ``+level`` (green) and a
             negative-density surface at ``-level`` (red).
         """

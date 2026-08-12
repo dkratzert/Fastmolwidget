@@ -240,24 +240,26 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         self._render_widget.set_bond_color(color)
 
     def show_residual_density(self, hkl_path: str | Path | None = None,
-                              level: float = 0.30) -> None:
+                              level: float | None = None) -> None:
         """Compute and show a residual electron-density map.
 
-        The control-bar button is switched to its pressed (green) state so the
-        view and the controls stay consistent when this is called from code.
+        The control-bar button is switched to its pressed (green) state and the
+        Level spin box is set to the level actually used, so the view and the
+        controls stay consistent when this is called from code.
 
         :param hkl_path: Path to the reflection file.  ``None`` finds the data
             automatically from the loaded model.
-        :param level: Absolute contour level in e/Å³.
+        :param level: Absolute contour level in e/Å³.  ``None`` contours at
+            3σ of the map, which adapts to each structure.
         :raises RuntimeError: If no model is loaded or density support is unavailable.
         :raises FileNotFoundError: If no reflection data could be found.
         :raises ValueError: If the reflection data cannot be used.
         """
         self._render_widget.show_residual_density(hkl_path, level)
-        # Keep the spinbox in sync when called programmatically, without
-        # triggering a redundant re-contour.
+        # Show the level that was really used - it is computed from the map
+        # when *level* is None.  Setting it must not trigger a re-contour.
         self._density_level_spinbox.blockSignals(True)
-        self._density_level_spinbox.setValue(abs(level))
+        self._density_level_spinbox.setValue(self._render_widget._density_level)
         self._density_level_spinbox.blockSignals(False)
         self._set_density_controls_active(True)
 
@@ -288,8 +290,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         error_message = ""
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            self.show_residual_density(hkl_path,
-                                       self._density_level_spinbox.value())
+            # level=None -> contour at 3 sigma of this particular map, and let
+            # show_residual_density() put the resulting value in the spin box.
+            self.show_residual_density(hkl_path)
         except Exception as exc:  # noqa: BLE001 - never take the host app down
             error_message = str(exc)
         finally:
