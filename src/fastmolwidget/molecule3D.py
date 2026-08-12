@@ -40,6 +40,7 @@ Mouse controls
 * **Middle click** – centre the view on the clicked atom (becomes the new
   rotation pivot).
 * **Scroll wheel** – increase / decrease label font size.
+* **Ctrl + scroll wheel** – raise / lower the residual-density contour level.
 * **Left click** – select atom or bond; emit ``atomClicked`` / ``bondClicked``.
 * **Ctrl + left click** – add to / remove from selection.
 """
@@ -57,6 +58,11 @@ from qtpy.QtCore import Qt
 
 from fastmolwidget.atoms import element2color, get_radius_from_element
 from fastmolwidget.molecule2D import calc_volume
+from fastmolwidget.molecule_base import (
+    DENSITY_LEVEL_MAX,
+    DENSITY_LEVEL_MIN,
+    DENSITY_LEVEL_STEP,
+)
 from fastmolwidget.sdm import Atomtuple
 from fastmolwidget import shaders as _shaders
 
@@ -330,6 +336,9 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
     #: Emitted after every :meth:`open_molecule` / :meth:`grow_molecule` call
     #: with the frozenset of disorder-part numbers present in the loaded atoms.
     partsChanged = QtCore.Signal(object)
+    #: Emitted with the new contour level whenever the residual-density level
+    #: changes, so a control bar can follow a Ctrl+wheel adjustment.
+    densityLevelChanged = QtCore.Signal(float)
 
     # Vertical half-extent multiplier used for orthographic framing.
     _ORTHO_VIEW_MARGIN: float = 1.6
@@ -1950,10 +1959,30 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
         :param level: Contour level in e/Å³.
         """
-        self._density_level = abs(float(level))
+        level = abs(float(level))
+        if level == self._density_level:
+            return
+        self._density_level = level
+        self.densityLevelChanged.emit(level)
         if self._density_map is not None:
             self._build_density_geometry()
             self.update()
+
+    def step_residual_density_level(self, steps: int) -> bool:
+        """Raise or lower the contour level by *steps* wheel notches.
+
+        Used by Ctrl+wheel in the view.  The level is clamped to the same
+        range the Level spin box offers, so the two can never drift apart.
+
+        :param steps: Number of notches; positive raises the level.
+        :returns: ``True`` when a map was loaded and the level was adjusted.
+        """
+        if self._density_map is None:
+            return False
+        level = self._density_level + steps * DENSITY_LEVEL_STEP
+        level = min(max(level, DENSITY_LEVEL_MIN), DENSITY_LEVEL_MAX)
+        self.set_residual_density_level(round(level, 2))
+        return True
 
     def clear_residual_density(self) -> None:
         """Remove the residual-density isosurface from the view."""
@@ -2465,12 +2494,24 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         painter.restore()
 
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
-        """Scroll wheel adjusts label font size."""
+        """Scroll changes the label font size; Ctrl+scroll the density level.
+
+        Ctrl+wheel is swallowed whenever a residual-density map is loaded, so
+        it never silently resizes the labels instead.
+        """
         delta = event.angleDelta().y()
-        if delta > 0:
-            self.setLabelFont(self.fontsize + 2)
-        elif delta < 0:
-            self.setLabelFont(self.fontsize - 2)
+        if delta == 0:
+            return
+        steps = 1 if delta > 0 else -1
+        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            # Only claim the event when there is a map to re-contour; without
+            # one it is left to whatever the widget is embedded in.
+            if self.step_residual_density_level(steps):
+                event.accept()
+            else:
+                event.ignore()
+            return
+        self.setLabelFont(self.fontsize + 2 * steps)
 
     def _handle_click(self, event: QtGui.QMouseEvent) -> None:
         """Select atom or bond under the cursor."""

@@ -16,11 +16,12 @@ Minimal contract that the concrete class must satisfy
   ``super()`` chains work correctly (cooperative multiple inheritance).
 * Call ``QWidget.__init__(self, parent)`` (or equivalent) **then**
   ``self._init_renderer()`` from the concrete ``__init__``.
-* Declare the three Qt signals as class-level attributes::
+* Declare the Qt signals as class-level attributes::
 
-      atomClicked  = Signal(str)
-      bondClicked  = Signal(str, str)
-      partsChanged = Signal(object)
+      atomClicked         = Signal(str)
+      bondClicked         = Signal(str, str)
+      partsChanged        = Signal(object)
+      densityLevelChanged = Signal(float)
 
 * The concrete class is responsible for creating ``self._painter`` and calling
   ``self.draw()`` at repaint time (e.g. inside ``paintEvent`` / ``paint``).
@@ -43,6 +44,11 @@ from qtpy.QtGui import (
 )
 
 from fastmolwidget.atoms import get_radius_from_element, element2color
+from fastmolwidget.molecule_base import (
+    DENSITY_LEVEL_MAX,
+    DENSITY_LEVEL_MIN,
+    DENSITY_LEVEL_STEP,
+)
 from fastmolwidget.sdm import Atomtuple
 
 if TYPE_CHECKING:
@@ -498,10 +504,30 @@ class MoleculeRendererMixin:
 
         :param level: Contour level in e/Å³.
         """
-        self._density_level = abs(float(level))
+        level = abs(float(level))
+        if level == self._density_level:
+            return
+        self._density_level = level
+        self.densityLevelChanged.emit(level)  # type: ignore[attr-defined]
         if self._density_map is not None:
             self._build_density_geometry()
             self.update()  # type: ignore[misc]
+
+    def step_residual_density_level(self, steps: int) -> bool:
+        """Raise or lower the contour level by *steps* wheel notches.
+
+        Used by Ctrl+wheel in the view.  The level is clamped to the same
+        range the Level spin box offers, so the two can never drift apart.
+
+        :param steps: Number of notches; positive raises the level.
+        :returns: ``True`` when a map was loaded and the level was adjusted.
+        """
+        if self._density_map is None:
+            return False
+        level = self._density_level + steps * DENSITY_LEVEL_STEP
+        level = min(max(level, DENSITY_LEVEL_MIN), DENSITY_LEVEL_MAX)
+        self.set_residual_density_level(round(level, 2))
+        return True
 
     def clear_residual_density(self) -> None:
         """Remove the residual-density isosurface from the view."""
@@ -1155,11 +1181,24 @@ class MoleculeRendererMixin:
         self._lastPos = event.position()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Increase or decrease label font size on scroll."""
-        if event.angleDelta().y() > 0:
-            self.setLabelFont(self.fontsize + 2)
-        elif event.angleDelta().y() < 0:
-            self.setLabelFont(self.fontsize - 2)
+        """Scroll changes the label font size; Ctrl+scroll the density level.
+
+        Ctrl+wheel is swallowed whenever a residual-density map is loaded, so
+        it never silently resizes the labels instead.
+        """
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+        steps = 1 if delta > 0 else -1
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Only claim the event when there is a map to re-contour; without
+            # one it is left to whatever the widget is embedded in.
+            if self.step_residual_density_level(steps):
+                event.accept()
+            else:
+                event.ignore()
+            return
+        self.setLabelFont(self.fontsize + 2 * steps)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         """F1=a, F2=b, F3=c axis alignment."""

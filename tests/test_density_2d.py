@@ -12,11 +12,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 from qtpy import QtGui, QtWidgets
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QPoint, QPointF, Qt
 
 from fastmolwidget.density import HAS_DENSITY_CPP
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule2D import MoleculeWidget
+from fastmolwidget.molecule_base import (
+    DENSITY_LEVEL_MAX,
+    DENSITY_LEVEL_MIN,
+    DENSITY_LEVEL_STEP,
+)
 from fastmolwidget.molecule_painter import DENSITY_NEG_COLOR, DENSITY_POS_COLOR
 from fastmolwidget.viewer_widget import MoleculeViewerWidget
 
@@ -361,3 +366,148 @@ def test_quick_item_supports_density():
 
     assert item.residual_density_map is not None
     assert len(item._density_pos_lines) > 0
+
+
+# ------------------------------------------------------------------
+# Ctrl + mouse wheel changes the contour level
+# ------------------------------------------------------------------
+
+def _wheel(widget, notches: int, *, ctrl: bool):
+    """Send a wheel event and report whether the widget claimed it."""
+    event = QtGui.QWheelEvent(
+        QPointF(50.0, 50.0),
+        QPointF(50.0, 50.0),
+        QPoint(0, 0),
+        QPoint(0, 120 * notches),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier if ctrl else Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    widget.wheelEvent(event)
+    return event.isAccepted()
+
+
+@needs_cpp
+def test_ctrl_wheel_raises_and_lowers_the_level(widget):
+    widget.show_residual_density(HKL)
+    start = widget.residual_density_level
+
+    _wheel(widget, 1, ctrl=True)
+    assert widget.residual_density_level == pytest.approx(start + DENSITY_LEVEL_STEP)
+
+    _wheel(widget, -1, ctrl=True)
+    _wheel(widget, -1, ctrl=True)
+    assert widget.residual_density_level == pytest.approx(start - DENSITY_LEVEL_STEP)
+
+
+@needs_cpp
+def test_ctrl_wheel_recontours_the_surface(widget):
+    widget.show_residual_density(HKL)
+    dense = len(widget._density_pos_lines)
+
+    _wheel(widget, 1, ctrl=True)
+
+    assert len(widget._density_pos_lines) < dense
+
+
+@needs_cpp
+def test_ctrl_wheel_leaves_the_label_font_alone(widget):
+    widget.show_residual_density(HKL)
+    font_size = widget.fontsize
+
+    _wheel(widget, 1, ctrl=True)
+
+    assert widget.fontsize == font_size
+
+
+def test_plain_wheel_still_resizes_the_labels(widget):
+    font_size = widget.fontsize
+
+    _wheel(widget, 1, ctrl=False)
+
+    assert widget.fontsize == font_size + 2
+
+
+def test_ctrl_wheel_without_a_map_is_ignored(widget):
+    """No map to re-contour, so the event is left to the parent widget."""
+    font_size = widget.fontsize
+
+    accepted = _wheel(widget, 1, ctrl=True)
+
+    assert not accepted
+    assert widget.fontsize == font_size
+
+
+@needs_cpp
+def test_ctrl_wheel_is_clamped_to_the_control_range(widget):
+    widget.show_residual_density(HKL)
+
+    for _ in range(500):
+        _wheel(widget, -1, ctrl=True)
+    assert widget.residual_density_level == pytest.approx(DENSITY_LEVEL_MIN)
+
+    for _ in range(800):
+        _wheel(widget, 1, ctrl=True)
+    assert widget.residual_density_level == pytest.approx(DENSITY_LEVEL_MAX)
+
+
+@needs_cpp
+def test_level_change_is_signalled(widget):
+    widget.show_residual_density(HKL)
+    seen: list[float] = []
+    widget.densityLevelChanged.connect(seen.append)
+
+    _wheel(widget, 1, ctrl=True)
+
+    assert seen == [pytest.approx(widget.residual_density_level)]
+
+
+@needs_cpp
+def test_setting_the_same_level_does_not_signal(widget):
+    widget.show_residual_density(HKL, 0.25)
+    seen: list[float] = []
+    widget.densityLevelChanged.connect(seen.append)
+
+    widget.set_residual_density_level(0.25)
+
+    assert seen == []
+
+
+@needs_cpp
+def test_ctrl_wheel_updates_the_viewer_spinbox():
+    viewer = MoleculeViewerWidget()
+    viewer.resize(WIDTH, HEIGHT)
+    viewer.load_file(RES)
+    viewer.show_residual_density(HKL, 0.25)
+
+    _wheel(viewer.render_widget, 1, ctrl=True)
+    _wheel(viewer.render_widget, 1, ctrl=True)
+
+    assert viewer.render_widget.residual_density_level == pytest.approx(
+        0.25 + 2 * DENSITY_LEVEL_STEP)
+    assert viewer._density_level_spinbox.value() == pytest.approx(
+        viewer.render_widget.residual_density_level)
+
+
+@needs_cpp
+def test_one_wheel_event_is_one_step(widget):
+    """Matches the label-font behaviour: the delta magnitude is not scaled."""
+    widget.show_residual_density(HKL, 0.25)
+
+    _wheel(widget, 3, ctrl=True)
+
+    assert widget.residual_density_level == pytest.approx(0.25 + DENSITY_LEVEL_STEP)
+
+
+@needs_cpp
+def test_spinbox_still_drives_the_renderer():
+    """The signal round-trip must not break the other direction."""
+    viewer = MoleculeViewerWidget()
+    viewer.resize(WIDTH, HEIGHT)
+    viewer.load_file(RES)
+    viewer.show_residual_density(HKL, 0.25)
+
+    viewer._density_level_spinbox.setValue(0.35)
+
+    assert viewer.render_widget.residual_density_level == pytest.approx(0.35)

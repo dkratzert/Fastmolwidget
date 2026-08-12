@@ -60,6 +60,9 @@ class MoleculeQuickItem(MoleculeRendererMixin, QQuickPaintedItem):  # type: igno
     bondClicked = QtCore.Signal(str, str)
     #: Emitted after every load with the frozenset of disorder-part numbers.
     partsChanged = QtCore.Signal(object)
+    #: Emitted with the new contour level whenever the residual-density level
+    #: changes, so a control bar can follow a Ctrl+wheel adjustment.
+    densityLevelChanged = QtCore.Signal(float)
 
     def __init__(self, parent: QQuickPaintedItem | None = None) -> None:
         QQuickPaintedItem.__init__(self, parent)

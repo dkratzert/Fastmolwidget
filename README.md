@@ -173,6 +173,7 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 | Middle-click            | Recentre the rotation pivot on the clicked atom (3D only)                                                                                 |
 | Alt/Option + Left-click | On systems without a middle mouse button, Alt/Option + Left-click recentres the rotation pivot on the clicked atom (same as Middle-click) |
 | Scroll wheel            | Increase / decrease label font size                                                                                                       |
+| Ctrl + Scroll wheel     | Raise / lower the residual-density contour level by 0.02 e/Å³ per notch (passed through when no density map is shown)                     |
 | Left-click              | Select a single atom or bond                                                                                                              |
 | Ctrl + Left-click       | Toggle multi-selection                                                                                                                    |
 | Hover over atom         | Show the atom label (enlarged when persistent labels are on)                                                                              |
@@ -217,7 +218,7 @@ Both viewers expose the same two-row control bar:
 | Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
 | Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
 | Residual Density      | off     | Checkable — pressed (sunken, green) while the Fo−Fc isosurface is shown; click again to hide it. Uses reflections embedded in the model file directly, and opens a file dialog when a separate reflection file is needed |
-| Level                 | 3σ      | Contour level of the residual-density isosurface in e/Å³; defaults to 3× the map RMS and is enabled only while density is shown |
+| Level                 | 3σ      | Contour level of the residual-density isosurface in e/Å³; defaults to 3× the map RMS and is enabled only while density is shown. **Ctrl + mouse wheel** over the structure changes it too, in 0.02 e/Å³ steps |
 | Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
@@ -320,7 +321,8 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 #### Residual-density Methods
 
 - **`show_residual_density(hkl_path=None, level=None, *, model_path=None)`** — compute a residual (Fo−Fc) map and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `level=None` contours at **3σ of the map**, which adapts to each structure; `hkl_path=None` finds the reflections automatically — the model file itself, then siblings of the same basename; `model_path` defaults to the file the widget last loaded. Note the *control-bar button* is deliberately stricter and only auto-uses reflections embedded in the model, asking for anything else. On `MoleculeViewer3DWidget` this also presses the Residual Density button in and updates the Level spin box, so the controls never disagree with the view. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing, and `FileNotFoundError` when no reflection data can be found.
-- **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded.
+- **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded. Emits `densityLevelChanged(float)` when the value actually changes.
+- **`step_residual_density_level(steps: int) -> bool`** — raise or lower the level by *steps* wheel notches (`molecule_base.DENSITY_LEVEL_STEP`, 0.02 e/Å³ each), clamped to `DENSITY_LEVEL_MIN`…`DENSITY_LEVEL_MAX`. Backs **Ctrl + mouse wheel**; returns `False` when no map is loaded.
 - **`clear_residual_density()`** — remove the isosurface.
 - **`residual_density_map`** *(property)* — the computed `ResidualDensityMap` (with `.max`, `.min`, `.rms`, `.d_min` and the raw `.array` grid), or `None`.
 - **`residual_density_level`** *(property)* — the contour level the surface is currently drawn at, in e/Å³.
@@ -566,6 +568,15 @@ order of magnitude between refinements. Only density **within 1.5 Å of a
 visible atom** is shown, so hiding hydrogens or filtering disorder parts
 re-contours the surface accordingly, and no density is drawn in empty regions
 of the unit cell.
+
+### Changing the level interactively
+
+**Ctrl + mouse wheel** over the structure raises or lowers the contour level
+by 0.02 e/Å³ per notch, in both the 2-D and the 3-D view, and the Level spin
+box follows along (the renderer emits `densityLevelChanged(float)`). Without
+Ctrl the wheel keeps resizing the atom labels as before, and Ctrl + wheel is
+passed on untouched when no map is loaded. The level is clamped to the same
+range the spin box offers, so the two can never disagree.
 
 ### In the 2-D and Qt Quick renderers
 

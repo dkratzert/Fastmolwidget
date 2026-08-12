@@ -22,6 +22,16 @@ from typing import Protocol, runtime_checkable
 
 from fastmolwidget.sdm import Atomtuple
 
+#: Change in the residual-density contour level per Ctrl+wheel notch, in e/Å³.
+DENSITY_LEVEL_STEP: float = 0.02
+
+#: Lowest contour level the interactive controls allow, in e/Å³.  A level of
+#: zero would contour the whole map, so it is never reached.
+DENSITY_LEVEL_MIN: float = 0.01
+
+#: Highest contour level the interactive controls allow, in e/Å³.
+DENSITY_LEVEL_MAX: float = 9.99
+
 
 @runtime_checkable
 class MoleculeWidgetProtocol(Protocol):
@@ -37,6 +47,9 @@ class MoleculeWidgetProtocol(Protocol):
     * ``atomClicked(str)`` – emitted with the atom label when an atom is clicked.
     * ``bondClicked(str, str)`` – emitted with the two atom labels when a bond
       is clicked.
+    * ``densityLevelChanged(float)`` – emitted with the new contour level
+      whenever the residual-density level changes, so that a control bar can
+      follow a Ctrl+wheel adjustment made in the view.
     """
 
     # ------------------------------------------------------------------
@@ -170,6 +183,18 @@ class MoleculeWidgetProtocol(Protocol):
         :meth:`show_residual_density`.  A no-op when no map is loaded.
 
         :param level: Contour level in e/Å³.
+        """
+        ...
+
+    def step_residual_density_level(self, steps: int) -> bool:
+        """Raise or lower the contour level by *steps* wheel notches.
+
+        Backs Ctrl+wheel in the view.  Each notch is
+        :data:`DENSITY_LEVEL_STEP` e/Å³ and the result is clamped to
+        :data:`DENSITY_LEVEL_MIN` … :data:`DENSITY_LEVEL_MAX`.
+
+        :param steps: Number of notches; positive raises the level.
+        :returns: ``True`` when a map was loaded and the level was adjusted.
         """
         ...
 

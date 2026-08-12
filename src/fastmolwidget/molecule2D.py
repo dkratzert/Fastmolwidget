@@ -16,6 +16,7 @@ Mouse controls:
 - **Right drag**:  Zoom in / out.
 - **Middle drag**: Pan the view.
 - **Scroll wheel**: Increase / decrease label font size.
+- **Ctrl + Scroll wheel**: Raise / lower the residual-density contour level.
 - **Left click**:  Select a single atom or bond.
 - **Ctrl + Left click**: Toggle multi-selection.
 - **Alt/Option + Left click**: Recentre pivot (middle-click alternative).
@@ -63,6 +64,9 @@ class MoleculeWidget(MoleculeRendererMixin, QtWidgets.QWidget):
     #: Emitted after every :meth:`open_molecule` / :meth:`grow_molecule` call
     #: with the frozenset of disorder-part numbers present in the loaded atoms.
     partsChanged = QtCore.Signal(object)
+    #: Emitted with the new contour level whenever the residual-density level
+    #: changes, so a control bar can follow a Ctrl+wheel adjustment.
+    densityLevelChanged = QtCore.Signal(float)
 
     def __init__(self, parent: QtGui.QWidget | None = None) -> None:
         # Qt base class must be initialised first so that update() and signals

@@ -493,3 +493,80 @@ def test_loading_a_file_without_density_is_harmless(widget):
     MoleculeLoader(widget).load_file(DATA / 'p21c.cif')
 
     assert widget.residual_density_map is None
+
+
+# ------------------------------------------------------------------
+# Ctrl + mouse wheel changes the contour level (3-D)
+# ------------------------------------------------------------------
+
+def _wheel_3d(widget, notches: int, *, ctrl: bool):
+    """Send a wheel event and report whether the widget claimed it."""
+    from qtpy import QtGui
+    from qtpy.QtCore import QPoint, QPointF, Qt
+
+    event = QtGui.QWheelEvent(
+        QPointF(50.0, 50.0),
+        QPointF(50.0, 50.0),
+        QPoint(0, 0),
+        QPoint(0, 120 * notches),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.ControlModifier if ctrl else Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    widget.wheelEvent(event)
+    return event.isAccepted()
+
+
+@needs_cpp
+def test_3d_ctrl_wheel_changes_the_level(widget):
+    from fastmolwidget.molecule_base import DENSITY_LEVEL_STEP
+
+    widget.show_residual_density(HKL, 0.25)
+    font_size = widget.fontsize
+
+    _wheel_3d(widget, 1, ctrl=True)
+
+    assert widget.residual_density_level == pytest.approx(0.25 + DENSITY_LEVEL_STEP)
+    assert widget.fontsize == font_size
+
+
+@needs_cpp
+def test_3d_ctrl_wheel_recontours(widget):
+    widget.show_residual_density(HKL, 0.2)
+    dense = widget._density_pos_count
+
+    _wheel_3d(widget, 1, ctrl=True)
+
+    assert widget._density_pos_count < dense
+
+
+def test_3d_plain_wheel_still_resizes_the_labels(widget):
+    font_size = widget.fontsize
+
+    _wheel_3d(widget, -1, ctrl=False)
+
+    assert widget.fontsize == font_size - 2
+
+
+def test_3d_ctrl_wheel_without_a_map_is_ignored(widget):
+    font_size = widget.fontsize
+
+    accepted = _wheel_3d(widget, 1, ctrl=True)
+
+    assert not accepted
+    assert widget.fontsize == font_size
+
+
+@needs_cpp
+def test_3d_ctrl_wheel_updates_the_viewer_spinbox():
+    from fastmolwidget.molecule_base import DENSITY_LEVEL_STEP
+
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(RES)
+    viewer.show_residual_density(HKL, 0.25)
+
+    _wheel_3d(viewer.render_widget, 1, ctrl=True)
+
+    assert viewer._density_level_spinbox.value() == pytest.approx(
+        0.25 + DENSITY_LEVEL_STEP)

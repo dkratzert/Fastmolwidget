@@ -29,6 +29,12 @@ from typing import TYPE_CHECKING, Any
 
 from qtpy import QtCore, QtWidgets
 
+from fastmolwidget.molecule_base import (
+    DENSITY_LEVEL_MAX,
+    DENSITY_LEVEL_MIN,
+    DENSITY_LEVEL_STEP,
+)
+
 try:
     from fastmolwidget.density import HAS_DENSITY_CPP
 except ImportError:  # pragma: no cover - density support is optional
@@ -92,11 +98,15 @@ class DensityControlsMixin(_HostBase):
 
         self._density_level_label = QtWidgets.QLabel("Level:")
         self._density_level_spinbox = QtWidgets.QDoubleSpinBox()
-        self._density_level_spinbox.setRange(0.01, 9.99)
-        self._density_level_spinbox.setSingleStep(0.01)
+        self._density_level_spinbox.setRange(DENSITY_LEVEL_MIN, DENSITY_LEVEL_MAX)
+        self._density_level_spinbox.setSingleStep(DENSITY_LEVEL_STEP)
         self._density_level_spinbox.setDecimals(2)
         self._density_level_spinbox.setValue(0.30)
         self._density_level_spinbox.setSuffix(" e/Å³")
+        self._density_level_spinbox.setToolTip(
+            "Residual-density contour level.\n"
+            "Ctrl + mouse wheel over the structure changes it too."
+        )
         # Nothing to contour until a map is loaded.
         self._density_level_spinbox.setEnabled(False)
         self._density_level_label.setEnabled(False)
@@ -113,6 +123,19 @@ class DensityControlsMixin(_HostBase):
         self._density_level_spinbox.valueChanged.connect(
             self._render_widget.set_residual_density_level
         )
+        # Ctrl+wheel over the structure changes the level too; keep the spin
+        # box showing what is actually contoured.
+        self._render_widget.densityLevelChanged.connect(self._on_density_level_changed)
+
+    def _on_density_level_changed(self, level: float) -> None:
+        """Mirror a level change made in the view into the Level spin box.
+
+        Signals are blocked while doing so: the spin box would otherwise push
+        the rounded display value straight back into the renderer.
+        """
+        self._density_level_spinbox.blockSignals(True)
+        self._density_level_spinbox.setValue(level)
+        self._density_level_spinbox.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Public API
