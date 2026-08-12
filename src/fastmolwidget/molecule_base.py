@@ -143,12 +143,11 @@ class MoleculeWidgetProtocol(Protocol):
                               level: float | None = None) -> None:
         """Compute and display a residual (Fo−Fc) electron-density isosurface.
 
-        3D-only feature: real rendering is implemented in
-        :class:`~fastmolwidget.molecule3D.MoleculeWidget3D`. The 2-D
-        (:class:`~fastmolwidget.molecule2D.MoleculeWidget`) and Qt Quick
-        (:class:`~fastmolwidget.molecule_quick.MoleculeQuickItem`) renderers
-        implement this as a documented no-op so ``isinstance`` checks against
-        :class:`MoleculeWidgetProtocol` keep working uniformly across renderers.
+        The map is calculated from the reflection data together with the
+        refined model, so nothing has to be pre-computed by another program.
+        All three renderers implement this: the 3-D widget draws a true
+        wireframe isosurface, while the 2-D and Qt Quick renderers project the
+        same cage into their 2-D view.
 
         :param hkl_path: Path to a raw SHELX ``.hkl`` reflection file (or a
             ``.cif``/``.fcf`` file with an embedded reflection loop) paired
@@ -158,14 +157,37 @@ class MoleculeWidgetProtocol(Protocol):
             3σ of the map, which adapts to each structure.
             A positive-density surface is drawn at ``+level`` (green) and a
             negative-density surface at ``-level`` (red).
+        :raises RuntimeError: If no model is loaded, or the compiled
+            ``density_cpp`` extension is missing.
+        :raises FileNotFoundError: If no reflection data could be found.
+        """
+        ...
+
+    def set_residual_density_level(self, level: float) -> None:
+        """Re-contour the residual-density map at a new level.
+
+        The map itself is reused, so this is much cheaper than
+        :meth:`show_residual_density`.  A no-op when no map is loaded.
+
+        :param level: Contour level in e/Å³.
         """
         ...
 
     def clear_residual_density(self) -> None:
-        """Remove any residual-density isosurface currently displayed.
+        """Remove any residual-density isosurface currently displayed."""
+        ...
 
-        3D-only feature; a documented no-op on the 2-D and Qt Quick renderers.
+    @property
+    def residual_density_map(self) -> object | None:
+        """The computed ``ResidualDensityMap``, or ``None`` when none is shown.
+
+        Useful for reporting the map statistics (``max``, ``min``, ``rms``).
         """
+        ...
+
+    @property
+    def residual_density_level(self) -> float:
+        """The contour level the isosurface is currently drawn at, in e/Å³."""
         ...
 
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:

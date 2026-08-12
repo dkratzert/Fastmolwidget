@@ -16,12 +16,13 @@ from pathlib import Path
 
 from qtpy import QtGui, QtWidgets
 
-from fastmolwidget.part_combo import PartFilterWidget
+from fastmolwidget.density_controls import DensityControlsMixin
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule2D import MoleculeWidget
+from fastmolwidget.part_combo import PartFilterWidget
 
 
-class MoleculeViewerWidget(QtWidgets.QWidget):
+class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
     """A ready-to-use viewer widget that combines a :class:`MoleculeWidget`
     with a control bar.
 
@@ -33,6 +34,11 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
     * **Hide Hydrogens** – toggle hydrogen visibility.
     * **Bond Width** – spinbox controlling bond width (second row).
     * **Bond Color** – button opening a color picker for all non-selected bonds (second row).
+    * **Residual Density** – checkable button; when pressed (shown sunken and
+      tinted green) the Fo-Fc isosurfaces are projected into the view as a
+      wireframe cage, clicking again hides them.
+    * **Level** – spinbox changing the residual-density contour level; enabled
+      only while density is shown.
     * **Parts** *(inline in Row 1, after Hide Hydrogens, shown only when disorder parts are present)* –
       a checkable combo box listing every disorder-part number found in the
       loaded structure.  All parts are selected by default; unticking a part
@@ -67,6 +73,7 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         self._best_view_button = QtWidgets.QPushButton("Best View")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
+        self._init_density_controls()
 
         # default state
         # "Hide Hydrogens" unchecked → hydrogens are visible by default
@@ -117,6 +124,9 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         control_bar2.addWidget(self._reset_center_button)
         control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
+        control_bar2.addWidget(self._residual_density_button)
+        control_bar2.addWidget(self._density_level_label)
+        control_bar2.addWidget(self._density_level_spinbox)
         control_bar2.addWidget(self._part_widget)
         control_bar2.addStretch()
 
@@ -145,6 +155,9 @@ class MoleculeViewerWidget(QtWidgets.QWidget):
         :raises FileNotFoundError: If the file does not exist.
         """
         self._loader.load_file(filename)
+        # Loading a different structure drops its residual density; make the
+        # control bar follow whatever the renderer actually ended up with.
+        self._sync_density_controls()
 
     def grow(self) -> None:
         """Grow the current structure to complete molecules.

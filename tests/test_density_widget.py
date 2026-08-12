@@ -305,15 +305,24 @@ def test_clear_without_map_is_safe(widget):
 
 
 # ------------------------------------------------------------------
-# 2-D renderer stubs
+# 2-D renderer
 # ------------------------------------------------------------------
 
-def test_2d_widget_stubs_are_no_ops():
-    """The 2-D renderer accepts the calls but draws nothing."""
+def test_2d_widget_without_a_model_raises():
+    """Same contract as the 3-D renderer: no model, no map."""
     flat = MoleculeWidget()
 
-    assert flat.show_residual_density(HKL, 0.1) is None
-    assert flat.clear_residual_density() is None
+    with pytest.raises(RuntimeError, match='No structure model'):
+        flat.show_residual_density(HKL, 0.1)
+
+
+def test_2d_clear_without_a_map_is_safe():
+    flat = MoleculeWidget()
+
+    flat.clear_residual_density()
+
+    assert flat.residual_density_map is None
+    assert len(flat._density_pos_lines) == 0
 
 
 # ------------------------------------------------------------------

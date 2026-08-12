@@ -170,10 +170,3 @@ class MoleculeQuickItem(MoleculeRendererMixin, QQuickPaintedItem):  # type: igno
             self._painter = None
             painter.end()
         image.save(str(filename.resolve()))
-
-    def show_residual_density(self, hkl_path: str | Path | None = None,
-                              level: float | None = None) -> None:
-        """3D-only feature; residual-density isosurfaces are not rendered in Qt Quick."""
-
-    def clear_residual_density(self) -> None:
-        """3D-only feature; clearing residual-density isosurfaces is a no-op in Qt Quick."""

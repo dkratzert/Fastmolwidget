@@ -34,7 +34,7 @@ A Qt Quick backend is also available for embedding the 2D renderer inside a QML 
 - **Atom label display toggle** with adjustable font size
 - **Bond width** adjustment via spin box
 - **Configurable bond color** — set programmatically or via the control-bar color picker
-- **Residual (Fo−Fc) density maps (3D)** — computed on the fly from a SHELX `.hkl` (or an fcf-style CIF reflection loop) plus the refined model, and drawn as green/red wireframe isosurfaces; no pre-computed map file needed (see [Residual density maps](#residual-fofc-density-maps-3d))
+- **Residual (Fo−Fc) density maps** — computed on the fly from a SHELX `.hkl` (or an fcf-style CIF reflection loop) plus the refined model, and drawn as green/red wireframe isosurfaces in **all three renderers**; no pre-computed map file needed (see [Residual density maps](#residual-fofc-density-maps))
 - **Multiple file formats**: CIF, SHELX `.res`/`.ins`, and plain XYZ. More to come...
 - **Embeddable** — both `MoleculeWidget` (2D) and `MoleculeWidget3D` (3D) are plain `QWidget` subclasses; drop either into any layout
 - **Qt Quick support** — `MoleculeQuickItem` (`QQuickPaintedItem`) and `MoleculeViewerQuickWidget` allow embedding the 2D renderer in a QML scene
@@ -216,8 +216,8 @@ Both viewers expose the same two-row control bar:
 | Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)               |
 | Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
 | Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
-| Residual Density      | off     | *(3D only)* Checkable — pressed (sunken, green) while the Fo−Fc isosurface is shown; click again to hide it. Uses reflections embedded in the model file directly, and opens a file dialog when a separate reflection file is needed |
-| Level                 | 3σ      | *(3D only)* Contour level of the residual-density isosurface in e/Å³; defaults to 3× the map RMS and is enabled only while density is shown |
+| Residual Density      | off     | Checkable — pressed (sunken, green) while the Fo−Fc isosurface is shown; click again to hide it. Uses reflections embedded in the model file directly, and opens a file dialog when a separate reflection file is needed |
+| Level                 | 3σ      | Contour level of the residual-density isosurface in e/Å³; defaults to 3× the map RMS and is enabled only while density is shown |
 | Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
@@ -323,8 +323,9 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 - **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded.
 - **`clear_residual_density()`** — remove the isosurface.
 - **`residual_density_map`** *(property)* — the computed `ResidualDensityMap` (with `.max`, `.min`, `.rms`, `.d_min` and the raw `.array` grid), or `None`.
+- **`residual_density_level`** *(property)* — the contour level the surface is currently drawn at, in e/Å³.
 
-> These are 3D-only. `MoleculeWidget` (2D) and `MoleculeQuickItem` implement `show_residual_density` / `clear_residual_density` as documented no-ops so that `MoleculeWidgetProtocol` checks keep working across all renderers.
+> All three renderers implement these. `MoleculeWidget3D` draws a true 3-D wireframe isosurface with depth testing; `MoleculeWidget` (2D) and `MoleculeQuickItem` project the same cage into their 2-D view, on top of the atoms and bonds, and it follows every rotation without re-contouring.
 
 #### Example — feeding atom data directly to `MoleculeWidget3D`
 
@@ -508,11 +509,14 @@ main_window.show()
 sys.exit(app.exec_())
 ```
 
-## Residual (Fo−Fc) density maps (3D)
+## Residual (Fo−Fc) density maps
 
-`MoleculeWidget3D` can compute and display a residual electron-density map
+`MoleculeWidget3D` (3D), `MoleculeWidget` (2D) and `MoleculeQuickItem`
+(Qt Quick) can all compute and display a residual electron-density map
 directly from a reflection file and the refined model — no `.fcf`, `.map` or
-any other pre-computed map file is required.
+any other pre-computed map file is required.  The API is identical on all
+three; only the drawing differs, and the examples below work with
+`MoleculeViewerWidget` just as well as with `MoleculeViewer3DWidget`.
 
 ```python
 from fastmolwidget import MoleculeViewer3DWidget
@@ -562,6 +566,20 @@ order of magnitude between refinements. Only density **within 1.5 Å of a
 visible atom** is shown, so hiding hydrogens or filtering disorder parts
 re-contours the surface accordingly, and no density is drawn in empty regions
 of the unit cell.
+
+### In the 2-D and Qt Quick renderers
+
+`MoleculeWidget` and `MoleculeQuickItem` contour exactly the same map and
+project the resulting cage into their 2-D view, drawn after the atoms and
+bonds so it stays readable on top of the ORTEP ellipsoids. There is no depth
+buffer, so the whole cage is visible rather than only its front half.
+
+The segments are kept in the unrotated crystal frame and re-projected on every
+repaint, so rotating, panning or zooming never re-contours the map — only
+changing the level, the hydrogen filter or the disorder-part filter does.
+Segments outside the viewport, and segments that would come out shorter than a
+pixel, are dropped before anything is handed to `QPainter`; on a ~90-atom
+structure the wireframe adds roughly 6 ms to a repaint.
 
 ### Grid size
 

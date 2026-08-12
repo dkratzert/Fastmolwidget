@@ -31,10 +31,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import sqrt, cos, sin, dist, radians, atan2, degrees, pi
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from qtpy import QtCore, QtGui
-from qtpy.QtCore import Qt, QRectF
+from qtpy.QtCore import Qt, QRectF, QLineF
 from qtpy.QtGui import (
     QPainter, QPen, QBrush, QColor, QMouseEvent,
     QWheelEvent, QRadialGradient, QLinearGradient, QTransform,
@@ -42,6 +44,25 @@ from qtpy.QtGui import (
 
 from fastmolwidget.atoms import get_radius_from_element, element2color
 from fastmolwidget.sdm import Atomtuple
+
+if TYPE_CHECKING:
+    from fastmolwidget.density import ResidualDensityMap
+
+
+#: Residual density is only contoured within this distance (Å) of a visible
+#: atom, matching :data:`fastmolwidget.molecule3D.DENSITY_MARGIN`.
+DENSITY_MARGIN: float = 1.5
+
+#: Wireframe colour of the positive (Fo > Fc) residual-density lobe.
+DENSITY_POS_COLOR = QColor(0, 200, 0)
+
+#: Wireframe colour of the negative (Fo < Fc) residual-density lobe.
+DENSITY_NEG_COLOR = QColor(230, 0, 0)
+
+#: Squared screen length below which a density segment is not drawn.  Once the
+#: view is zoomed out, sub-pixel segments only overdraw each other, so dropping
+#: them costs nothing visually and removes most of the work.
+_DENSITY_MIN_PIXELS_SQUARED: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +319,34 @@ class MoleculeRendererMixin:
         self._eigenvectors_array = np.empty((0, 3, 3))
         self._u_inv_array = np.empty((0, 3, 3))
 
+        # ---- Residual (Fo-Fc) density ---------------------------------
+        #: The computed map, or ``None`` when no density is displayed.
+        self._density_map: ResidualDensityMap | None = None
+        #: Path of the structure file last loaded, set by
+        #: :class:`~fastmolwidget.loader.MoleculeLoader`; the model the map's
+        #: calculated structure factors come from.
+        self._model_path: Path | None = None
+        self._density_level: float = 0.30
+        #: Wireframe segments of both lobes as ``(K, 2, 3)`` arrays, in the
+        #: *unrotated* model frame.  They are projected in :meth:`draw`, so a
+        #: rotation never has to re-contour the map.
+        self._density_pos_lines = np.empty((0, 2, 3))
+        self._density_neg_lines = np.empty((0, 2, 3))
+        self._density_pos_color = QColor(DENSITY_POS_COLOR)
+        self._density_neg_color = QColor(DENSITY_NEG_COLOR)
+
+        #: Atom coordinates as they were loaded, before any rotation.  The
+        #: density map is defined in this frame, so the isosurface has to be
+        #: clipped against these rather than against the displayed positions.
+        self._model_coords_array = np.empty((0, 3))
+        #: Rigid model-to-view transform: ``view = model @ R.T + t``.  Kept in
+        #: step with the rotations applied in place to :attr:`_coords_array`.
+        self._view_rotation = np.eye(3)
+        self._view_offset = np.zeros(3)
+        #: Reused QLineF objects for the density wireframe, so a repaint does
+        #: not have to allocate thousands of Qt objects.
+        self._density_line_buffer: list[QLineF] = []
+
         # Hover state
         self.hovered_atom: str | None = None
         self.hovered_bond: tuple[str, str] | None = None
@@ -349,11 +398,15 @@ class MoleculeRendererMixin:
     def show_hydrogens(self, value: bool) -> None:
         """Toggle display of hydrogen atoms and their bonds."""
         self.show_hydrogens_flag = value
+        if self._density_map is not None:
+            self._build_density_geometry()
         self.update()  # type: ignore[misc]
 
     def set_visible_parts(self, parts: set[int] | None) -> None:
         """Set which disorder parts are rendered (``None`` = all)."""
         self._visible_parts = parts
+        if self._density_map is not None:
+            self._build_density_geometry()
         self.update()  # type: ignore[misc]
 
     def reset_view(self) -> None:
@@ -387,6 +440,136 @@ class MoleculeRendererMixin:
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
         self._show_adps = value
         self.update()  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
+    # Residual (Fo-Fc) density
+    # ------------------------------------------------------------------
+
+    def show_residual_density(
+        self,
+        hkl_path: str | Path | None = None,
+        level: float | None = None,
+        *,
+        model_path: str | Path | None = None,
+    ) -> None:
+        """Compute and display a residual (Fo−Fc) electron-density isosurface.
+
+        The map is calculated from the reflection data together with the
+        refined model (see :mod:`fastmolwidget.density`); nothing has to be
+        pre-computed by another program.  Two wireframe cages are projected
+        into the 2-D view exactly like the atoms: ``+level`` in green and
+        ``-level`` in red.
+
+        The result is cached, so :meth:`set_residual_density_level` can change
+        the contour afterwards without recomputing the map.
+
+        :param hkl_path: A SHELX ``.hkl`` file, or a CIF/fcf with a reflection
+            loop.  ``None`` (the default) finds the data automatically — from
+            the model file itself, or from a file of the same basename.
+        :param level: Contour level in e/Å³.  ``None`` (the default) uses
+            :data:`~fastmolwidget.density.DEFAULT_SIGMA` times the map's RMS,
+            which adapts to the quality of the structure instead of imposing
+            one absolute value on every dataset.
+        :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
+            Defaults to the file this widget last loaded.
+        :raises RuntimeError: If no model is available, or the compiled
+            ``density_cpp`` extension is missing.
+        :raises FileNotFoundError: If no reflection data could be found.
+        """
+        from fastmolwidget.density import calculate_residual_density
+
+        model = model_path if model_path is not None else self._model_path
+        if model is None:
+            raise RuntimeError(
+                'No structure model available - load a .res/.ins/.cif file '
+                'before showing residual density.'
+            )
+        self._density_map = calculate_residual_density(model, hkl_path)
+        self._density_level = (self._density_map.sigma_level()
+                               if level is None else abs(float(level)))
+        self._build_density_geometry()
+        self.update()  # type: ignore[misc]
+
+    def set_residual_density_level(self, level: float) -> None:
+        """Re-contour the residual-density map at a new level.
+
+        Does nothing when no map has been computed yet.  The map itself is
+        reused, so this is much cheaper than :meth:`show_residual_density`.
+
+        :param level: Contour level in e/Å³.
+        """
+        self._density_level = abs(float(level))
+        if self._density_map is not None:
+            self._build_density_geometry()
+            self.update()  # type: ignore[misc]
+
+    def clear_residual_density(self) -> None:
+        """Remove the residual-density isosurface from the view."""
+        self._density_map = None
+        self._density_pos_lines = np.empty((0, 2, 3))
+        self._density_neg_lines = np.empty((0, 2, 3))
+        self.update()  # type: ignore[misc]
+
+    @property
+    def residual_density_map(self) -> ResidualDensityMap | None:
+        """The computed :class:`~fastmolwidget.density.ResidualDensityMap`.
+
+        ``None`` until :meth:`show_residual_density` has been called.  Useful
+        for reporting the map statistics (``max``, ``min``, ``rms``).
+        """
+        return self._density_map
+
+    @property
+    def residual_density_level(self) -> float:
+        """The contour level the isosurface is currently drawn at, in e/Å³."""
+        return self._density_level
+
+    def _visible_model_positions(self) -> np.ndarray | None:
+        """Unrotated positions of the atoms that are currently drawn.
+
+        Applies the same hydrogen and disorder-part filters as :meth:`draw`,
+        so the density follows exactly what is on screen.  The coordinates
+        come from :attr:`_model_coords_array` because the map is defined in
+        that frame, not in the rotated one the atoms are displayed in.
+
+        :returns: An ``(N, 3)`` array, or ``None`` when nothing is visible.
+        """
+        if len(self._model_coords_array) == 0:
+            return None
+        visible = [
+            index for index, atom in enumerate(self.atoms)
+            if (self.show_hydrogens_flag or atom.type_ not in ('H', 'D'))
+            and (self._visible_parts is None or atom.part in self._visible_parts)
+        ]
+        if not visible:
+            return None
+        return self._model_coords_array[visible]
+
+    def _build_density_geometry(self) -> None:
+        """Contour the cached map into wireframe segments for both lobes.
+
+        The isosurface is restricted to :data:`DENSITY_MARGIN` around the
+        *visible* atoms, so grown or packed structures get density around every
+        displayed atom while hidden hydrogens and filtered-out disorder parts
+        drag nothing in.  The segments are kept in the model frame; the
+        rotation is applied when they are drawn.
+        """
+        if self._density_map is None:
+            self._density_pos_lines = np.empty((0, 2, 3))
+            self._density_neg_lines = np.empty((0, 2, 3))
+            return
+
+        positions = self._visible_model_positions()
+        lobes: list[np.ndarray] = []
+        for level in (self._density_level, -self._density_level):
+            vertices, edges = self._density_map.isosurface(
+                level, atoms=positions, margin=DENSITY_MARGIN,
+            )
+            if len(vertices) and len(edges):
+                lobes.append(np.asarray(vertices, dtype=float)[edges])
+            else:
+                lobes.append(np.empty((0, 2, 3)))
+        self._density_pos_lines, self._density_neg_lines = lobes
 
     # ------------------------------------------------------------------
     # Molecule loading
@@ -446,7 +629,13 @@ class MoleculeRendererMixin:
             self.objects.append(RenderItem(is_bond=False, atom1=atom))
 
         # Build numpy arrays for vectorised rotation
-        self._coords_array = np.array([at.coordinate for at in self.atoms])
+        self._coords_array = np.array(
+            [at.coordinate for at in self.atoms], dtype=float).reshape(-1, 3)
+        # The density map is defined in this unrotated frame; remember it
+        # before the view rotation below is applied.
+        self._model_coords_array = self._coords_array.copy()
+        self._view_rotation = np.eye(3)
+        self._view_offset = np.zeros(3)
         self._ucart_array = np.zeros((len(self.atoms), 3, 3))
         self._has_adp = np.zeros(len(self.atoms), dtype=bool)
         self._eigenvalues_array = np.zeros((len(self.atoms), 3))
@@ -458,6 +647,7 @@ class MoleculeRendererMixin:
                 np.dot(self._coords_array - self.molecule_center, self.cumulative_R.T)
                 + self.molecule_center
             )
+            self._apply_view_transform(self.cumulative_R)
 
         for i, at in enumerate(self.atoms):
             if keep_view and not np.allclose(self.cumulative_R, np.eye(3)):
@@ -488,6 +678,12 @@ class MoleculeRendererMixin:
 
         if not keep_view:
             self.zoom = self._auto_zoom()
+
+        # A cached map survives a reload of the same structure (grow and pack
+        # do exactly that), but the visible atoms have moved, so the surface
+        # has to be re-clipped around them.
+        if self._density_map is not None:
+            self._build_density_geometry()
 
         self.update()  # type: ignore[misc]
 
@@ -569,6 +765,7 @@ class MoleculeRendererMixin:
                 np.dot(self._coords_array - self.molecule_center, delta_R.T)
                 + self.molecule_center
             )
+            self._apply_view_transform(delta_R)
             if np.any(self._has_adp):
                 self._ucart_array = np.matmul(delta_R, np.matmul(self._ucart_array, delta_R.T))
                 self._eigenvectors_array = np.matmul(delta_R, self._eigenvectors_array)
@@ -613,6 +810,7 @@ class MoleculeRendererMixin:
             np.dot(self._coords_array - self.molecule_center, delta_R.T)
             + self.molecule_center
         )
+        self._apply_view_transform(delta_R)
         if np.any(self._has_adp):
             self._ucart_array = np.matmul(delta_R, np.matmul(self._ucart_array, delta_R.T))
             self._eigenvectors_array = np.matmul(delta_R, self._eigenvectors_array)
@@ -626,6 +824,29 @@ class MoleculeRendererMixin:
                 at.u_inv = self._u_inv_array[i]
         self.cumulative_R = target_R
         self.update()  # type: ignore[misc]
+
+    def _apply_view_transform(self, matrix: np.ndarray) -> None:
+        """Record a rotation that was just applied to :attr:`_coords_array`.
+
+        The atom coordinates are rotated **in place** about
+        :attr:`molecule_center`, and that pivot itself moves when the view is
+        panned or recentred, so the orientation alone cannot reconstruct where
+        a model-frame point ends up on screen.  Every such step is the affine
+        map ``x -> (x - c) @ M.T + c``; composing it with what has been
+        recorded so far keeps the model-to-view mapping as a single rotation
+        plus offset, which :meth:`_to_view_frame` then applies to the
+        residual-density wireframe.
+
+        :param matrix: The rotation just applied to the atom coordinates.
+        """
+        center = np.asarray(self.molecule_center, dtype=float)
+        matrix = np.asarray(matrix, dtype=float)
+        self._view_offset = (self._view_offset - center) @ matrix.T + center
+        self._view_rotation = matrix @ self._view_rotation
+
+    def _to_view_frame(self, points: np.ndarray) -> np.ndarray:
+        """Map ``(N, 3)`` model-frame points onto the displayed orientation."""
+        return points @ self._view_rotation.T + self._view_offset
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -967,6 +1188,7 @@ class MoleculeRendererMixin:
                 np.dot(self._coords_array - self.molecule_center, R.T)
                 + self.molecule_center
             )
+            self._apply_view_transform(R)
             if np.any(self._has_adp):
                 self._ucart_array = np.matmul(R, np.matmul(self._ucart_array, R.T))
                 self._eigenvectors_array = np.matmul(R, self._eigenvectors_array)
@@ -1128,6 +1350,10 @@ class MoleculeRendererMixin:
 
         for atom in label_atoms:
             self.draw_label(atom, enlarged=(atom.name == self.hovered_atom))
+
+        # Drawn after the atoms and bonds so the cage stays readable on top of
+        # the solid geometry, matching the 3-D renderer.
+        self._draw_residual_density()
 
         if (
             self.hovered_atom is None
@@ -1454,6 +1680,65 @@ class MoleculeRendererMixin:
         self._painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), text)  # type: ignore[union-attr]
         self._painter.restore()  # type: ignore[union-attr]
         self._painter.setFont(font)  # type: ignore[union-attr]
+
+    def _draw_residual_density(self) -> None:
+        """Project both residual-density lobes into the view as a wireframe."""
+        self._draw_density_lobe(self._density_pos_lines, self._density_pos_color)
+        self._draw_density_lobe(self._density_neg_lines, self._density_neg_color)
+
+    def _draw_density_lobe(self, segments: np.ndarray, color: QColor) -> None:
+        """Draw one lobe of the isosurface cage.
+
+        A contoured map easily holds several thousand segments and this runs on
+        every repaint, including while the molecule is being dragged, so the
+        work per segment is kept to a minimum:
+
+        * projection and culling are vectorised in NumPy;
+        * segments outside the viewport, and segments that would come out
+          shorter than a pixel (they only overdraw each other once the view is
+          zoomed out), are dropped;
+        * the :class:`QLineF` objects are reused between frames — rewriting
+          them with ``setLine`` is several times cheaper than allocating a new
+          list each time.
+
+        :param segments: ``(K, 2, 3)`` model-frame line segments.
+        :param color: Wireframe colour.
+        """
+        if len(segments) == 0 or self._painter is None:
+            return
+
+        points = self._to_view_frame(segments.reshape(-1, 3))
+        x = (points[:, 0] * self.scale + self.cx_global).reshape(-1, 2)
+        y = (points[:, 1] * self.scale + self.cy_global).reshape(-1, 2)
+
+        width = float(self.width())    # type: ignore[attr-defined]
+        height = float(self.height())  # type: ignore[attr-defined]
+        dx = x[:, 1] - x[:, 0]
+        dy = y[:, 1] - y[:, 0]
+        keep = (
+            ~((x < 0.0).all(axis=1) | (x > width).all(axis=1)
+              | (y < 0.0).all(axis=1) | (y > height).all(axis=1))
+            & (dx * dx + dy * dy >= _DENSITY_MIN_PIXELS_SQUARED)
+        )
+        if not keep.any():
+            return
+        if not keep.all():
+            x, y = x[keep], y[keep]
+
+        lines = self._density_line_buffer
+        while len(lines) < len(x):
+            lines.append(QLineF())
+        for line, (x0, x1), (y0, y1) in zip(lines, x.tolist(), y.tolist()):
+            line.setLine(x0, y0, x1, y1)
+
+        pen = QPen(color, 1.0)
+        pen.setCosmetic(True)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        self._painter.save()
+        self._painter.setPen(pen)
+        self._painter.setBrush(Qt.BrushStyle.NoBrush)
+        self._painter.drawLines(lines[:len(x)])
+        self._painter.restore()
 
     def _draw_axis_indicator(self) -> None:
         """Draw unit-cell axis arrows (a=red, b=green, c=blue) in the bottom-left."""

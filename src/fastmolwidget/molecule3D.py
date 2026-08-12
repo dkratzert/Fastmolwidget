@@ -1974,6 +1974,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         """
         return self._density_map
 
+    @property
+    def residual_density_level(self) -> float:
+        """The contour level the isosurface is currently drawn at, in e/Å³."""
+        return self._density_level
+
     def _visible_atom_positions(self) -> np.ndarray | None:
         """Cartesian positions of the atoms that are currently drawn.
 
