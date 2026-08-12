@@ -11,7 +11,7 @@
  *   ColumnLayout
  *     MoleculeItem   ← fills all available space (registered Python type)
  *     RowLayout      ← Row 1: structure toggles
- *     RowLayout      ← Row 2: bond controls + optional parts filter
+ *     RowLayout      ← Row 2: bond controls, residual density, optional parts filter
  */
 
 import QtQuick 2.15
@@ -144,6 +144,73 @@ ColumnLayout {
         Button {
             text: "Save Image…"
             onClicked: backend.saveImageDialog()
+        }
+
+        // ── Residual (Fo-Fc) density ─────────────────────────────────────
+        // Checkable, and tinted green while shown, so the state is obvious
+        // at a glance - the same convention as the QWidget viewers.
+        Button {
+            id: densityButton
+            text: "Residual Density"
+            checkable: true
+            enabled: backend.densityAvailable
+            checked: backend.densityActive
+            onToggled: backend.setDensity(checked)
+
+            ToolTip.visible: hovered
+            ToolTip.text: backend.densityAvailable
+                ? backend.densityStatistics
+                : "Residual density requires the compiled density_cpp extension."
+
+            background: Rectangle {
+                implicitWidth: 120
+                implicitHeight: 28
+                radius: 3
+                color: !densityButton.enabled ? "#f0f0f0"
+                     : densityButton.checked ? (densityButton.hovered ? "#bce0bc" : "#cdebcd")
+                     : densityButton.down ? "#d8d8d8"
+                     : densityButton.hovered ? "#eaeaea" : "#f6f6f6"
+                border.width: densityButton.checked ? 2 : 1
+                border.color: !densityButton.enabled ? "#c8c8c8"
+                            : densityButton.checked ? "#3c8c3c" : "#b0b0b0"
+            }
+
+            contentItem: Text {
+                text: densityButton.text
+                font.bold: densityButton.checked
+                color: densityButton.enabled ? "#202020" : "#a0a0a0"
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
+
+            // The backend is the single source of truth: it pops the button
+            // back out when loading a map fails or the dialog is cancelled.
+            Connections {
+                target: backend
+                function onDensityActiveChanged(v) { densityButton.checked = v }
+            }
+        }
+
+        Label {
+            text: "Level:"
+            enabled: backend.densityActive
+        }
+
+        DensityLevelSpinBox {
+            id: densityLevelSpin
+            enabled: backend.densityActive
+            minimumLevel: backend.densityLevelMin
+            maximumLevel: backend.densityLevelMax
+            ToolTip.visible: hovered
+            ToolTip.text: "Residual-density contour level in e/Å³.\n" +
+                          "Ctrl + mouse wheel over the structure changes it too."
+            onLevelEdited: function(level) { backend.setDensityLevel(level) }
+            Component.onCompleted: setLevel(backend.densityLevel)
+            Connections {
+                target: backend
+                function onDensityLevelChanged(v) { densityLevelSpin.setLevel(v) }
+            }
         }
 
         // ── Inline parts filter (combo-box dropdown) ─────────────────────

@@ -28,7 +28,14 @@ from pathlib import Path
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Slot
 
+from fastmolwidget.density_controls import (
+    HAS_DENSITY_CPP,
+    ask_for_reflection_file,
+    auto_reflection_file,
+    density_statistics_text,
+)
 from fastmolwidget.loader import MoleculeLoader
+from fastmolwidget.molecule_base import DENSITY_LEVEL_MAX, DENSITY_LEVEL_MIN
 
 try:
     from qtpy.QtCore import Property
@@ -63,6 +70,9 @@ class MoleculeViewerBackend(QtCore.QObject):
     hideHydrogensChanged = QtCore.Signal(bool)
     partsModelChanged = QtCore.Signal(list)
     hasPartsChanged = QtCore.Signal(bool)
+    densityActiveChanged = QtCore.Signal(bool)
+    densityLevelChanged = QtCore.Signal(float)
+    densityStatisticsChanged = QtCore.Signal(str)
 
     def __init__(self, parent: QtCore.QObject | None = None) -> None:
         super().__init__(parent)
@@ -76,6 +86,9 @@ class MoleculeViewerBackend(QtCore.QObject):
         self._hide_hydrogens = False
         self._parts_model: list[int] = []
         self._manual_parts: set[int] | None = None  # None = show all
+        self._density_active = False
+        self._density_level = 0.30
+        self._density_statistics = ''
 
     # ------------------------------------------------------------------
     # Called from QML Component.onCompleted
@@ -94,6 +107,9 @@ class MoleculeViewerBackend(QtCore.QObject):
 
         # Connect partsChanged signal from the renderer
         self._render_item.partsChanged.connect(self._on_parts_changed)
+        # Ctrl+wheel in the view changes the contour level; keep the Level
+        # spin box showing what is actually contoured.
+        self._render_item.densityLevelChanged.connect(self._on_density_level_changed)
 
     # ------------------------------------------------------------------
     # Properties (read-only from QML; mutated only through slots)
@@ -126,6 +142,34 @@ class MoleculeViewerBackend(QtCore.QObject):
     @Property(bool, notify=hasPartsChanged)
     def hasParts(self) -> bool:
         return len(self._parts_model) > 1
+
+    @Property(bool, constant=True)
+    def densityAvailable(self) -> bool:
+        """Whether the compiled ``density_cpp`` extension is usable."""
+        return HAS_DENSITY_CPP
+
+    @Property(bool, notify=densityActiveChanged)
+    def densityActive(self) -> bool:
+        """Whether a residual-density isosurface is currently displayed."""
+        return self._density_active
+
+    @Property(float, notify=densityLevelChanged)
+    def densityLevel(self) -> float:
+        """Contour level of the residual density, in e/Å³."""
+        return self._density_level
+
+    @Property(float, constant=True)
+    def densityLevelMin(self) -> float:
+        return DENSITY_LEVEL_MIN
+
+    @Property(float, constant=True)
+    def densityLevelMax(self) -> float:
+        return DENSITY_LEVEL_MAX
+
+    @Property(str, notify=densityStatisticsChanged)
+    def densityStatistics(self) -> str:
+        """Tooltip text for the Residual Density button."""
+        return self._density_statistics
 
     # ------------------------------------------------------------------
     # File I/O slots
@@ -161,6 +205,108 @@ class MoleculeViewerBackend(QtCore.QObject):
         """Load a structure file (called from Python *or* via slot)."""
         if self._loader is not None:
             self._loader.load_file(filename)
+            # Loading a different structure drops its residual density; make
+            # the control bar follow whatever the renderer ended up with.
+            self._sync_density_state()
+
+    # ------------------------------------------------------------------
+    # Residual-density slots
+    # ------------------------------------------------------------------
+
+    @Slot(bool)
+    def setDensity(self, checked: bool) -> None:
+        """Show or hide the residual density from the QML toggle button.
+
+        The QML button is the single source of truth for the on/off state, so
+        any failure (no model, no reflection data, or a cancelled file dialog)
+        pushes it back out again via ``densityActiveChanged``.
+        """
+        if self._render_item is None:
+            return
+        if not checked:
+            self.clear_residual_density()
+            return
+
+        hkl_path = auto_reflection_file(self._render_item)
+        if hkl_path is None:
+            hkl_path = ask_for_reflection_file(None, self._render_item)
+            if hkl_path is None:  # dialog cancelled
+                self._set_density_active(False)
+                return
+
+        error_message = ""
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            # level=None -> contour at 3 sigma of this particular map.
+            self.show_residual_density(hkl_path)
+        except Exception as exc:  # noqa: BLE001 - never take the host app down
+            error_message = str(exc)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        if error_message:
+            self._set_density_active(False)
+            QtWidgets.QMessageBox.warning(None, "Residual density", error_message)
+
+    @Slot(float)
+    def setDensityLevel(self, level: float) -> None:
+        """Re-contour the cached map at *level* (e/Å³) from the QML spin box."""
+        if self._render_item is not None:
+            self._render_item.set_residual_density_level(level)
+
+    def show_residual_density(self, hkl_path: str | Path | None = None,
+                              level: float | None = None) -> None:
+        """Compute and show a residual electron-density map.
+
+        Mirrors :meth:`fastmolwidget.viewer_widget.MoleculeViewerWidget.show_residual_density`;
+        the QML button and Level spin box are updated to match.
+
+        :param hkl_path: Reflection file; ``None`` finds it automatically.
+        :param level: Contour level in e/Å³; ``None`` uses 3σ of the map.
+        """
+        if self._render_item is None:
+            raise RuntimeError('The QML render item is not ready yet.')
+        self._render_item.show_residual_density(hkl_path, level)
+        self._on_density_level_changed(self._render_item.residual_density_level)
+        self._set_density_active(True)
+
+    def clear_residual_density(self) -> None:
+        """Remove the residual electron-density isosurface."""
+        if self._render_item is not None:
+            self._render_item.clear_residual_density()
+        self._set_density_active(False)
+
+    def _set_density_active(self, active: bool) -> None:
+        """Publish the on/off state to QML, tooltip included.
+
+        ``densityActiveChanged`` is emitted **unconditionally**: when turning
+        the density on fails, the QML button has already flipped itself to
+        checked, so the backend has to push ``False`` back out even though its
+        own state never changed.  Re-assigning the same value in QML is a
+        no-op, so the redundant notification is harmless.
+        """
+        density_map = (self._render_item.residual_density_map
+                       if active and self._render_item is not None else None)
+        statistics = density_statistics_text(density_map)
+        if statistics != self._density_statistics:
+            self._density_statistics = statistics
+            self.densityStatisticsChanged.emit(statistics)
+        self._density_active = active
+        self.densityActiveChanged.emit(active)
+
+    def _sync_density_state(self) -> None:
+        """Match the QML controls to the renderer's actual state."""
+        self._set_density_active(
+            self._render_item is not None
+            and self._render_item.residual_density_map is not None
+        )
+
+    def _on_density_level_changed(self, level: float) -> None:
+        """Mirror a level change made in the view (Ctrl+wheel) into QML."""
+        if level == self._density_level:
+            return
+        self._density_level = level
+        self.densityLevelChanged.emit(level)
 
     # ------------------------------------------------------------------
     # Structure toggle slots
@@ -378,6 +524,28 @@ class MoleculeViewerQuickWidget(QtWidgets.QWidget):
         """Set the default colour used for non-selected bonds."""
         if self._backend:
             self._backend.set_bond_color(color)
+
+    def show_residual_density(self, hkl_path: str | Path | None = None,
+                              level: float | None = None) -> None:
+        """Compute and show a residual (Fo−Fc) electron-density map.
+
+        The QML Residual Density button and Level spin box follow along, so
+        the controls never disagree with the view.
+
+        :param hkl_path: Reflection file; ``None`` finds it automatically from
+            the loaded model.
+        :param level: Contour level in e/Å³; ``None`` contours at 3σ of the map.
+        :raises RuntimeError: If Qt Quick is unavailable, the QML item is not
+            ready yet, no model is loaded, or ``density_cpp`` is missing.
+        """
+        if self._backend is None:
+            raise RuntimeError('Qt Quick is not available.')
+        self._backend.show_residual_density(hkl_path, level)
+
+    def clear_residual_density(self) -> None:
+        """Remove the residual electron-density isosurface."""
+        if self._backend:
+            self._backend.clear_residual_density()
 
 
 # ---------------------------------------------------------------------------

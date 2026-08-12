@@ -225,7 +225,7 @@ Both viewers expose the same two-row control bar:
 
 ### `MoleculeViewerQuickWidget` (Qt Quick)
 
-The Qt Quick viewer provides the same two-row control bar as the widget viewers, but implemented in QML (`qml/MoleculeViewer.qml`). All controls and features are identical; the Parts filter uses a QML `Popup` (opens upward) with checkable items instead of the `QComboBox`-based `PartFilterWidget`.
+The Qt Quick viewer provides the same two-row control bar as the widget viewers, but implemented in QML (`qml/MoleculeViewer.qml`). All controls and features are identical, **Residual Density** and **Level** included; the Parts filter uses a QML `Popup` (opens upward) with checkable items instead of the `QComboBox`-based `PartFilterWidget`, and the level control is `qml/DensityLevelSpinBox.qml` (QtQuick's `SpinBox` is integer-only, so it holds hundredths of an e/Å³ internally).
 
 ## API Overview
 
@@ -244,6 +244,7 @@ A self-contained Qt Quick viewer embedding a `QQuickWidget` with a QML control b
 
 - `load_file(path)` — load a structure file (format auto-detected from extension: `.cif`, `.res`, `.ins`, `.xyz`). Must be called **after** the widget is shown and the QML scene has initialised (use `QTimer.singleShot` for a short delay).
 - `set_bond_color(color)` — set the default color for non-selected bonds
+- `show_residual_density(hkl_path=None, level=None)` / `clear_residual_density()` — as on the other viewers; the QML button and Level spin box follow along
 - `render_widget` — read-only property exposing the underlying `MoleculeQuickItem` (`None` before the QML `Component.onCompleted` fires or when Qt Quick is unavailable)
 
 ### `MoleculeQuickItem(parent=None)`

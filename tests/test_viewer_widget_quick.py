@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from qtpy import QtCore, QtGui, QtWidgets
 
+from fastmolwidget.density import HAS_DENSITY_CPP
 from fastmolwidget.sdm import Atomtuple
 
 app = QtWidgets.QApplication.instance()
@@ -396,3 +397,226 @@ def test_viewer_load_file_without_qml():
     # render_widget is None until QML initialises
     # load_file should gracefully no-op
     w.load_file(data / 'test_molecule.xyz')
+
+
+# ------------------------------------------------------------------
+# Residual (Fo-Fc) density controls
+# ------------------------------------------------------------------
+
+RES = data / 'p31c-finalcif.res'
+HKL = data / 'p31c-finalcif.hkl'
+P21C = data / 'p21c.cif'
+
+needs_cpp = pytest.mark.skipif(
+    not HAS_DENSITY_CPP,
+    reason='density_cpp C++ extension not built',
+)
+
+
+def _qml_viewer() -> MoleculeViewerQuickWidget:
+    """A shown viewer whose QML scene has finished loading."""
+    viewer = MoleculeViewerQuickWidget()
+    viewer.resize(900, 650)
+    viewer.show()
+    app.processEvents()
+    assert viewer.render_widget is not None, 'QML render item never registered'
+    return viewer
+
+
+def _qml_object(viewer, predicate):
+    root = viewer._quick_widget.rootObject()
+    for obj in root.findChildren(QtCore.QObject):
+        if predicate(obj):
+            return obj
+    return None
+
+
+def _density_button(viewer):
+    return _qml_object(
+        viewer,
+        lambda o: (o.metaObject().indexOfProperty('text') >= 0
+                   and o.property('text') == 'Residual Density'),
+    )
+
+
+def _density_spinbox(viewer):
+    return _qml_object(
+        viewer,
+        lambda o: 'DensityLevelSpinBox' in o.metaObject().className(),
+    )
+
+
+def test_backend_exposes_density_properties():
+    backend, _ = _make_backend()
+
+    assert backend.densityAvailable == HAS_DENSITY_CPP
+    assert backend.densityActive is False
+    assert backend.densityLevel > 0.0
+    assert backend.densityLevelMin < backend.densityLevelMax
+
+
+@needs_cpp
+def test_backend_shows_and_clears_density():
+    backend, item = _make_backend()
+    backend.load_file(RES)
+
+    backend.show_residual_density(HKL, 0.25)
+    assert item.residual_density_map is not None
+    assert backend.densityActive is True
+    assert backend.densityLevel == pytest.approx(0.25)
+
+    backend.clear_residual_density()
+    assert item.residual_density_map is None
+    assert backend.densityActive is False
+
+
+@needs_cpp
+def test_backend_toggle_uses_embedded_reflections():
+    backend, item = _make_backend()
+    backend.load_file(P21C)
+
+    backend.setDensity(True)
+
+    assert backend.densityActive is True
+    assert item.residual_density_map is not None
+
+
+@needs_cpp
+def test_backend_set_level_recontours():
+    backend, item = _make_backend()
+    backend.load_file(RES)
+    backend.show_residual_density(HKL, 0.2)
+    dense = len(item._density_pos_lines)
+
+    backend.setDensityLevel(0.6)
+
+    assert len(item._density_pos_lines) < dense
+    assert backend.densityLevel == pytest.approx(0.6)
+
+
+@needs_cpp
+def test_backend_follows_ctrl_wheel_in_the_view():
+    from fastmolwidget.molecule_base import DENSITY_LEVEL_STEP
+
+    backend, item = _make_backend()
+    backend.load_file(RES)
+    backend.show_residual_density(HKL, 0.25)
+    seen: list[float] = []
+    backend.densityLevelChanged.connect(seen.append)
+
+    item.step_residual_density_level(1)
+
+    assert backend.densityLevel == pytest.approx(0.25 + DENSITY_LEVEL_STEP)
+    assert seen == [pytest.approx(backend.densityLevel)]
+
+
+@needs_cpp
+def test_backend_loading_another_file_clears_density():
+    backend, item = _make_backend()
+    backend.load_file(P21C)
+    backend.setDensity(True)
+    assert backend.densityActive is True
+
+    backend.load_file(data / 'test_molecule.res')
+
+    assert item.residual_density_map is None
+    assert backend.densityActive is False
+
+
+def test_backend_failure_pops_the_state_back_out(monkeypatch, tmp_path):
+    """A failure must publish densityActive=False so the QML button follows."""
+    import fastmolwidget.viewer_widget_quick as module
+
+    plain = tmp_path / 'plain.res'
+    plain.write_text((data / 'test_molecule.res').read_text())
+    backend, _ = _make_backend()
+    backend.load_file(plain)
+    monkeypatch.setattr(module, 'ask_for_reflection_file',
+                        lambda parent, item: None)  # user cancels
+    seen: list[bool] = []
+    backend.densityActiveChanged.connect(seen.append)
+
+    backend.setDensity(True)
+
+    assert backend.densityActive is False
+    assert seen == [False]
+
+
+# ------------------------------------------------------------------
+# The QML controls themselves
+# ------------------------------------------------------------------
+
+def test_qml_scene_has_the_density_controls():
+    viewer = _qml_viewer()
+
+    button = _density_button(viewer)
+    spinbox = _density_spinbox(viewer)
+
+    assert button is not None
+    assert button.property('checkable') is True
+    assert button.property('checked') is False
+    assert spinbox is not None
+    # Nothing to contour yet, so the level control is disabled.
+    assert spinbox.property('enabled') is False
+
+
+def test_qml_density_button_is_disabled_without_the_extension():
+    viewer = _qml_viewer()
+
+    assert _density_button(viewer).property('enabled') == HAS_DENSITY_CPP
+
+
+@needs_cpp
+def test_qml_button_click_shows_and_hides_the_density():
+    viewer = _qml_viewer()
+    viewer.load_file(P21C)
+    app.processEvents()
+    button = _density_button(viewer)
+    spinbox = _density_spinbox(viewer)
+
+    QtCore.QMetaObject.invokeMethod(button, 'click')
+    app.processEvents()
+    assert button.property('checked') is True
+    assert spinbox.property('enabled') is True
+    assert viewer.render_widget.residual_density_map is not None
+    # The spin box shows hundredths of an e/A^3.
+    assert spinbox.property('value') == round(viewer._backend.densityLevel * 100)
+
+    QtCore.QMetaObject.invokeMethod(button, 'click')
+    app.processEvents()
+    assert button.property('checked') is False
+    assert spinbox.property('enabled') is False
+    assert viewer.render_widget.residual_density_map is None
+
+
+@needs_cpp
+def test_qml_button_follows_the_python_api():
+    viewer = _qml_viewer()
+    viewer.load_file(RES)
+    app.processEvents()
+
+    viewer.show_residual_density(HKL, 0.25)
+    app.processEvents()
+    assert _density_button(viewer).property('checked') is True
+    assert _density_spinbox(viewer).property('value') == 25
+
+    viewer.clear_residual_density()
+    app.processEvents()
+    assert _density_button(viewer).property('checked') is False
+
+
+@needs_cpp
+def test_qml_spinbox_follows_ctrl_wheel():
+    from fastmolwidget.molecule_base import DENSITY_LEVEL_STEP
+
+    viewer = _qml_viewer()
+    viewer.load_file(RES)
+    app.processEvents()
+    viewer.show_residual_density(HKL, 0.25)
+    app.processEvents()
+
+    viewer.render_widget.step_residual_density_level(1)
+    app.processEvents()
+
+    assert _density_spinbox(viewer).property('value') == round(
+        (0.25 + DENSITY_LEVEL_STEP) * 100)

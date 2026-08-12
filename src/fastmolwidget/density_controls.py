@@ -69,7 +69,78 @@ _DENSITY_TOOLTIP_OFF = "Show the residual Fo-Fc density map."
 __all__ = [
     'HAS_DENSITY_CPP',
     'DensityControlsMixin',
+    'ask_for_reflection_file',
+    'auto_reflection_file',
+    'density_statistics_text',
+    'reflection_file_start_path',
 ]
+
+
+# ---------------------------------------------------------------------------
+# UI-toolkit-agnostic helpers, shared with the Qt Quick backend
+# ---------------------------------------------------------------------------
+
+def auto_reflection_file(render_widget: Any) -> Path | None:
+    """Return the model file when it carries its own reflection data.
+
+    Deliberately does *not* look at sibling files: picking up a separate
+    ``.hkl`` silently would hide which dataset is being used, so that case
+    goes through the file dialog instead.
+
+    :param render_widget: The renderer whose ``_model_path`` to inspect.
+    :returns: The model path when it contains reflections, else ``None``.
+    """
+    model_path = getattr(render_widget, "_model_path", None)
+    if model_path is None:
+        return None
+    try:
+        from fastmolwidget.hkl_io import has_reflections
+
+        model_path = Path(model_path)
+        if model_path.suffix.lower() != ".hkl" and has_reflections(model_path):
+            return model_path
+    except Exception:  # noqa: BLE001 - fall back to asking the user
+        return None
+    return None
+
+
+def reflection_file_start_path(render_widget: Any) -> str:
+    """Return the best starting path for the reflection-file dialog."""
+    model_path = getattr(render_widget, "_model_path", None)
+    if model_path is None:
+        return ""
+
+    model_path = Path(model_path)
+    hkl_path = model_path.with_suffix(".hkl")
+    if hkl_path.exists():
+        return str(hkl_path)
+    return str(model_path.parent)
+
+
+def ask_for_reflection_file(parent: Any, render_widget: Any) -> Path | None:
+    """Last resort: let the user pick a reflection file.
+
+    :param parent: Widget to parent the dialog to; may be ``None``.
+    :param render_widget: Used to pre-select a sibling ``.hkl``.
+    """
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(
+        parent,
+        "Open Reflection File",
+        reflection_file_start_path(render_widget),
+        "Reflection files (*.hkl *.fcf *.cif);;SHELX HKL (*.hkl);;All files (*)",
+    )
+    return Path(path) if path else None
+
+
+def density_statistics_text(density_map: Any) -> str:
+    """One-line ``max / min / rms`` summary of *density_map* for a tooltip."""
+    if density_map is None:
+        return _DENSITY_TOOLTIP_OFF
+    return (
+        f"Residual density shown - click to hide.\n"
+        f"max {density_map.max:+.3f}, min {density_map.min:+.3f}, "
+        f"rms {density_map.rms:.3f} e/Å³"
+    )
 
 
 class DensityControlsMixin(_HostBase):
@@ -244,46 +315,17 @@ class DensityControlsMixin(_HostBase):
     def _auto_reflection_file(self) -> Path | None:
         """Return the model file when it carries its own reflection data.
 
-        Deliberately does *not* look at sibling files: picking up a separate
-        ``.hkl`` silently would hide which dataset is being used, so that case
-        goes through the file dialog instead.
-
-        :returns: The model path when it contains reflections, else ``None``.
+        See :func:`auto_reflection_file`.
         """
-        model_path = getattr(self._render_widget, "_model_path", None)
-        if model_path is None:
-            return None
-        try:
-            from fastmolwidget.hkl_io import has_reflections
-
-            model_path = Path(model_path)
-            if model_path.suffix.lower() != ".hkl" and has_reflections(model_path):
-                return model_path
-        except Exception:  # noqa: BLE001 - fall back to asking the user
-            return None
-        return None
+        return auto_reflection_file(self._render_widget)
 
     def _ask_for_reflection_file(self) -> Path | None:
         """Last resort: let the user pick a reflection file."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Open Reflection File",
-            self._residual_density_start_path(),
-            "Reflection files (*.hkl *.fcf *.cif);;SHELX HKL (*.hkl);;All files (*)",
-        )
-        return Path(path) if path else None
+        return ask_for_reflection_file(self, self._render_widget)
 
     def _residual_density_start_path(self) -> str:
         """Return the best starting path for the residual-density file dialog."""
-        model_path = getattr(self._render_widget, "_model_path", None)
-        if model_path is None:
-            return ""
-
-        model_path = Path(model_path)
-        hkl_path = model_path.with_suffix(".hkl")
-        if hkl_path.exists():
-            return str(hkl_path)
-        return str(model_path.parent)
+        return reflection_file_start_path(self._render_widget)
 
     def _update_residual_density_tooltip(self) -> None:
         """Show the map statistics on the button while density is displayed."""
@@ -291,7 +333,4 @@ class DensityControlsMixin(_HostBase):
         if density_map is None:
             return
         self._residual_density_button.setToolTip(
-            f"Residual density shown - click to hide.\n"
-            f"max {density_map.max:+.3f}, min {density_map.min:+.3f}, "
-            f"rms {density_map.rms:.3f} e/Å³"
-        )
+            density_statistics_text(density_map))
