@@ -1724,6 +1724,11 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
             self._compute_molecule_bounds()
 
         self._build_geometry()
+        # A cached density map survives a reload of the *same* structure (grow
+        # and pack do this), but the visible atoms have moved, so the surface
+        # has to be re-clipped around them.
+        if self._density_map is not None:
+            self._build_density_geometry()
         self.update()
 
         # Emit after geometry is fully built so signal handlers (e.g.

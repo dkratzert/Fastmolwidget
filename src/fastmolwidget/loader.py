@@ -78,6 +78,14 @@ class MoleculeLoader:
             )
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
+
+        # A different structure invalidates any residual-density map, which
+        # belongs to the reflections of the *previous* model.  Reloading the
+        # same file (what grow / pack do) keeps it.
+        previous = getattr(self._widget, '_model_path', None)
+        if previous is not None and Path(previous) != path:
+            self._widget.clear_residual_density()
+
         loader = getattr(self, loader_name)
         loader(path, keep_view=keep_view)
         # Let the widget know which file it is showing, so that features which

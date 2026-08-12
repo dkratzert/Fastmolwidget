@@ -378,3 +378,73 @@ def test_checked_button_has_a_distinct_appearance():
 
     assert 'checked' in style
     assert 'background-color' in style
+
+
+# ------------------------------------------------------------------
+# Loading another structure resets the density
+# ------------------------------------------------------------------
+
+@needs_cpp
+def test_loading_another_file_clears_the_density(widget):
+    """The map belongs to the previous model and must not survive."""
+    widget.show_residual_density(HKL, level=0.15)
+    assert widget.residual_density_map is not None
+
+    MoleculeLoader(widget).load_file(DATA / 'p21c.cif')
+
+    assert widget.residual_density_map is None
+    assert widget._density_pos_count == 0
+    assert widget._density_neg_count == 0
+    assert widget._density_verts.size == 0
+
+
+@needs_cpp
+def test_reloading_the_same_file_keeps_the_density():
+    """Grow and pack reload the same path - the map is still valid."""
+    view = MoleculeWidget3D()
+    loader = MoleculeLoader(view)
+    loader.load_file(RES)
+    view.show_residual_density(HKL, level=0.15)
+
+    loader.load_file(RES, keep_view=True)
+
+    assert view.residual_density_map is not None
+
+
+@needs_cpp
+def test_growing_reclips_the_density():
+    """More atoms on screen must mean more density around them."""
+    view = MoleculeWidget3D()
+    loader = MoleculeLoader(view)
+    loader.load_file(RES)
+    view.show_residual_density(HKL, level=0.15)
+    before = view._density_verts.size
+    atoms_before = len(view.atoms)
+
+    loader.set_grow(True)
+
+    assert len(view.atoms) > atoms_before
+    assert view.residual_density_map is not None   # not recomputed
+    assert view._density_verts.size > before
+
+
+@needs_cpp
+def test_viewer_button_resets_when_a_new_file_is_loaded():
+    """The control bar must not claim density is shown after a reload."""
+    viewer = MoleculeViewer3DWidget()
+    viewer.load_file(DATA / 'p21c.cif')
+    viewer._residual_density_button.click()
+    assert viewer._residual_density_button.isChecked()
+
+    viewer.load_file(DATA / 'p31c.cif')
+
+    assert not viewer._residual_density_button.isChecked()
+    assert not viewer._density_level_spinbox.isEnabled()
+    assert viewer.render_widget.residual_density_map is None
+
+
+def test_loading_a_file_without_density_is_harmless(widget):
+    """Clearing on load must work even when nothing was ever shown."""
+    MoleculeLoader(widget).load_file(DATA / 'p21c.cif')
+
+    assert widget.residual_density_map is None

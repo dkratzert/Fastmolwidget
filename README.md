@@ -530,6 +530,16 @@ When the reflections are in a **separate file** (the usual `.res` + `.hkl`
 pair) the button opens a file dialog, with a matching `.hkl` next to the model
 pre-selected — so it is always visible which dataset a map was computed from.
 
+The button is a **toggle**: while density is displayed it stays pressed and is
+tinted green, and clicking it again removes the surface. The *Level* spinbox is
+enabled only while a map is shown, and the button's tooltip carries the map
+statistics.
+
+Loading a **different structure** switches the density off again — the map
+belongs to the previous model's reflections. Grow and Pack reload the same
+file, so they keep the map and simply re-clip it around the larger set of
+displayed atoms.
+
 Pass an explicit path to skip the dialog:
 
 ```python

@@ -211,6 +211,9 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
         :raises FileNotFoundError: If the file does not exist.
         """
         self._loader.load_file(filename)
+        # Loading a different structure drops its residual density; make the
+        # control bar follow whatever the renderer actually ended up with.
+        self._sync_density_controls()
 
     def grow(self) -> None:
         """Grow the current structure to complete molecules.
@@ -317,6 +320,16 @@ class MoleculeViewer3DWidget(QtWidgets.QWidget):
             self._update_residual_density_tooltip()
         else:
             self._residual_density_button.setToolTip(_DENSITY_TOOLTIP_OFF)
+
+    def _sync_density_controls(self) -> None:
+        """Match the density controls to the renderer's actual state.
+
+        Used after operations that may drop the map behind the control bar's
+        back — loading a different structure, for instance.
+        """
+        self._set_density_controls_active(
+            self._render_widget.residual_density_map is not None
+        )
 
     def _on_grow_toggled(self, checked: bool) -> None:
         """Activate grow mode; deactivate pack mode when grow is switched on."""
