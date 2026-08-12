@@ -268,7 +268,7 @@ def test_fixed_format_fast_path_matches_the_fallback(text, uses_fast_path):
     assert np.array_equal(fast.hkl, slow.hkl)
     assert np.array_equal(fast.f_sq_meas, slow.f_sq_meas)
     assert np.array_equal(fast.sigma, slow.sigma)
-    assert np.array_equal(fast.batch, slow.batch)
+    assert np.array_equal(np.asarray(fast.batch), np.asarray(slow.batch))
 
 
 def test_fast_path_matches_the_fallback_on_a_real_file():
@@ -283,7 +283,7 @@ def test_fast_path_matches_the_fallback_on_a_real_file():
     assert np.array_equal(fast.hkl, slow.hkl)
     assert np.array_equal(fast.f_sq_meas, slow.f_sq_meas)
     assert np.array_equal(fast.sigma, slow.sigma)
-    assert np.array_equal(fast.batch, slow.batch)
+    assert np.array_equal(np.asarray(fast.batch), np.asarray(slow.batch))
 
 
 # ---------------------------------------------------------------------------

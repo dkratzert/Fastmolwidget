@@ -85,7 +85,16 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-fastmolwidget = ["qml/*.qml", "web/js/*.js", "web/js/*.md", "web/templates/*.html"]
+# py.typed marks the package as typed (PEP 561); the .pyi stubs describe the
+# compiled pybind11 extensions, which carry no type information themselves.
+fastmolwidget = [
+    "py.typed",
+    "*.pyi",
+    "qml/*.qml",
+    "web/js/*.js",
+    "web/js/*.md",
+    "web/templates/*.html",
+]
 
 [tool.setuptools.dynamic]
 version = {attr = "fastmolwidget.__version__"}
