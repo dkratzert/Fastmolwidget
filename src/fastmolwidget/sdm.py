@@ -7,7 +7,7 @@ from operator import attrgetter
 from typing import TYPE_CHECKING
 
 try:
-    import sdm_cpp
+    from fastmolwidget import sdm_cpp
 
     HAS_CPP = True
 except ImportError:
