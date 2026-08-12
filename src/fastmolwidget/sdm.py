@@ -7,7 +7,7 @@ from operator import attrgetter
 from typing import TYPE_CHECKING
 
 try:
-    import sdm_cpp
+    from fastmolwidget import sdm_cpp
 
     HAS_CPP = True
 except ImportError:
@@ -19,8 +19,9 @@ from fastmolwidget.dsrmath import SymmetryElement, frac_to_cart
 if TYPE_CHECKING:
     pass
 
-DEBUG = False
-Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix', 'adp'), defaults=(None, None))
+DEBUG = True
+Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix', 'adp'),
+                       defaults=(None, None))
 
 
 class SymmCards:
@@ -261,7 +262,7 @@ class SDM:
 
                 for n, (m, t) in enumerate(zip(symm_m, symm_t)):
                     if sdm_item.atom1[5] * sdm_item.atom2[5] != 0 and \
-                            sdm_item.atom1[5] != sdm_item.atom2[5]:
+                        sdm_item.atom1[5] != sdm_item.atom2[5]:
                         continue
                     # Both the same atomic number and number 0 (hydrogen)
                     if sdm_item.atom1[1] == sdm_item.atom2[1] and sdm_item.atom1[1] in h:
@@ -350,10 +351,10 @@ class SDM:
         self.maxmol = mol_counter
 
     def pack_unit_cell(
-            self,
-            symmop_indices: list[int] | None = None,
-            *,
-            cart_tolerance: float = 0.2,
+        self,
+        symmop_indices: list[int] | None = None,
+        *,
+        cart_tolerance: float = 0.2,
     ) -> list[Atomtuple]:
         """Pack all symmetry-equivalent positions into one unit cell.
 
@@ -593,6 +594,6 @@ if __name__ == "__main__":
 
     app = QtWidgets.QApplication(sys.argv)
     viewer = MoleculeViewerWidget()
-    viewer.load_file(Path('../../tests/test-data/4060314.cif'))
+    viewer.load_file(Path('tests/test-data/4060314.cif'))
     viewer.show()
     sys.exit(app.exec())
