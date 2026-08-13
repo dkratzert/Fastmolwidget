@@ -62,7 +62,10 @@ def render(widget: MoleculeWidget) -> np.ndarray:
     finally:
         widget._painter = None
         painter.end()
-    return np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+    buffer = image.constBits()
+    if hasattr(buffer, 'setsize'):
+        buffer.setsize(image.sizeInBytes())  # PyQt5/6 return an unsized voidptr
+    return np.frombuffer(buffer, dtype=np.uint8).reshape(
         HEIGHT, WIDTH, 4).copy()
 
 
@@ -443,11 +446,15 @@ def test_ctrl_wheel_without_a_map_is_ignored(widget):
 def test_ctrl_wheel_is_clamped_to_the_control_range(widget):
     widget.show_residual_density(HKL)
 
-    for _ in range(500):
+    # One step per wheel event, so the number needed follows the constants.
+    steps = int((DENSITY_LEVEL_MAX - DENSITY_LEVEL_MIN)
+                / DENSITY_LEVEL_STEP) + 10
+
+    for _ in range(steps):
         _wheel(widget, -1, ctrl=True)
     assert widget.residual_density_level == pytest.approx(DENSITY_LEVEL_MIN)
 
-    for _ in range(800):
+    for _ in range(steps):
         _wheel(widget, 1, ctrl=True)
     assert widget.residual_density_level == pytest.approx(DENSITY_LEVEL_MAX)
 
