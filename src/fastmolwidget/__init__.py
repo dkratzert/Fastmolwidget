@@ -8,7 +8,7 @@ MoleculeWidget`` keeps working unchanged.
 
 from typing import TYPE_CHECKING
 
-__version__ = "1.0.3"
+__version__ = "1.1.0"
 
 if TYPE_CHECKING:
     from fastmolwidget.density import (

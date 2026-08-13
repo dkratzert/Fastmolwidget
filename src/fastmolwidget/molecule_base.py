@@ -23,7 +23,7 @@ from typing import Protocol, runtime_checkable
 from fastmolwidget.sdm import Atomtuple
 
 #: Change in the residual-density contour level per Ctrl+wheel notch, in e/Å³.
-DENSITY_LEVEL_STEP: float = 0.02
+DENSITY_LEVEL_STEP: float = 0.01
 
 #: Lowest contour level the interactive controls allow, in e/Å³.  A level of
 #: zero would contour the whole map, so it is never reached.

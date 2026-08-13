@@ -1,0 +1,49 @@
+Fastmolwidget changes
+=====================
+
+v1.1.0
+------
+- New: residual (Fo-Fc) density maps in all three renderers (2D QPainter,
+  Qt Quick and 3D OpenGL): show_residual_density(), set_residual_density_level(),
+  clear_residual_density(), residual_density_map / residual_density_level.
+- New: density.py computes the map with gemmi (SHELXL convention, unweighted
+  (|Fo|/OSF - |Fc|)*exp(i*phi_c)); grid spacing fixed at 0.15 A, systematically
+  absent reflections dropped, non-positive-definite ADPs downgraded to isotropic.
+- New: hkl_io.py reads SHELX .hkl, fcf-style CIF reflection loops, reflections
+  embedded in SHELXL CIFs, and SHELX refinement parameters (OSF, WGHT, EXTI,
+  wavelength, free variables). Automatic reflection-file lookup plus a cached
+  CIF document reader.
+- New: twinning support - full HKLF N transformation matrix, TWIN/BASF
+  detwinning for HKLF 4 and HKLF 5, including racemic (negative TWIN count).
+- New: optional pybind11 extension fastmolwidget.density_cpp with
+  marching_cubes() and a vectorised structure_factors(); falls back to gemmi
+  for structure factors, and the viewer disables the density button when the
+  extension is unavailable.
+- New: residual-density controls in all viewers - a checkable "Residual Density"
+  button and a contour Level spin box (shared through density_controls.py,
+  and DensityLevelSpinBox.qml for the Qt Quick viewer). The default level is
+  3 sigma of the map RMS.
+- New: Ctrl + scroll wheel steps the contour level (0.02 e/A^3 per step) in the
+  2D and 3D renderers; the new densityLevelChanged(float) signal keeps the
+  spin box in sync.
+- New: residual density in the JavaScript/Canvas web viewer, with the same
+  interactive controls.
+- New: sdm_cpp is now built and packaged as fastmolwidget.sdm_cpp.
+- New: type stubs for the density_cpp and sdm_cpp pybind11 extensions.
+- New: viewer windows show the loaded file name in the title.
+- Changed: the residual density surface is clipped to the visible atoms, so
+  toggling hydrogens or disorder parts re-clips the map without recomputing it.
+- Changed: loading a different model clears the density; reloading the same
+  file (grow, pack) keeps it.
+- Added ylid test data.
+
+v1.0.3
+------
+- Consistent stroke width and device-pixel handling in the JavaScript renderer.
+- Consistent stroke join style between the JS and Python renderers.
+
+v1.0.1
+------
+- Fixed NPD placeholder cube orientation and visibility.
+- Improved fitting and rotation handling after growing a structure.
+- Control bar elements can be shown selectively.

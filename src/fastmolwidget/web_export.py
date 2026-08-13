@@ -42,9 +42,9 @@ __all__ = [
 
 #: Grid spacing in Å used for web exports.  Coarser than the desktop default
 #: (:data:`fastmolwidget.density.DEFAULT_GRID_SPACING`, 0.15 Å) because the map
-#: has to travel inside the HTML page: 0.25 Å is about a tenth of the payload
+#: has to travel inside the HTML page: 0.20 Å is about a tenth of the payload
 #: and still resolves the features a report-sized view can show.
-DEFAULT_WEB_GRID_SPACING: float = 0.25
+DEFAULT_WEB_GRID_SPACING: float = 0.20
 
 #: Extra padding, in grid steps, added to the masking radius.  Grid points just
 #: outside the displayed envelope still take part in the interpolation of the
