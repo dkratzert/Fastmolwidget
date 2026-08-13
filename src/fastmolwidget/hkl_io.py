@@ -120,6 +120,11 @@ class ReflectionData:
         group but the last; for ``HKLF 4`` it is the batch number, which some
         programs make negative to flag a reflection for the *R*\\ :sub:`free`
         set.  The two must not be confused.
+    :param sigma_known: ``False`` when the source file carried no standard
+        uncertainties and *sigma* holds a placeholder.  Consumers that judge
+        the *significance* of an observation — such as the down-weighting of
+        weak data in :func:`fastmolwidget.density.calculate_residual_density`
+        — must not use σ in that case.
     """
 
     hkl: np.ndarray
@@ -127,6 +132,7 @@ class ReflectionData:
     sigma: np.ndarray
     f_calc: np.ndarray | None = None
     batch: np.ndarray | None = None
+    sigma_known: bool = True
 
     def __len__(self) -> int:
         return len(self.hkl)
@@ -445,8 +451,10 @@ def read_cif_reflections(path: str | Path) -> ReflectionData | None:
 
         if sig_col:
             sigma = np.array([_num(v) for v in sig_col], dtype=float)
+            sigma_known = True
         else:
             sigma = np.ones_like(f_sq)
+            sigma_known = False
 
         hkl = np.array(
             [[int(_num(a)), int(_num(b)), int(_num(c))]
@@ -456,7 +464,7 @@ def read_cif_reflections(path: str | Path) -> ReflectionData | None:
 
         f_calc = _cif_f_calc(block, len(hkl))
         return ReflectionData(hkl=hkl, f_sq_meas=f_sq, sigma=sigma,
-                              f_calc=f_calc)
+                              f_calc=f_calc, sigma_known=sigma_known)
     return None
 
 

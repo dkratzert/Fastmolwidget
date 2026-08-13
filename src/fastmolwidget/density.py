@@ -86,11 +86,27 @@ DEFAULT_MARGIN: float = 1.5
 #: comparable picture for good and poor refinements alike.
 DEFAULT_SIGMA: float = 3.0
 
+#: Default strength of the down-weighting of weak data.  Every Fourier
+#: coefficient is multiplied by ``1 / (1 + w·(σ(F)/|Fc|)³)``, so reflections
+#: whose σ approaches their calculated amplitude — the noisy, mostly
+#: high-angle ones — barely contribute, while strong data passes through
+#: untouched.  This is the only smoothing applied: it acts in reciprocal
+#: space, on the data, rather than blurring the finished map.  ``0.0``
+#: switches it off.
+DEFAULT_WEAK_WEIGHT: float = 1.0
+
+#: Exponent of the ``σ(F)/|Fc|`` ratio in the down-weighting of weak data.
+#: The higher it is, the more abruptly a reflection is cut once its σ becomes
+#: comparable with its calculated amplitude.
+WEAK_DATA_EXPONENT: float = 3.0
+
 __all__ = [
     'DEFAULT_GRID_SPACING',
     'DEFAULT_MARGIN',
     'DEFAULT_SIGMA',
+    'DEFAULT_WEAK_WEIGHT',
     'HAS_DENSITY_CPP',
+    'WEAK_DATA_EXPONENT',
     'ResidualDensityMap',
     'calculate_residual_density',
     'small_structure_from_cif',
@@ -608,6 +624,7 @@ def _apply_hklf_transform(
         sigma=reflections.sigma * scale * sigma_scale,
         f_calc=reflections.f_calc,
         batch=reflections.batch,
+        sigma_known=reflections.sigma_known,
     )
 
 
@@ -749,6 +766,7 @@ def _detwin_observations(
         hkl=np.array(hkl_out, dtype=np.int32),
         f_sq_meas=np.array(f_sq_out, dtype=float),
         sigma=np.array(sigma_out, dtype=float),
+        sigma_known=reflections.sigma_known,
     )
 
 
@@ -809,6 +827,7 @@ def calculate_residual_density(
     *,
     grid_spacing: float = DEFAULT_GRID_SPACING,
     d_min: float | None = None,
+    weak_weight: float = DEFAULT_WEAK_WEIGHT,
 ) -> ResidualDensityMap:
     """Compute a residual (Fo−Fc) density map from a model and reflection file.
 
@@ -819,6 +838,8 @@ def calculate_residual_density(
     :param grid_spacing: FFT grid spacing in Å.  A fixed length, so the grid
         size depends only on the unit cell and not on the data resolution.
     :param d_min: Optional resolution cut-off in Å.  ``None`` uses all data.
+    :param weak_weight: Strength of the down-weighting of weak data, see
+        :func:`_weak_data_damping`.  ``0.0`` disables it.
     :returns: The computed map.
     :raises FileNotFoundError: If *hkl_path* is ``None`` and no reflection
         data could be found next to the model.
@@ -852,8 +873,8 @@ def calculate_residual_density(
         if params.is_twinned:
             reflections = _detwin_observations(reflections, structure, params)
 
-    hkl, f_obs = _merge_to_asu(reflections, structure.spacegroup, d_min,
-                               structure.cell)
+    hkl, f_obs, sigma = _merge_to_asu(reflections, structure.spacegroup, d_min,
+                                      structure.cell)
     if len(hkl) == 0:
         raise ValueError(f'No usable reflections in {hkl_path or model_path}')
 
@@ -865,6 +886,7 @@ def calculate_residual_density(
     size = _grid_size(structure.cell, grid_spacing)
     fits = _fits_in_grid(hkl, size)
     hkl, f_obs, f_calc = hkl[fits], f_obs[fits], f_calc[fits]
+    sigma = sigma[fits]
     if len(hkl) == 0:
         raise ValueError(
             f'No reflections fit a {grid_spacing} Å grid - use a smaller '
@@ -872,6 +894,10 @@ def calculate_residual_density(
         )
 
     delta = (f_obs / scale - np.abs(f_calc)) * np.exp(1j * np.angle(f_calc))
+    if reflections.sigma_known:
+        # σ has to be brought onto the calculated scale, just like |Fo|.
+        delta = delta * _weak_data_damping(sigma / scale, np.abs(f_calc),
+                                           weak_weight)
     asu = gemmi.ComplexAsuData(structure.cell, structure.spacegroup,
                                hkl, delta.astype(np.complex64))
     grid = asu.transform_f_phi_to_map(exact_size=size)
@@ -884,6 +910,43 @@ def calculate_residual_density(
         d_min=resolution,
         scale=scale,
     )
+
+
+def _weak_data_damping(
+    sigma: np.ndarray,
+    f_calc_abs: np.ndarray,
+    weight: float,
+) -> np.ndarray:
+    """Return the per-reflection factor that damps weak, noisy data.
+
+    Each Fourier coefficient is multiplied by
+
+    .. math::
+        \\frac{1}{1 + w \\left(\\frac{\\sigma(F)}{|F_c|}\\right)^3}
+
+    A reflection measured well compared with what the model predicts passes
+    through unchanged, while one whose σ approaches its calculated amplitude
+    is suppressed; the third power (:data:`WEAK_DATA_EXPONENT`) makes that
+    transition gradual enough to leave genuinely weak but real data in the
+    map.  Since the poorly measured reflections are predominantly the
+    high-angle ones, the net effect is a data-driven, resolution-dependent
+    low-pass filter — the map is smoothed *before* the FFT rather than
+    blurred afterward, so no feature is displaced.
+
+    Reflections with a vanishing ``|Fc|``, where the ratio is meaningless,
+    are left alone.
+
+    :param sigma: σ(F) of each unique reflection, on the calculated scale.
+    :param f_calc_abs: ``|Fc|`` of the same reflections.
+    :param weight: The strength *w*; ``<= 0`` disables the filter.
+    :returns: Factors in ``(0, 1]``, one per reflection.
+    """
+    if weight <= 0.0:
+        return np.ones_like(f_calc_abs, dtype=float)
+    ratio = np.zeros_like(f_calc_abs, dtype=float)
+    usable = f_calc_abs > 1e-6
+    ratio[usable] = sigma[usable] / f_calc_abs[usable]
+    return 1.0 / (1.0 + weight * ratio ** WEAK_DATA_EXPONENT)
 
 
 def _fits_in_grid(hkl: np.ndarray, size: list[int]) -> np.ndarray:
@@ -959,7 +1022,7 @@ def _merge_to_asu(
     spacegroup: gemmi.SpaceGroup,
     d_min: float | None,
     cell: gemmi.UnitCell,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Merge observations into the reciprocal asymmetric unit.
 
     Symmetry equivalents are averaged with ``1/σ²`` weights, as in a standard
@@ -978,7 +1041,10 @@ def _merge_to_asu(
     :meth:`gemmi.ReciprocalAsu.to_asu` call per *unique* reflection is left,
     instead of one per observation.
 
-    :returns: ``(hkl, |Fo|)`` for the unique reflections.
+    :returns: ``(hkl, |Fo|, σ(F))`` for the unique reflections.  The merged
+        standard uncertainty is propagated onto the amplitude scale as
+        ``σ(F) = sqrt(F² + σ(F²)) − |Fo|``, with
+        ``σ(F²) = 1/sqrt(Σ 1/σ_i²)`` from the merge.
     """
     ops = spacegroup.operations()
     asu = gemmi.ReciprocalAsu(spacegroup)
@@ -990,7 +1056,8 @@ def _merge_to_asu(
     present = ~np.asarray(ops.systematic_absences(hkl), dtype=bool)
     hkl, f_sq, sigma = hkl[present], f_sq[present], sigma[present]
     if len(hkl) == 0:
-        return np.empty((0, 3), dtype=np.int32), np.empty(0, dtype=float)
+        empty = np.empty(0, dtype=float)
+        return np.empty((0, 3), dtype=np.int32), empty, empty.copy()
 
     labels, representatives = _equivalence_classes(hkl, ops)
     asu_hkl = np.array(
@@ -1009,8 +1076,11 @@ def _merge_to_asu(
         usable &= cell.calculate_d_array(asu_hkl) >= d_min
 
     asu_hkl = asu_hkl[usable]
-    f_obs = np.sqrt(np.maximum(weighted[usable] / total[usable], 0.0))
-    return asu_hkl, f_obs
+    mean_f_sq = np.maximum(weighted[usable] / total[usable], 0.0)
+    f_obs = np.sqrt(mean_f_sq)
+    sigma_f_sq = 1.0 / np.sqrt(total[usable])
+    sigma_f = np.sqrt(mean_f_sq + sigma_f_sq) - f_obs
+    return asu_hkl, f_obs, sigma_f
 
 
 def _equivalence_classes(

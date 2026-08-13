@@ -27,6 +27,7 @@ import pytest
 from fastmolwidget.density import (
     DEFAULT_GRID_SPACING,
     DEFAULT_SIGMA,
+    DEFAULT_WEAK_WEIGHT,
     HAS_DENSITY_CPP,
     ResidualDensityMap,
     calculate_residual_density,
@@ -241,6 +242,80 @@ def test_resolution_cutoff_reduces_detail():
     truncated = calculate_residual_density(RES, HKL, d_min=1.0)
 
     assert truncated.d_min >= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Down-weighting of weak data (the map's only smoothing)
+# ---------------------------------------------------------------------------
+
+def test_weak_data_damping_formula():
+    """The factor is ``1 / (1 + w·(σ/|Fc|)³)``."""
+    from fastmolwidget.density import WEAK_DATA_EXPONENT, _weak_data_damping
+
+    sigma = np.array([0.0, 1.0, 2.0, 5.0])
+    f_calc = np.array([10.0, 10.0, 10.0, 10.0])
+    factors = _weak_data_damping(sigma, f_calc, 1.0)
+
+    assert WEAK_DATA_EXPONENT == 3.0
+    assert factors == pytest.approx(
+        1.0 / (1.0 + (sigma / f_calc) ** WEAK_DATA_EXPONENT))
+    assert factors[0] == 1.0
+    assert np.all(np.diff(factors) < 0)      # weaker data is damped more
+
+
+def test_weak_data_damping_ignores_vanishing_fcalc():
+    """A zero |Fc| makes the ratio meaningless - leave the term alone."""
+    from fastmolwidget.density import _weak_data_damping
+
+    factors = _weak_data_damping(np.array([3.0, 3.0]),
+                                 np.array([0.0, 1.0]), 1.0)
+
+    assert factors[0] == 1.0
+    assert factors[1] < 0.05
+
+
+def test_weak_data_damping_can_be_switched_off():
+    from fastmolwidget.density import _weak_data_damping
+
+    factors = _weak_data_damping(np.array([5.0, 50.0]),
+                                 np.array([1.0, 1.0]), 0.0)
+
+    assert factors == pytest.approx(1.0)
+
+
+def test_weak_weight_damps_the_map():
+    """Down-weighting weak data may only ever remove density, never add it."""
+    undamped = calculate_residual_density(RES, HKL, weak_weight=0.0)
+    damped = calculate_residual_density(RES, HKL, weak_weight=8.0)
+
+    assert damped.rms < undamped.rms
+    assert damped.max <= undamped.max + 1e-9
+    assert damped.array.shape == undamped.array.shape
+
+
+def test_default_map_is_damped(density_map):
+    """The default really is DEFAULT_WEAK_WEIGHT, not 'no filter'."""
+    explicit = calculate_residual_density(RES, HKL,
+                                          weak_weight=DEFAULT_WEAK_WEIGHT)
+
+    assert explicit.rms == pytest.approx(density_map.rms, abs=1e-9)
+
+
+def test_damping_is_skipped_without_standard_uncertainties(monkeypatch):
+    """Placeholder σ values must not be mistaken for real ones."""
+    from fastmolwidget import density as density_module
+    from fastmolwidget.hkl_io import read_reflections
+
+    def without_sigma(path):
+        data = read_reflections(path)
+        data.sigma_known = False
+        return data
+
+    monkeypatch.setattr(density_module, 'read_reflections', without_sigma)
+    unfiltered = calculate_residual_density(RES, HKL, weak_weight=8.0)
+
+    assert unfiltered.rms == pytest.approx(
+        calculate_residual_density(RES, HKL, weak_weight=0.0).rms, abs=1e-9)
 
 
 def test_orthogonalisation_matrix_matches_cell_volume(density_map):
@@ -868,7 +943,7 @@ def test_systematically_absent_reflections_are_dropped():
 
     structure = small_structure_from_cif(P21C)
     data = read_reflections(P21C)
-    hkl, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+    hkl, _, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
 
     ops = structure.spacegroup.operations()
     assert not any(ops.is_systematically_absent(list(h)) for h in hkl)
@@ -893,7 +968,7 @@ def test_fast_structure_factors_match_gemmi(model, reflections):
 
     structure, params = _load_model(Path(model))
     data = read_reflections(reflections)
-    hkl, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+    hkl, _, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
 
     calculator = gemmi.StructureFactorCalculatorX(structure.cell)
     if params.wavelength:
@@ -922,7 +997,7 @@ def test_structure_factors_handle_an_isotropic_only_model():
         site.aniso = gemmi.SMat33d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         site.u_iso = 0.03
     data = read_reflections(HKL)
-    hkl, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+    hkl, _, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
 
     calculator = gemmi.StructureFactorCalculatorX(structure.cell)
     expected = np.array([
@@ -948,7 +1023,7 @@ def test_merged_reflections_carry_the_weighted_mean():
         sigma=np.array([1.0, 2.0]),
     )
 
-    hkl, f_obs = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
+    hkl, f_obs, _ = _merge_to_asu(data, structure.spacegroup, None, structure.cell)
 
     weights = np.array([1.0, 0.25])
     expected = np.sqrt((weights * [100.0, 200.0]).sum() / weights.sum())

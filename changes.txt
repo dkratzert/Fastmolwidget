@@ -35,6 +35,17 @@ v1.1.0
   toggling hydrogens or disorder parts re-clips the map without recomputing it.
 - Changed: loading a different model clears the density; reloading the same
   file (grow, pack) keeps it.
+- New: weak reflections are down-weighted in the residual-density Fourier
+  coefficients: 1/(1 + w*(sigma(F)/|Fc|)^3) with
+  w = density.DEFAULT_WEAK_WEIGHT (1.0) and the exponent
+  density.WEAK_DATA_EXPONENT (3.0).
+  calculate_residual_density(..., weak_weight=0.0) switches it off. The filter
+  is skipped when the reflection file carried no standard uncertainties
+  (new ReflectionData.sigma_known flag).
+- Changed: density._merge_to_asu now also returns the merged sigma(F).
+- Fixed: density_cpp failed to compile with GCC and pybind11 3.x - the empty
+  and output array shapes are now passed as an explicit
+  py::array::ShapeContainer, which is unambiguous.
 - Added ylid test data.
 
 v1.0.3

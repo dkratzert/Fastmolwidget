@@ -335,8 +335,11 @@ double interpolate_mu(double level, double value_a, double value_b) {
 }
 
 py::tuple empty_result() {
-    auto vertices = py::array_t<double>({py::ssize_t(0), py::ssize_t(3)});
-    auto edges = py::array_t<std::int64_t>({py::ssize_t(0), py::ssize_t(2)});
+    // The shape must be spelled out as a ShapeContainer: a braced list of two
+    // ssize_t is ambiguous between array_t(ShapeContainer) and
+    // array_t(const buffer_info&) in newer pybind11 releases.
+    auto vertices = py::array_t<double>(py::array::ShapeContainer{0, 3});
+    auto edges = py::array_t<std::int64_t>(py::array::ShapeContainer{0, 2});
     return py::make_tuple(vertices, edges);
 }
 
@@ -456,8 +459,10 @@ py::tuple marching_cubes_impl(
         }
     }
 
-    auto vertices_out = py::array_t<double>({static_cast<py::ssize_t>(vertices.size()), py::ssize_t(3)});
-    auto edges_out = py::array_t<std::int64_t>({static_cast<py::ssize_t>(edges.size()), py::ssize_t(2)});
+    auto vertices_out = py::array_t<double>(py::array::ShapeContainer{
+        static_cast<py::ssize_t>(vertices.size()), py::ssize_t(3)});
+    auto edges_out = py::array_t<std::int64_t>(py::array::ShapeContainer{
+        static_cast<py::ssize_t>(edges.size()), py::ssize_t(2)});
 
     auto vertices_view = vertices_out.mutable_unchecked<2>();
     for (py::ssize_t i = 0; i < static_cast<py::ssize_t>(vertices.size()); ++i) {

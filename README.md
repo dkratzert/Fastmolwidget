@@ -632,7 +632,19 @@ grid can represent are dropped rather than aliased. Pass `grid_spacing=` to
    `(|Fo|/OSF − |Fc|)·exp(iφc)` — the `WGHT` scheme deliberately is *not*
    applied, because SHELXL uses it only for the least-squares objective and
    not for Fourier maps.
-6. An FFT over the space group yields ρ in e/Å³, and the isosurface is
+6. **Weak, poorly measured data is down-weighted**: every coefficient is
+   multiplied by `1 / (1 + w·(σ(F)/|Fc|)³)` with `w = 1.0`
+   (`fastmolwidget.density.DEFAULT_WEAK_WEIGHT`, exponent
+   `WEAK_DATA_EXPONENT`). A reflection measured well compared with what the
+   model predicts passes through unchanged, while one whose σ approaches its
+   calculated amplitude is suppressed. Since the noisy reflections are
+   predominantly the high-angle ones, this acts as a data-driven,
+   resolution-dependent low-pass filter — the map is smoothed *before* the
+   FFT rather than blurred afterward, so no feature is displaced. Pass
+   `weak_weight=` to `calculate_residual_density()` to change the strength;
+   `0.0` switches the filter off. It is skipped entirely when the reflection
+   file carried no standard uncertainties.
+7. An FFT over the space group yields ρ in e/Å³, and the isosurface is
    extracted with the `density_cpp` marching-cubes extension.
 
 A leading `global_` block in a CIF is ignored; the first block with atom sites
@@ -667,7 +679,7 @@ disabled and `show_residual_density()` raises a clear `RuntimeError` instead
 of crashing.
 
 For the bundled `p31c` test structure the computed map gives
-`max +0.32, min −0.30, rms 0.063 e/Å³` against SHELXL's reported
+`max +0.32, min −0.30, rms 0.062 e/Å³` against SHELXL's reported
 `+0.224 / −0.252 / 0.053`, and the underlying structure-factor calculation
 reproduces the published *R*<sub>1</sub> of 0.0343. The remaining difference in
 the extremes comes from SHELXL merging Friedel pairs, neglecting *f″* and
