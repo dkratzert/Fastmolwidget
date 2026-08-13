@@ -26,12 +26,19 @@ HTML report — see the "Embedding in HTML reports" section of the top-level
 | `molecule2d.js` | `MoleculeWidget2D` — the Canvas renderer (port of `molecule2D.py` + `molecule_painter.py`) |
 | `viewer.js`     | `MoleculeViewer2D` — wires `SDM` growing/packing into the renderer |
 | `part_filter.js`| `createPartFilter(widget)` — checkable disorder-part dropdown (port of `part_combo.PartFilterWidget`) |
+| `mc_tables.js`  | The 256-case marching-cubes tables, built at load time (port of `build_lookup_tables()` in `density_cpp.cpp`) |
+| `density.js`    | `DensityMap` — decode, contour and clip the residual (Fo−Fc) map (port of `density.ResidualDensityMap`) |
 | `embed.js`      | `createViewer(container, structure, options)` + the shared control bar |
 | `index.js`      | Public entry point — its exports become `window.Fastmolwidget` |
 
 All algorithmic ports (`eigSym3`, `buildConnTable`, `SDM.grow()`,
-`SDM.packUnitCell()`) have been cross-checked against the real Python
-implementations on real structures and produce identical results.
+`SDM.packUnitCell()`, `marchingCubes()`, `clipToAtoms()`) have been
+cross-checked against the real Python implementations on real structures and
+produce identical results. `marchingCubes()` reproduces the C++
+`density_cpp.marching_cubes` vertex for vertex (to 1e-9 A) and edge set for
+edge set, so the browser cage matches the Qt renderers; the full
+`DensityMap.isosurface()` pipeline agrees with `ResidualDensityMap.isosurface()`
+to ~1e-6 A (float32 rounding).
 
 ## Quick start
 
@@ -92,6 +99,8 @@ builds the control bar, and loads *structure*. Options:
 | `bondColor`  | – | CSS colour |
 | `background` | – | CSS colour |
 | `bestView`   | `false` | align to the PCA best view after loading |
+| `density`    | `false` | switch the residual-density wireframe on straight away (only does something when the structure carries a map) |
+| `densityLevel` | – | contour level in e/Å³; defaults to the 3σ level stored in the payload |
 | `devicePixelRatio` | – | force a fixed ratio (deterministic tests/exports) |
 
 It returns the `MoleculeViewer2D` with `.container`, `.canvas`, `.fit()` and
@@ -138,6 +147,57 @@ after every grow/pack refresh: it recomputes the rotation pivot and the
 auto-zoom for the new atoms while keeping the rotation. This is the JS
 equivalent of the `reset_rotation_center()` + `reset_view()` combination the
 Qt desktop applications run after growing a structure.
+
+### Residual (Fo-Fc) density
+
+The map is **computed in Python** and shipped inside the page; the browser only
+contours it. That keeps the renderer dependency-free while leaving the contour
+level adjustable and letting the surface follow Grow / Pack, because the
+shipped grid covers one whole unit cell and is sampled periodically.
+
+```python
+from fastmolwidget.web import write_html
+write_html('structure.cif', 'report.html', controls=True,
+           density=True, density_options={'coverage': 'cell'})
+```
+
+Nothing is embedded unless you ask: without `density=` the JSON has no
+`density` key and the page is exactly as big as before. With it, expect
+~40-190 KB depending on `grid_spacing` (default 0.25 A) and `coverage`
+(`'asu'`, `'grow'` or `'cell'` - pick the widest mode your page's controls
+allow, since the browser cannot recover what was masked away).
+
+In JavaScript the payload is decoded once and then re-contoured for free:
+
+```js
+const map = await Fastmolwidget.DensityMap.fromPayload(structure.density);
+viewer.widget.showResidualDensity(map);          // 3 sigma by default
+viewer.widget.setResidualDensityLevel(0.6);      // re-contour, no decode
+viewer.widget.clearResidualDensity();
+```
+
+`MoleculeViewer2D` wraps that: `viewer.setDensityVisible(true)` (async, it
+awaits the decode and resolves to whether the surface really went up),
+`viewer.setDensityLevel(0.6)`, `viewer.hasDensity` and
+`viewer.densitySuggestedLevel()`. `createViewer(..., {controls: true})` adds a
+**Density** checkbox and a level box, which stay hidden until a structure with
+a map is loaded.
+
+Decoding uses `DecompressionStream('gzip')` (Chrome 80+, Firefox 113+, Safari
+16.4+); export with `compress=False` for older engines.
+
+The level box re-contours **as you change it** (`input`, not just `change`),
+so the spinner arrows respond immediately and no Enter is needed. Half-typed
+and out-of-range values are ignored until editing finishes, the work is
+coalesced into one animation frame, and the field is never rewritten while it
+has focus. Changing only the level re-uses the sub-grid cut out of the map and
+a per-cube magnitude table, so it costs roughly a quarter of the first
+contour.
+
+Positive density is green, negative red, and only density within `margin` of a
+**visible** atom is drawn, so hiding hydrogens or filtering disorder parts
+re-clips the surface. The segments are stored in the unrotated model frame and
+re-projected every frame, so rotating never re-contours.
 
 ### Disorder-part filter
 
@@ -187,7 +247,23 @@ widget.openMolecule({
       "part": 0,
       "adp": [U11, U22, U33, U23, U13, U12]     // or null (isotropic/no ADP)
     }
-  ]
+  ],
+
+  // OPTIONAL - only present when the structure was exported with a residual
+  // (Fo-Fc) density map. Omitted entirely otherwise, so pages that do not
+  // want one carry no extra bytes.
+  "density": {
+    "mode": "grid",
+    "size": [nu, nv, nw],              // grid over ONE unit cell, periodic
+    "cell": [a, b, c, alpha, beta, gamma],
+    "rms": 0.1442, "max": 1.34, "min": -1.79,
+    "level": 0.43,                     // suggested contour, 3 sigma
+    "scale": 0.0137,                   // e/A^3 per quantisation step
+    "margin": 1.5,                     // radius the map was masked to
+    "coverage": "asu",                 // which atoms it was masked around
+    "encoding": "gzip+base64",         // or "base64"
+    "data": "<int8 grid, one byte per point>"
+  }
 }
 ```
 
@@ -211,6 +287,9 @@ symm_matrix, adp`), Cartesian Å coordinates.
 | `set_visible_parts(set\|None)`     | `setVisibleParts(Set\|null)` |
 | `set_bond_width(int)`             | `setBondWidth(int)` |
 | `set_bond_color(color)`           | `setBondColor(cssColor)` |
+| `show_residual_density(...)`      | `showResidualDensity(densityMap, level)` (the map comes pre-decoded, see below) |
+| `set_residual_density_level(f)`   | `setResidualDensityLevel(f)` |
+| `clear_residual_density()`        | `clearResidualDensity()` |
 | `set_labels_visible(bool)`        | `setLabelsVisible(bool)` |
 | `set_background_color(color)`    | `setBackgroundColor(cssColor)` |
 | `setLabelFont(size)`             | `setLabelFont(size)` |

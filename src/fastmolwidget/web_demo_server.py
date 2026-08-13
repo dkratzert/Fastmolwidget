@@ -10,6 +10,11 @@ Run directly::
 
     uv run python -m fastmolwidget.web_demo_server
     uv run python -m fastmolwidget.web_demo_server --cif tests/test-data/p31c.cif --port 8080
+    uv run python -m fastmolwidget.web_demo_server --density
+
+``--density`` computes a residual (Fo−Fc) map and embeds it, which adds a
+"Density" checkbox and a contour-level box to the control bar.  It is off by
+default because the map is by far the largest thing on the page.
 
 Then open the printed URL (a browser tab is opened automatically unless
 ``--no-browser`` is passed).
@@ -23,6 +28,7 @@ import threading
 import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 from fastmolwidget.web import (
     bundle_js,
@@ -37,12 +43,21 @@ DEFAULT_CIF = Path('tests') / 'test-data' / 'p21c.cif'
 __all__ = ['DEFAULT_CIF', 'main', 'run_server']
 
 
-def _make_handler(cif_path: Path) -> type[SimpleHTTPRequestHandler]:
+def _make_handler(
+    cif_path: Path,
+    density: dict[str, Any] | None = None,
+) -> type[SimpleHTTPRequestHandler]:
     """Build a request-handler class serving the viewer page for *cif_path*.
 
     The page is rendered per request (with the bundle cache cleared) so editing
     a JavaScript module and reloading the browser shows the change immediately.
     Every other path falls back to the shipped ES modules.
+
+    :param density: An already-computed payload from
+        :func:`~fastmolwidget.web_export.export_density`, or ``None``.  It is
+        computed once by :func:`run_server` rather than per request, which
+        would otherwise re-run the whole structure-factor calculation on every
+        reload.
     """
     js_dir = str(js_directory())
 
@@ -53,10 +68,12 @@ def _make_handler(cif_path: Path) -> type[SimpleHTTPRequestHandler]:
         def do_GET(self) -> None:
             if self.path in ('/', '/index.html'):
                 bundle_js.cache_clear()
-                html = render_html(cif_path, title=cif_path.name, controls=True)
+                html = render_html(cif_path, title=cif_path.name, controls=True,
+                                   density=density)
                 self._send_bytes(html.encode('utf-8'), 'text/html; charset=utf-8')
             elif self.path == '/structure.json':
-                self._send_bytes(structure_json(cif_path).encode('utf-8'), 'application/json')
+                payload = structure_json(cif_path, density=density)
+                self._send_bytes(payload.encode('utf-8'), 'application/json')
             else:
                 super().do_GET()
 
@@ -86,16 +103,35 @@ def run_server(
     host: str = '127.0.0.1',
     port: int = 8000,
     open_browser: bool = True,
+    density: bool = False,
+    density_options: dict[str, Any] | None = None,
 ) -> ThreadingHTTPServer:
     """Parse *cif_path* and start the threaded demo server in a background
     thread. Returns the running :class:`~http.server.ThreadingHTTPServer` so
-    the caller can ``server.shutdown()`` it later (e.g. in tests)."""
+    the caller can ``server.shutdown()`` it later (e.g. in tests).
+
+    :param density: also compute a residual (Fo−Fc) map and embed it, adding
+        the Density controls to the page.  Off by default, since the map
+        dominates the page size.
+    :param density_options: keyword arguments for
+        :func:`~fastmolwidget.web_export.export_density`.
+    """
     cif_path = Path(cif_path)
     if not cif_path.is_file():
         raise FileNotFoundError(f'No such structure file: {cif_path} (pass one with --cif)')
     n_atoms = len(structure_data(cif_path)['atoms'])
 
-    server = ThreadingHTTPServer((host, port), _make_handler(cif_path))
+    payload = None
+    if density:
+        from fastmolwidget.web_export import export_density
+
+        print(f'Computing the residual density of {cif_path.name}…')
+        payload = export_density(cif_path, **(density_options or {}))
+        print(f'  {"x".join(str(n) for n in payload["size"])} grid, '
+              f'level {payload["level"]:.2f} e/A^3, '
+              f'{len(payload["data"]) / 1024:.0f} KB embedded')
+
+    server = ThreadingHTTPServer((host, port), _make_handler(cif_path, payload))
 
     thread = threading.Thread(target=server.serve_forever, name='fastmolwidget-web-demo', daemon=True)
     thread.start()
@@ -113,9 +149,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--host', default='127.0.0.1', help='Bind address (default: 127.0.0.1)')
     parser.add_argument('--port', type=int, default=8000, help='Port to listen on (default: 8000)')
     parser.add_argument('--no-browser', action='store_true', help="Don't open a browser window automatically")
+    parser.add_argument('--density', action='store_true',
+                        help='Compute and embed the residual (Fo-Fc) density map')
+    parser.add_argument('--density-coverage', choices=('asu', 'grow', 'cell'), default='cell',
+                        help='Which atoms to keep density around (default: cell, so Grow '
+                             'and Pack both keep their density)')
+    parser.add_argument('--density-spacing', type=float, default=None,
+                        help='Density grid spacing in A (default: 0.25)')
     args = parser.parse_args(argv)
 
-    server = run_server(args.cif, host=args.host, port=args.port, open_browser=not args.no_browser)
+    density_options: dict[str, Any] = {'coverage': args.density_coverage}
+    if args.density_spacing is not None:
+        density_options['grid_spacing'] = args.density_spacing
+
+    server = run_server(args.cif, host=args.host, port=args.port,
+                        open_browser=not args.no_browser,
+                        density=args.density, density_options=density_options)
     try:
         threading.Event().wait()
     except KeyboardInterrupt:

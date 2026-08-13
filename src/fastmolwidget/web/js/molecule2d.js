@@ -228,6 +228,28 @@ export class MoleculeWidget2D extends EventTarget {
     this.cstar = null;
     this.isPacked = false;
 
+    // ---- Residual (Fo-Fc) density -----------------------------------
+    /** @type {import('./density.js').DensityMap|null} */
+    this.densityMap = null;
+    this.densityLevel = 0.3;
+    /** Wireframe segments of both lobes, in the *unrotated* model frame. */
+    this._densityPos = null;
+    this._densityNeg = null;
+    /** Visible-atom positions the surface is clipped against, kept stable so
+     *  that a level change re-uses the density map's cached block. */
+    this._densityAtoms = null;
+    this.densityPosColor = '#00c800';
+    this.densityNegColor = '#e60000';
+    /**
+     * Atom coordinates as loaded, before any rotation. The map is defined in
+     * this frame, so the isosurface is clipped against these rather than
+     * against the displayed positions.
+     */
+    this._modelCoords = null;
+    /** Rigid model-to-view transform: `view = R . model + t`. */
+    this._viewRotation = identity3();
+    this._viewOffset = [0, 0, 0];
+
     this._rafPending = false;
     this._dragButton = undefined;
 
@@ -260,6 +282,8 @@ export class MoleculeWidget2D extends EventTarget {
 
   showHydrogens(value) {
     this.showHydrogensFlag = value;
+    this._invalidateDensityAtoms();
+    if (this.densityMap) this._buildDensityGeometry();
     this.update();
   }
 
@@ -270,6 +294,8 @@ export class MoleculeWidget2D extends EventTarget {
 
   setVisibleParts(parts) {
     this.visibleParts = parts;
+    this._invalidateDensityAtoms();
+    if (this.densityMap) this._buildDensityGeometry();
     this.update();
   }
 
@@ -359,6 +385,18 @@ export class MoleculeWidget2D extends EventTarget {
     }
 
     const carryRotation = keepView && !isIdentity(this.cumulativeR);
+    // Remember the unrotated coordinates: the density map lives in that frame.
+    this._modelCoords = new Float64Array(this.atoms.length * 3);
+    for (let i = 0; i < this.atoms.length; i++) {
+      const c = this.atoms[i].coordinate;
+      this._modelCoords[3 * i] = c[0];
+      this._modelCoords[3 * i + 1] = c[1];
+      this._modelCoords[3 * i + 2] = c[2];
+    }
+    this._viewRotation = identity3();
+    this._viewOffset = [0, 0, 0];
+    if (carryRotation) this._applyViewTransform(this.cumulativeR);
+
     for (const at of this.atoms) {
       if (carryRotation) {
         at.coordinate = vecAdd(matVec(this.cumulativeR, vecSub(at.coordinate, this.moleculeCenter)), this.moleculeCenter);
@@ -373,6 +411,11 @@ export class MoleculeWidget2D extends EventTarget {
     }
 
     if (!keepView) this.zoom = this._autoZoom();
+    this._invalidateDensityAtoms();
+    // A cached map survives a reload of the same structure (grow and pack do
+    // exactly that), but the visible atoms have moved, so the surface has to
+    // be re-clipped around them.
+    if (this.densityMap) this._buildDensityGeometry();
     this.update();
   }
 
@@ -521,6 +564,7 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _applyDeltaRotation(deltaR) {
+    this._applyViewTransform(deltaR);
     // Rotate the cached eigen-decomposition rigidly instead of recomputing it
     // from scratch (mirrors the Python/Qt renderer's `rotate_molecule`).
     // Re-deriving eigenvectors every drag frame via the analytic eigSym3
@@ -542,6 +586,172 @@ export class MoleculeWidget2D extends EventTarget {
         if (at.uInv) at.uInv = matMul(deltaR, matMul(at.uInv, transpose(deltaR)));
       }
     }
+  }
+
+  // ------------------------------------------------------------------
+  // Residual (Fo-Fc) density
+  // ------------------------------------------------------------------
+
+  /**
+   * Record a rotation that was just applied to the atom coordinates.
+   *
+   * The atoms are rotated **in place** about `moleculeCenter`, and that pivot
+   * itself moves when the view is panned or recentred, so the orientation
+   * alone cannot reconstruct where a model-frame point ends up on screen.
+   * Every such step is the affine map `x -> R (x - c) + c`; composing it with
+   * what has been recorded so far keeps the model-to-view mapping as a single
+   * rotation plus offset, which `_toViewFrame()` then applies to the density
+   * wireframe.
+   *
+   * @param {number[][]} matrix the rotation just applied to the atoms.
+   */
+  _applyViewTransform(matrix) {
+    const c = this.moleculeCenter;
+    this._viewOffset = vecAdd(matVec(matrix, vecSub(this._viewOffset, c)), c);
+    this._viewRotation = matMul(matrix, this._viewRotation);
+  }
+
+  /** Map a flattened `(N, 3)` model-frame array onto the displayed orientation. */
+  _toViewFrame(points) {
+    const R = this._viewRotation;
+    const t = this._viewOffset;
+    const out = new Float64Array(points.length);
+    for (let i = 0; i < points.length; i += 3) {
+      const x = points[i], y = points[i + 1], z = points[i + 2];
+      out[i] = R[0][0] * x + R[0][1] * y + R[0][2] * z + t[0];
+      out[i + 1] = R[1][0] * x + R[1][1] * y + R[1][2] * z + t[1];
+      out[i + 2] = R[2][0] * x + R[2][1] * y + R[2][2] * z + t[2];
+    }
+    return out;
+  }
+
+  /**
+   * Unrotated positions of the atoms that are currently drawn.
+   *
+   * Applies the same hydrogen and disorder-part filters as `_renderScene()`,
+   * so the density follows exactly what is on screen.
+   *
+   * @returns {Float64Array|null} flattened `(N, 3)`, or `null` when nothing is visible.
+   */
+  _visibleModelPositions() {
+    if (!this._modelCoords) return null;
+    const kept = [];
+    for (let i = 0; i < this.atoms.length; i++) {
+      const atom = this.atoms[i];
+      if (!this.showHydrogensFlag && HYDROGENS.has(atom.type)) continue;
+      if (this.visibleParts && !this.visibleParts.has(atom.part)) continue;
+      kept.push(this._modelCoords[3 * i], this._modelCoords[3 * i + 1], this._modelCoords[3 * i + 2]);
+    }
+    return kept.length ? new Float64Array(kept) : null;
+  }
+
+  /**
+   * Display a residual-density map.
+   *
+   * @param {import('./density.js').DensityMap} map decoded with `DensityMap.fromPayload()`.
+   * @param {number} [level] contour level in e/A^3; defaults to the map's own
+   *   suggestion (3 sigma).
+   */
+  showResidualDensity(map, level) {
+    this.densityMap = map;
+    this.densityLevel = Math.abs(level ?? map.level ?? map.sigmaLevel());
+    this._buildDensityGeometry();
+    this.update();
+  }
+
+  /**
+   * Re-contour the cached map at a new level.
+   *
+   * The map is reused, so this is far cheaper than decoding it again. A no-op
+   * when no map is loaded.
+   *
+   * @param {number} level contour level in e/A^3.
+   */
+  setResidualDensityLevel(level) {
+    const value = Math.abs(level);
+    if (value === this.densityLevel) return;
+    this.densityLevel = value;
+    this.dispatchEvent(new CustomEvent('densityLevelChanged', { detail: value }));
+    if (this.densityMap) {
+      this._buildDensityGeometry();
+      this.update();
+    }
+  }
+
+  /** Remove the residual-density wireframe. */
+  clearResidualDensity() {
+    this.densityMap = null;
+    this._densityAtoms = null;
+    this._densityPos = null;
+    this._densityNeg = null;
+    this.update();
+  }
+
+  /**
+   * Contour the cached map into wireframe segments for both lobes.
+   *
+   * Restricted to `map.margin` around the *visible* atoms, so grown or packed
+   * structures get density around every displayed atom while hidden hydrogens
+   * and filtered-out disorder parts drag nothing in. The segments stay in the
+   * model frame; the rotation is applied when they are drawn.
+   */
+  _buildDensityGeometry() {
+    if (!this.densityMap) {
+      this._densityPos = null;
+      this._densityNeg = null;
+      return;
+    }
+    // Kept between calls so that changing only the level re-uses the density
+    // map's cached block: the cache is keyed on this array's identity.
+    if (!this._densityAtoms) this._densityAtoms = this._visibleModelPositions();
+    const atoms = this._densityAtoms;
+    const margin = this.densityMap.margin ?? 1.5;
+    this._densityPos = this.densityMap.isosurface(this.densityLevel, atoms, margin);
+    this._densityNeg = this.densityMap.isosurface(-this.densityLevel, atoms, margin);
+  }
+
+  /** Forget which atoms the surface was clipped against (they changed). */
+  _invalidateDensityAtoms() {
+    this._densityAtoms = null;
+  }
+
+  /** Project both lobes into the view. */
+  _drawResidualDensity(ctx, width, height) {
+    this._drawDensityLobe(ctx, this._densityPos, this.densityPosColor, width, height);
+    this._drawDensityLobe(ctx, this._densityNeg, this.densityNegColor, width, height);
+  }
+
+  /**
+   * Draw one lobe of the isosurface cage.
+   *
+   * A contoured map easily holds thousands of segments and this runs on every
+   * repaint, including while the molecule is dragged, so segments outside the
+   * viewport and segments shorter than a pixel (they only overdraw each other
+   * once zoomed out) are skipped, and the whole lobe goes into a single path.
+   */
+  _drawDensityLobe(ctx, lobe, color, width, height) {
+    if (!lobe || lobe.segments.length === 0) return;
+    const view = this._toViewFrame(lobe.vertices);
+    const scale = this.scale, cx = this.cxGlobal, cy = this.cyGlobal;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let s = 0; s < lobe.segments.length; s += 2) {
+      const a = 3 * lobe.segments[s], b = 3 * lobe.segments[s + 1];
+      const x0 = view[a] * scale + cx, y0 = view[a + 1] * scale + cy;
+      const x1 = view[b] * scale + cx, y1 = view[b + 1] * scale + cy;
+      if ((x0 < 0 && x1 < 0) || (x0 > width && x1 > width)) continue;
+      if ((y0 < 0 && y1 < 0) || (y0 > height && y1 > height)) continue;
+      const dx = x1 - x0, dy = y1 - y0;
+      if (dx * dx + dy * dy < 0.5) continue;
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+    }
+    ctx.stroke();
+    ctx.restore();
   }
 
   // ------------------------------------------------------------------
@@ -1032,6 +1242,10 @@ export class MoleculeWidget2D extends EventTarget {
     }
 
     for (const atom of labelAtoms) this._drawLabel(ctx, atom, atom.name === this.hoveredAtom);
+
+    // Drawn after the atoms and bonds so the cage stays readable on top of the
+    // solid geometry, matching the Qt renderers.
+    this._drawResidualDensity(ctx, width, height);
 
     if (this.hoveredAtom === null && this.hoveredBond !== null && this.hoveredBondDistance != null && this.hoverCursor) {
       this._drawHoverDistanceLabel(ctx, `${this.hoveredBondDistance.toFixed(3)} \u00c5`, this.hoverCursor.x, this.hoverCursor.y, width, height);

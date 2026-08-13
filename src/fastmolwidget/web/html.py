@@ -62,30 +62,61 @@ def _escape_json_for_script_tag(text: str) -> str:
     return text.replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
 
 
-def structure_data(structure: Structure) -> dict[str, Any]:
+def structure_data(
+    structure: Structure,
+    *,
+    density: dict[str, Any] | bool | None = None,
+    density_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the fractional-coordinate JSON contract for *structure*.
 
     *structure* may be a path to a ``.cif``/``.res``/``.ins`` file or an
-    already-built dictionary (which is returned unchanged).
+    already-built dictionary (which is returned unchanged unless *density*
+    adds to it).
+
+    :param density: Residual (Fo−Fc) density to embed.  ``None`` (the default)
+        adds nothing at all, so pages that do not want a map stay small.
+        ``True`` computes one with :func:`~fastmolwidget.web_export.export_density`;
+        a dict is used as the already-exported payload.
+    :param density_options: Keyword arguments for
+        :func:`~fastmolwidget.web_export.export_density` when *density* is
+        ``True`` (e.g. ``{'coverage': 'cell', 'grid_spacing': 0.3}``).
+    :raises ValueError: If ``density=True`` and *structure* is a dict, since
+        the map can only be computed from the model file.
     """
+    from fastmolwidget.web_export import export_cif, export_density, export_shelx
+
     if isinstance(structure, dict):
-        return structure
+        data = structure
+    else:
+        path = Path(structure)
+        suffix = path.suffix.lower()
+        if suffix == '.cif':
+            data = export_cif(path)
+        elif suffix in ('.res', '.ins'):
+            data = export_shelx(path)
+        else:
+            raise ValueError(f'Unsupported file type: {path.suffix}')
 
-    from fastmolwidget.web_export import export_cif, export_shelx
+    if density is None or density is False:
+        return data
+    if density is True:
+        if isinstance(structure, dict):
+            raise ValueError(
+                'density=True needs the model file to compute the map from; '
+                'pass an already-exported payload instead.'
+            )
+        density = export_density(Path(structure), **(density_options or {}))
+    return {**data, 'density': density}
 
-    path = Path(structure)
-    suffix = path.suffix.lower()
-    if suffix == '.cif':
-        return export_cif(path)
-    if suffix in ('.res', '.ins'):
-        return export_shelx(path)
-    raise ValueError(f'Unsupported file type: {path.suffix}')
 
-
-def structure_json(structure: Structure) -> str:
+def structure_json(structure: Structure, **kwargs: Any) -> str:
     """Return *structure* as a JSON string ready to be embedded in a
-    ``<script>`` element (e.g. ``var mol = {{ structure_json | safe }};``)."""
-    return _escape_json_for_script_tag(json.dumps(structure_data(structure)))
+    ``<script>`` element (e.g. ``var mol = {{ structure_json | safe }};``).
+
+    Extra keyword arguments are passed to :func:`structure_data`.
+    """
+    return _escape_json_for_script_tag(json.dumps(structure_data(structure, **kwargs)))
 
 
 def render_html(
@@ -103,6 +134,9 @@ def render_html(
     bond_width: int = 3,
     bond_color: str | None = None,
     best_view: bool = False,
+    density: dict[str, Any] | bool | None = None,
+    density_options: dict[str, Any] | None = None,
+    density_level: float | None = None,
 ) -> str:
     """Render *structure* as a complete, fully self-contained HTML document.
 
@@ -123,6 +157,13 @@ def render_html(
         ``resetView``, ``saveImage``.
     :param height: CSS height of the viewer container.
     :param background: CSS page/canvas background colour.
+    :param density: Residual (Fo−Fc) density to embed — ``None`` (the default)
+        embeds none and keeps the page small, ``True`` computes one, or pass an
+        already-exported payload.  See :func:`structure_data`.
+    :param density_options: Keyword arguments for
+        :func:`~fastmolwidget.web_export.export_density` when ``density=True``.
+    :param density_level: Contour level the page starts at, in e/Å³.  ``None``
+        uses the level stored in the payload (3σ of the map).
     """
     if title is None:
         title = Path(structure).name if isinstance(structure, str | Path) else 'Fastmolwidget'
@@ -140,6 +181,8 @@ def render_html(
     }
     if bond_color is not None:
         options['bondColor'] = bond_color
+    if density_level is not None:
+        options['densityLevel'] = density_level
 
     return render_template(
         TEMPLATE_NAME,
@@ -147,7 +190,8 @@ def render_html(
         background=background,
         height=height,
         bundle_js=bundle_js(),
-        structure_json=structure_json(structure),
+        structure_json=structure_json(
+            structure, density=density, density_options=density_options),
         options_json=json.dumps(options),
     )
 

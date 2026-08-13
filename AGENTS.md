@@ -73,6 +73,26 @@ which also documents the file layout, JSON contract and API mapping).
   `[tool.setuptools.package-data]`). `index.js` is the public entry point;
   `embed.js` provides `createViewer(container, structure, options)` and the
   shared control bar.
+- **Residual density in the browser**: the map is computed in Python and
+  embedded in the page — `web_export.export_density(model, hkl=None, *,
+  level, grid_spacing=0.25, margin=1.5, coverage='asu'|'grow'|'cell',
+  compress=True)` ships **one whole unit cell** (periodic, so JS can wrap it
+  around grown/packed molecules), int8-quantised against the full data range,
+  zeroed outside `margin + 2 grid steps` of the covered atoms, gzipped and
+  base64'd. Masking that way is **exactly lossless for the contour** (verified
+  in `tests/test_web_density.py`) and cuts the payload 3-4x; the 2-step slack
+  is what makes it lossless, since marching cubes needs the full cube around
+  any cell holding a vertex. It is strictly **opt-in**: no `density=` argument
+  means no `density` JSON key and no size change. `js/mc_tables.js` builds the
+  256-case tables at load time by porting `build_lookup_tables()` from
+  `density_cpp.cpp`, so `js/density.js` `marchingCubes()` reproduces the C++
+  cage vertex for vertex — do **not** replace it with a different
+  marching-cubes flavour without accepting that the browser and Qt cages
+  diverge. `DensityMap.fromPayload()` is **async** (`DecompressionStream`), so
+  `MoleculeViewer2D.setDensityVisible()` is too and resolves to whether the
+  surface really went up. `molecule2d.js` mirrors `molecule_painter.py`: model-
+  frame segments plus `_viewRotation`/`_viewOffset`, updated in the single
+  `_applyDeltaRotation()` choke point (Qt needs four call sites).
 - `web/assets.py` — `importlib.resources` access to the shipped JS/templates.
 - `web/bundle.py` — `bundle_js()` turns the ES modules into **one classic
   `<script>` blob** defining `window.Fastmolwidget` (a CommonJS-style module

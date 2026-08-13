@@ -790,8 +790,34 @@ The result is fully self-contained (renderer and structure inlined), so it
 works from `file://`, inside an e-mail attachment, or in a Qt app via
 `QWebEngineView.setHtml(render_html('structure.cif'))`.
 
+### Residual density in the browser
+
+The Fo−Fc wireframe is available in the JavaScript viewer too. The map is
+computed in Python and embedded in the page; the browser contours it, so the
+level stays adjustable and the surface follows Grow / Pack:
+
+```python
+write_html('structure.cif', 'report.html', controls=True, density=True)
+
+# tune the payload, which is the largest thing on the page:
+write_html('structure.cif', 'report.html', controls=True, density=True,
+           density_options={'grid_spacing': 0.3, 'coverage': 'cell'})
+```
+
+It is **opt-in**: without `density=` nothing is embedded and the page is
+exactly as big as before. With it, expect roughly 40–190 KB depending on
+`grid_spacing` (default 0.25 Å) and `coverage` — `'asu'` (default), `'grow'`
+or `'cell'`, meaning which atoms density is kept around. Pick the widest mode
+your page's controls allow, since the browser cannot recover what was masked
+away. The control bar gains a **Density** checkbox and a level box, both hidden
+when the structure carries no map.
+
+Use `fastmolwidget.web_export.export_density()` directly if you want to compute
+the payload once and reuse it across several pages.
+
 To try it out, serve a structure with the built-in demo server:
 
 ```bash
 python -m fastmolwidget.web_demo_server --cif tests/test-data/p21c.cif
+python -m fastmolwidget.web_demo_server --density   # with the Fo-Fc wireframe
 ```

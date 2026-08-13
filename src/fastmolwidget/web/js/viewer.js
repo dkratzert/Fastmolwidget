@@ -24,6 +24,7 @@
 
 import { SDM } from './sdm.js';
 import { MoleculeWidget2D } from './molecule2d.js';
+import { DensityMap } from './density.js';
 import { fracToCart } from './symmetry.js';
 
 export class MoleculeViewer2D {
@@ -38,13 +39,65 @@ export class MoleculeViewer2D {
     this._growEnabled = false;
     this._packEnabled = false;
     this._packSymmopIndices = null;
+    /** Resolves to the decoded map, or to `null` when the page carries none. */
+    this._densityPromise = Promise.resolve(null);
   }
 
   /** Load a structure from the fractional-coordinate JSON contract. */
   loadStructure(data) {
     this._structure = data;
     this._adpByLabel = new Map(data.atoms.filter((a) => a.adp).map((a) => [a.label, a.adp]));
+    this.widget.clearResidualDensity();
+    // Decoding needs DecompressionStream and is therefore asynchronous; start
+    // it now so that switching the density on later is instant.
+    this._densityPromise = data.density
+      ? DensityMap.fromPayload(data.density)
+      : Promise.resolve(null);
+    this._densityPromise.catch(() => {});
     this._refresh(false);
+    // Lets a control bar built before the first load discover that this
+    // structure ships a density map (or that the next one does not).
+    this.widget.dispatchEvent(new CustomEvent('structureChanged', {
+      detail: { hasDensity: this.hasDensity },
+    }));
+  }
+
+  /** Whether the loaded structure ships a residual-density map. */
+  get hasDensity() {
+    return !!(this._structure && this._structure.density);
+  }
+
+  /**
+   * Show or hide the residual (Fo-Fc) density wireframe.
+   *
+   * @param {boolean} visible
+   * @param {number} [level] contour level in e/A^3; defaults to 3 sigma.
+   * @returns {Promise<boolean>} whether density ended up being shown.
+   */
+  async setDensityVisible(visible, level) {
+    if (!visible) {
+      this.widget.clearResidualDensity();
+      return false;
+    }
+    const map = await this._densityPromise;
+    if (!map) return false;
+    this.widget.showResidualDensity(map, level);
+    return true;
+  }
+
+  /** Re-contour the density at *level* (e/A^3). No-op when none is shown. */
+  setDensityLevel(level) {
+    this.widget.setResidualDensityLevel(level);
+  }
+
+  /**
+   * The contour level the exporter suggests (3 sigma of the map), in e/A^3,
+   * or `null` when the page carries no map. Available before the map has
+   * finished decoding, since it comes straight from the payload.
+   */
+  densitySuggestedLevel() {
+    const payload = this._structure && this._structure.density;
+    return payload ? payload.level : null;
   }
 
   /** Enable/disable growing the asymmetric unit to complete molecules. */

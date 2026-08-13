@@ -32,6 +32,8 @@ const DEFAULTS = {
   background: null,
   bestView: false,
   saveFileName: 'molecule.png',
+  density: false,
+  densityLevel: null,
 };
 
 /**
@@ -48,6 +50,7 @@ const CONTROL_ELEMENT_DEFAULTS = {
   hydrogens: true,
   partFilter: true,
   bondWidth: true,
+  density: true,
   bestView: true,
   resetView: true,
   saveImage: true,
@@ -121,8 +124,95 @@ function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
     bar.append(widthLabel);
   }
 
-  if (show.bestView) bar.append(button('Best view', () => viewer.widget.alignBestView()));
-  if (show.resetView) {
+  // Residual density. The controls stay hidden until a structure that
+  // actually ships a map is loaded, so pages exported without one show no
+  // dead controls (and the bar is built before the first load).
+  if (show.density) {
+    const levelLabel = el('label',
+      'display:flex; align-items:center; gap:4px; font-size:13px; opacity:0.45;');
+    const levelInput = el('input', 'width:70px;', {
+      type: 'number', min: '0.01', max: '9.99', step: '0.02',
+      value: String(opts.densityLevel ?? 0.3),
+      disabled: true,
+    });
+
+    // Re-contour while the number is being changed, not only on Enter/blur:
+    // `change` alone makes the spinner arrows feel dead. Work is coalesced
+    // into one animation frame so that holding an arrow down, or typing
+    // quickly, cannot queue up more contours than the browser can draw.
+    let pendingFrame = 0;
+    let applyingFromInput = false;
+    const applyLevel = () => {
+      pendingFrame = 0;
+      const value = parseFloat(levelInput.value);
+      // Ignore half-typed values ('', '0.', '-') and anything out of range;
+      // the `change` handler applies the clamped value once editing ends.
+      if (!Number.isFinite(value) || value < 0.01 || value > 9.99) return;
+      // Suppress the echo, or the field would be rewritten (and the caret
+      // moved) underneath someone who is still typing in it.
+      applyingFromInput = true;
+      try {
+        viewer.setDensityLevel(value);
+      } finally {
+        applyingFromInput = false;
+      }
+    };
+    const scheduleLevel = () => {
+      if (levelInput.disabled || pendingFrame) return;
+      pendingFrame = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame(applyLevel)
+        : setTimeout(applyLevel, 0);
+    };
+    levelInput.addEventListener('input', scheduleLevel);
+    levelInput.addEventListener('change', () => {
+      const value = parseFloat(levelInput.value);
+      if (!Number.isFinite(value)) {
+        levelInput.value = viewer.widget.densityLevel.toFixed(2);
+        return;
+      }
+      const clamped = Math.min(Math.max(value, 0.01), 9.99);
+      if (clamped !== value) levelInput.value = clamped.toFixed(2);
+      if (!levelInput.disabled) viewer.setDensityLevel(clamped);
+    });
+    levelLabel.append(document.createTextNode('Level'), levelInput,
+                      document.createTextNode('e/\u00c5\u00b3'));
+
+    const densityChk = checkbox('Density', false, (checked) => {
+      // Decoding the map is asynchronous, so the checkbox is only trusted
+      // once the viewer confirms the surface is really up.
+      viewer.setDensityVisible(checked, parseFloat(levelInput.value)).then((shown) => {
+        densityChk.inputEl.checked = shown;
+        levelInput.disabled = !shown;
+        levelLabel.style.opacity = shown ? '1' : '0.45';
+        if (shown) levelInput.value = viewer.widget.densityLevel.toFixed(2);
+      }, () => {
+        densityChk.inputEl.checked = false;
+        levelInput.disabled = true;
+      });
+    });
+    viewer.widget.addEventListener('densityLevelChanged', (e) => {
+      if (applyingFromInput) return;   // don't fight the field being typed in
+      levelInput.value = Number(e.detail).toFixed(2);
+    });
+
+    const syncDensityControls = () => {
+      const available = viewer.hasDensity;
+      densityChk.style.display = available ? '' : 'none';
+      levelLabel.style.display = available ? '' : 'none';
+      if (!available) return;
+      const suggested = viewer.densitySuggestedLevel();
+      if (opts.densityLevel == null && suggested != null) {
+        levelInput.value = Number(suggested).toFixed(2);
+      }
+      if (opts.density && !densityChk.inputEl.checked) densityChk.inputEl.click();
+    };
+    viewer.widget.addEventListener('structureChanged', syncDensityControls);
+    syncDensityControls();
+
+    bar.append(densityChk, levelLabel);
+  }
+
+  if (show.bestView) bar.append(button('Best view', () => viewer.widget.alignBestView()));  if (show.resetView) {
     bar.append(button('Reset view', () => {
       viewer.widget.resetRotationCenter();
       viewer.widget.resetView();
@@ -222,6 +312,10 @@ export function createViewer(container, structure = null, options = {}) {
     fit();
     if (opts.bestView) viewer.widget.alignBestView();
     viewer.widget.fitToView();
+    // Without a control bar nothing else would switch the density on.
+    if (opts.density && !controlsEnabled) {
+      viewer.setDensityVisible(true, opts.densityLevel ?? undefined);
+    }
   } else {
     fit();
   }
