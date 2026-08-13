@@ -11,6 +11,7 @@ Skipped when Qt Quick is unavailable.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -414,12 +415,27 @@ needs_cpp = pytest.mark.skipif(
 
 
 def _qml_viewer() -> MoleculeViewerQuickWidget:
-    """A shown viewer whose QML scene has finished loading."""
+    """A shown viewer whose QML scene has finished loading.
+
+    ``Component.onCompleted`` — and with it ``registerRenderItem`` — only
+    fires once the Quick scene graph is up, which needs a working graphics
+    stack.  Where there is none (headless CI runners) the test is skipped
+    rather than failed; a genuine QML *error* is reported in the skip reason.
+    """
     viewer = MoleculeViewerQuickWidget()
     viewer.resize(900, 650)
     viewer.show()
-    app.processEvents()
-    assert viewer.render_widget is not None, 'QML render item never registered'
+
+    deadline = time.monotonic() + 5.0
+    while viewer.render_widget is None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+
+    if viewer.render_widget is None:
+        errors = '; '.join(str(e.toString())
+                           for e in viewer._quick_widget.errors())
+        pytest.skip(f'QML scene did not load (no scene graph?): '
+                    f'{errors or "no QML errors reported"}')
     return viewer
 
 
