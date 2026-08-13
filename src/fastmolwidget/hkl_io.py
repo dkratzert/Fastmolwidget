@@ -22,6 +22,14 @@ Supported inputs
 A leading ``global_`` block is ignored everywhere — it carries inherited
 values, not a structure of its own.
 
+Sources
+-------
+Every CIF reader here takes a :data:`CifSource`: a path, an already parsed
+:class:`gemmi.cif.Document`, or a single :class:`gemmi.cif.Block`.  Host
+applications that keep an edited document in memory (FinalCif, for instance)
+can therefore hand over the block the user is looking at instead of writing a
+temporary file.
+
 Everything in this module is Qt-free and only depends on ``gemmi``,
 ``numpy`` and ``shelxfile``.
 """
@@ -37,19 +45,30 @@ import gemmi
 import numpy as np
 
 __all__ = [
+    'CifSource',
     'ReflectionData',
+    'ReflectionSource',
     'ShelxParameters',
+    'block_has_reflections',
+    'block_shelx_hkl',
+    'block_shelx_parameters',
+    'block_shelx_res',
     'clear_cif_cache',
     'embedded_shelx_hkl',
     'embedded_shelx_res',
     'find_reflection_file',
     'has_reflections',
+    'read_block_reflections',
     'read_cif_document',
     'read_cif_reflections',
     'read_reflections',
     'read_shelx_hkl',
     'read_shelx_parameters',
 ]
+
+#: Anything the CIF readers in this module accept: a file path, a parsed
+#: document, or a single data block.
+CifSource = str | Path | gemmi.cif.Document | gemmi.cif.Block
 
 
 @lru_cache(maxsize=2)
@@ -103,6 +122,32 @@ def _data_blocks(doc) -> list:
             if block.name and block.name.lower() != 'global']
 
 
+def _cif_blocks(source: CifSource) -> list:
+    """Return the data blocks of *source*, whatever kind of CIF source it is.
+
+    A single block is wrapped in a list, a document is stripped of its
+    ``global_`` block, and a path is parsed (through the document cache).
+
+    :param source: A path, a :class:`gemmi.cif.Document` or a
+        :class:`gemmi.cif.Block`.
+    :returns: The data blocks, or an empty list when a path cannot be parsed
+        as a CIF — callers treat that as "no data here" rather than an error.
+    """
+    if isinstance(source, gemmi.cif.Block):
+        return [source]
+    if isinstance(source, gemmi.cif.Document):
+        return _data_blocks(source)
+    try:
+        return _data_blocks(read_cif_document(source))
+    except Exception:  # noqa: BLE001 - unreadable or not a CIF at all
+        return []
+
+
+def _is_cif_object(source: object) -> bool:
+    """True when *source* is an in-memory CIF document or block."""
+    return isinstance(source, (gemmi.cif.Document, gemmi.cif.Block))
+
+
 @dataclass
 class ReflectionData:
     """A set of measured (and optionally calculated) structure factors.
@@ -153,6 +198,11 @@ class ReflectionData:
            declared format first.
         """
         return self.batch is not None and bool(np.any(self.batch < 0))
+
+
+#: Anything the reflection readers accept: a CIF source, a ``.hkl`` path, or
+#: reflections that were already read.
+ReflectionSource = CifSource | ReflectionData
 
 
 #: The ``TWIN`` matrix SHELXL assumes when the card carries no numbers:
@@ -414,7 +464,7 @@ def _parse_hkl_line(line: str) -> tuple[int, int, int, float, float, int] | None
 # CIF reflection loops (fcf style)
 # ---------------------------------------------------------------------------
 
-def read_cif_reflections(path: str | Path) -> ReflectionData | None:
+def read_cif_reflections(source: CifSource) -> ReflectionData | None:
     """Read an fcf-style reflection loop from a CIF.
 
     Recognises ``_refln_index_h/k/l`` together with either
@@ -423,49 +473,61 @@ def read_cif_reflections(path: str | Path) -> ReflectionData | None:
     ``_refln_F_calc``, optionally with ``_refln_phase_calc``) these are
     returned as well, so they do not have to be recomputed.
 
-    :param path: Path to the CIF (or ``.fcf``) file.
-    :returns: The reflections, or ``None`` when the file contains no
-        reflection loop at all.
+    :param source: A path to a CIF (or ``.fcf``) file, a parsed document, or a
+        single data block.
+    :returns: The reflections of the first block that has them, or ``None``
+        when there is no reflection loop at all.
     """
-    doc = read_cif_document(path)
-    for block in _data_blocks(doc):
-        h_col = block.find_values('_refln_index_h')
-        if not h_col:
-            continue
-        k_col = block.find_values('_refln_index_k')
-        l_col = block.find_values('_refln_index_l')
-        if not k_col or not l_col:
-            continue
-
-        meas_sq = block.find_values('_refln_F_squared_meas')
-        meas_f = block.find_values('_refln_F_meas')
-        if meas_sq:
-            f_sq = np.array([_num(v) for v in meas_sq], dtype=float)
-            sig_col = block.find_values('_refln_F_squared_sigma')
-        elif meas_f:
-            f_amp = np.array([_num(v) for v in meas_f], dtype=float)
-            f_sq = f_amp ** 2
-            sig_col = block.find_values('_refln_F_sigma')
-        else:
-            continue
-
-        if sig_col:
-            sigma = np.array([_num(v) for v in sig_col], dtype=float)
-            sigma_known = True
-        else:
-            sigma = np.ones_like(f_sq)
-            sigma_known = False
-
-        hkl = np.array(
-            [[int(_num(a)), int(_num(b)), int(_num(c))]
-             for a, b, c in zip(h_col, k_col, l_col)],
-            dtype=np.int32,
-        )
-
-        f_calc = _cif_f_calc(block, len(hkl))
-        return ReflectionData(hkl=hkl, f_sq_meas=f_sq, sigma=sigma,
-                              f_calc=f_calc, sigma_known=sigma_known)
+    for block in _cif_blocks(source):
+        data = read_block_reflections(block)
+        if data is not None:
+            return data
     return None
+
+
+def read_block_reflections(block) -> ReflectionData | None:
+    """Read the fcf-style reflection loop of a single CIF block.
+
+    :param block: A :class:`gemmi.cif.Block`.
+    :returns: The reflections, or ``None`` when the block has no usable
+        ``_refln_*`` loop.
+    """
+    h_col = block.find_values('_refln_index_h')
+    if not h_col:
+        return None
+    k_col = block.find_values('_refln_index_k')
+    l_col = block.find_values('_refln_index_l')
+    if not k_col or not l_col:
+        return None
+
+    meas_sq = block.find_values('_refln_F_squared_meas')
+    meas_f = block.find_values('_refln_F_meas')
+    if meas_sq:
+        f_sq = np.array([_num(v) for v in meas_sq], dtype=float)
+        sig_col = block.find_values('_refln_F_squared_sigma')
+    elif meas_f:
+        f_amp = np.array([_num(v) for v in meas_f], dtype=float)
+        f_sq = f_amp ** 2
+        sig_col = block.find_values('_refln_F_sigma')
+    else:
+        return None
+
+    if sig_col:
+        sigma = np.array([_num(v) for v in sig_col], dtype=float)
+        sigma_known = True
+    else:
+        sigma = np.ones_like(f_sq)
+        sigma_known = False
+
+    hkl = np.array(
+        [[int(_num(a)), int(_num(b)), int(_num(c))]
+         for a, b, c in zip(h_col, k_col, l_col)],
+        dtype=np.int32,
+    )
+
+    f_calc = _cif_f_calc(block, len(hkl))
+    return ReflectionData(hkl=hkl, f_sq_meas=f_sq, sigma=sigma,
+                          f_calc=f_calc, sigma_known=sigma_known)
 
 
 def _cif_f_calc(block, n: int) -> np.ndarray | None:
@@ -513,41 +575,55 @@ def _num(value: str) -> float:
         return 0.0
 
 
-def embedded_shelx_hkl(path: str | Path) -> str | None:
+def embedded_shelx_hkl(source: CifSource) -> str | None:
     """Return the SHELX ``.hkl`` text embedded in a CIF, if there is one.
 
     Self-contained CIFs written by SHELXL carry the complete reflection file
     in ``_shelx_hkl_file``, which makes the CIF alone sufficient to compute a
     residual-density map.
 
-    :param path: Path to the CIF file.
+    :param source: A path to the CIF, a parsed document, or a single block.
     :returns: The embedded reflection records, or ``None`` when absent.
     """
-    try:
-        doc = read_cif_document(path)
-    except Exception:  # noqa: BLE001 - a non-CIF file simply has no HKL block
-        return None
-    for block in _data_blocks(doc):
-        value = block.find_value('_shelx_hkl_file')
-        if value:
-            text = gemmi.cif.as_string(value)
-            if text and text.strip():
-                return text
+    for block in _cif_blocks(source):
+        text = block_shelx_hkl(block)
+        if text is not None:
+            return text
     return None
 
 
-def read_reflections(path: str | Path) -> ReflectionData:
-    """Read reflections from a ``.hkl`` file or a CIF.
+def block_shelx_hkl(block) -> str | None:
+    """Return the ``_shelx_hkl_file`` text of a single CIF block, or ``None``."""
+    value = block.find_value('_shelx_hkl_file')
+    if not value:
+        return None
+    text = gemmi.cif.as_string(value)
+    return text if text and text.strip() else None
 
-    The format is chosen from the file suffix: ``.hkl`` uses
+
+def read_reflections(source: ReflectionSource) -> ReflectionData:
+    """Read reflections from a ``.hkl`` file, a CIF or an in-memory source.
+
+    For a path the format is chosen from the file suffix: ``.hkl`` uses
     :func:`read_shelx_hkl`.  For anything else the file is treated as a CIF and
     tried in this order — an fcf-style ``_refln_*`` loop, then a ``.hkl``
     embedded in ``_shelx_hkl_file`` — before falling back to the SHELX reader.
+    A :class:`gemmi.cif.Document` or :class:`gemmi.cif.Block` is tried the same
+    way, and a :class:`ReflectionData` is returned unchanged.
 
-    :param path: Path to the reflection file.
+    :param source: The reflection source.
     :raises ValueError: If no reflections could be read.
     """
-    path = Path(path)
+    if isinstance(source, ReflectionData):
+        return source
+
+    if _is_cif_object(source):
+        data = _cif_object_reflections(source)
+        if data is None:
+            raise ValueError('No reflections found in the given CIF data')
+        return data
+
+    path = Path(source)
     if path.suffix.lower() == '.hkl':
         return read_shelx_hkl(path)
 
@@ -565,33 +641,48 @@ def read_reflections(path: str | Path) -> ReflectionData:
     return read_shelx_hkl(path)
 
 
+def _cif_object_reflections(source: CifSource) -> ReflectionData | None:
+    """Reflections of an in-memory document or block, or ``None``."""
+    data = read_cif_reflections(source)
+    if data is not None:
+        return data
+    text = embedded_shelx_hkl(source)
+    if text is not None:
+        return parse_shelx_hkl(text, source='<cif> (_shelx_hkl_file)')
+    return None
+
+
 #: Sibling extensions searched for reflection data, in order of preference.
 _REFLECTION_SUFFIXES: tuple[str, ...] = ('.hkl', '.fcf', '.fco', '.cif')
 
 
-def has_reflections(path: str | Path) -> bool:
-    """Cheaply test whether *path* holds usable reflection data.
+def has_reflections(source: ReflectionSource) -> bool:
+    """Cheaply test whether *source* holds usable reflection data.
 
     Avoids parsing the whole file: a ``.hkl`` only has to exist, and a CIF is
     scanned for an fcf-style loop or an embedded ``_shelx_hkl_file``.
 
-    :param path: The file to inspect.
+    :param source: A path, an in-memory document or block, or already read
+        :class:`ReflectionData`.
     """
-    path = Path(path)
+    if isinstance(source, ReflectionData):
+        return len(source) > 0
+    if _is_cif_object(source):
+        return any(block_has_reflections(block) for block in _cif_blocks(source))
+
+    path = Path(source)
     if not path.is_file():
         return False
     if path.suffix.lower() == '.hkl':
         return True
-    try:
-        doc = read_cif_document(path)
-    except Exception:  # noqa: BLE001 - unreadable or not a CIF
-        return False
-    for block in _data_blocks(doc):
-        if block.find_values('_refln_index_h'):
-            return True
-        if block.find_value('_shelx_hkl_file'):
-            return True
-    return False
+    return any(block_has_reflections(block) for block in _cif_blocks(path))
+
+
+def block_has_reflections(block) -> bool:
+    """True when a CIF block carries an fcf loop or an embedded ``.hkl``."""
+    if block.find_values('_refln_index_h'):
+        return True
+    return bool(block.find_value('_shelx_hkl_file'))
 
 
 def find_reflection_file(model_path: str | Path) -> Path | None:
@@ -631,7 +722,7 @@ _EMBEDDED_RES_TAGS: tuple[str, ...] = (
 )
 
 
-def embedded_shelx_res(path: str | Path) -> str | None:
+def embedded_shelx_res(source: CifSource) -> str | None:
     """Return the SHELX ``.res`` text embedded in a CIF, if there is one.
 
     Deposited CIFs frequently carry the complete final ``.res`` file in a
@@ -639,39 +730,61 @@ def embedded_shelx_res(path: str | Path) -> str | None:
     ``FVAR`` / ``WGHT`` / ``EXTI`` values even when no separate ``.res`` file
     is available.
 
-    :param path: Path to the CIF file.
+    :param source: A path to the CIF, a parsed document, or a single block.
     :returns: The embedded SHELX text, or ``None`` when absent.
     """
-    try:
-        doc = read_cif_document(path)
-    except Exception:  # noqa: BLE001 - a non-CIF file simply has no SHELX block
-        return None
-    for block in _data_blocks(doc):
-        for tag in _EMBEDDED_RES_TAGS:
-            value = block.find_value(tag)
-            if not value:
-                continue
-            text = gemmi.cif.as_string(value)
-            if text and re.search(r'^\s*FVAR', text, re.MULTILINE | re.IGNORECASE):
-                return text
+    for block in _cif_blocks(source):
+        text = block_shelx_res(block)
+        if text is not None:
+            return text
     return None
 
 
-def read_shelx_parameters(path: str | Path) -> ShelxParameters | None:
-    """Read refined SHELX parameters for the model at *path*.
+def block_shelx_res(block) -> str | None:
+    """Return the SHELX ``.res`` text embedded in a single CIF block.
 
-    Sources are tried in this order:
+    Only text that actually contains an ``FVAR`` card is accepted, so a field
+    holding something else than a real SHELX file is ignored.
+    """
+    for tag in _EMBEDDED_RES_TAGS:
+        value = block.find_value(tag)
+        if not value:
+            continue
+        text = gemmi.cif.as_string(value)
+        if text and re.search(r'^\s*FVAR', text, re.MULTILINE | re.IGNORECASE):
+            return text
+    return None
 
-    1. *path* itself when it is a ``.res``/``.ins`` file;
+
+def block_shelx_parameters(block) -> ShelxParameters | None:
+    """Refined SHELX parameters from a block's embedded ``.res``, or ``None``."""
+    text = block_shelx_res(block)
+    return _parse_shelx_text(text) if text is not None else None
+
+
+def read_shelx_parameters(source: CifSource) -> ShelxParameters | None:
+    """Read refined SHELX parameters for the model given by *source*.
+
+    For a path the sources are tried in this order:
+
+    1. *source* itself when it is a ``.res``/``.ins`` file;
     2. a ``.res`` (then ``.ins``) file sitting next to a CIF with the same
        basename;
     3. a SHELX ``.res`` block embedded inside the CIF
        (see :func:`embedded_shelx_res`).
 
-    :param path: Path to the model file (``.res``, ``.ins`` or ``.cif``).
+    An in-memory document or block only offers the embedded block, since there
+    is no directory to look in.
+
+    :param source: The model file (``.res``, ``.ins`` or ``.cif``), a parsed
+        document, or a single block.
     :returns: The refined parameters, or ``None`` when none could be found.
     """
-    path = Path(path)
+    if _is_cif_object(source):
+        text = embedded_shelx_res(source)
+        return _parse_shelx_text(text) if text is not None else None
+
+    path = Path(source)
     if path.suffix.lower() in ('.res', '.ins'):
         return _parse_shelx_text(path.read_text(errors='replace'))
 

@@ -47,11 +47,14 @@ import numpy as np
 from fastmolwidget.hkl_io import (
     _DEFAULT_TWIN_MATRIX,
     _REFLECTION_SUFFIXES,
+    CifSource,
     ReflectionData,
+    ReflectionSource,
     ShelxParameters,
-    _data_blocks,
+    _cif_blocks,
+    _is_cif_object,
     find_reflection_file,
-    read_cif_document,
+    has_reflections,
     read_reflections,
     read_shelx_parameters,
 )
@@ -107,11 +110,19 @@ __all__ = [
     'DEFAULT_WEAK_WEIGHT',
     'HAS_DENSITY_CPP',
     'WEAK_DATA_EXPONENT',
+    'ModelSource',
     'ResidualDensityMap',
     'calculate_residual_density',
+    'small_structure_from_block',
     'small_structure_from_cif',
     'small_structure_from_shelx',
 ]
+
+#: Everything :func:`calculate_residual_density` accepts as a model: a path to
+#: a CIF or SHELX file, an in-memory CIF document or block, or a structure that
+#: was built elsewhere.  The in-memory forms let a host application use the
+#: document it is already editing instead of writing a temporary file.
+ModelSource = CifSource | gemmi.SmallStructure
 
 
 # ---------------------------------------------------------------------------
@@ -419,36 +430,60 @@ def _sanitise_adps(structure: gemmi.SmallStructure) -> list[str]:
     return replaced
 
 
-def small_structure_from_cif(path: str | Path) -> gemmi.SmallStructure:
+def small_structure_from_cif(source: CifSource) -> gemmi.SmallStructure:
     """Read a CIF into a :class:`gemmi.SmallStructure` ready for SF calculation.
 
     A leading ``global_`` block is skipped — it only carries values inherited
     by the blocks that follow, and has no atom sites of its own.  The first
     block that does contain atom sites is used.
 
+    :param source: Path to the CIF file, a parsed document, or a single block.
+    :raises ValueError: If the source has no block with atom sites.
+    """
+    for block in _cif_blocks(source):
+        structure = small_structure_from_block(block)
+        if structure is not None:
+            return structure
+    raise ValueError(f'No atom sites found in {_source_name(source)}')
+
+
+def small_structure_from_block(block) -> gemmi.SmallStructure | None:
+    """Build a :class:`gemmi.SmallStructure` from a single CIF block.
+
     ``change_occupancies_to_crystallographic()`` is required by gemmi before
     the structure factors are summed, so that atoms on special positions
     contribute with the correct multiplicity.
 
-    :param path: Path to the CIF file.
-    :raises ValueError: If the file has no block with atom sites.
+    :param block: A :class:`gemmi.cif.Block`.
+    :returns: The structure, or ``None`` when the block has no atom sites.
     """
-    doc = read_cif_document(path)
-    for block in _data_blocks(doc):
-        structure = gemmi.make_small_structure_from_block(block)
-        if structure.sites:
-            structure.change_occupancies_to_crystallographic()
-            bad = _sanitise_adps(structure)
-            if bad:
-                warnings.warn(
-                    f'{path}: non-positive-definite ADPs for '
-                    f'{", ".join(bad)} - these atoms are treated as '
-                    f'isotropic.',
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            return structure
-    raise ValueError(f'No atom sites found in {path}')
+    structure = gemmi.make_small_structure_from_block(block)
+    if not structure.sites:
+        return None
+    structure.change_occupancies_to_crystallographic()
+    bad = _sanitise_adps(structure)
+    if bad:
+        warnings.warn(
+            f'{block.name}: non-positive-definite ADPs for '
+            f'{", ".join(bad)} - these atoms are treated as '
+            f'isotropic.',
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    return structure
+
+
+def _source_name(source: object) -> str:
+    """A short, printable name for a model or reflection source."""
+    if isinstance(source, gemmi.cif.Block):
+        return f'data_{source.name}'
+    if isinstance(source, gemmi.cif.Document):
+        return source.source or '<cif document>'
+    if isinstance(source, gemmi.SmallStructure):
+        return source.name or '<structure>'
+    if isinstance(source, ReflectionData):
+        return '<reflections>'
+    return str(source)
 
 
 #: SHELX ``LATT`` centring translations, in fractional coordinates.  The sign
@@ -821,20 +856,58 @@ def _hklf5_groups(reflections: ReflectionData):
             members = []
 
 
+def _is_model_object(source: object) -> bool:
+    """True when *source* is an in-memory model rather than a file path."""
+    return _is_cif_object(source) or isinstance(source, gemmi.SmallStructure)
+
+
+def _find_reflections_for(model: ModelSource) -> ReflectionSource | None:
+    """Locate the reflection data belonging to *model*.
+
+    An in-memory CIF can only carry its reflections itself, since there is no
+    directory to look in; a path additionally gets the sibling search of
+    :func:`~fastmolwidget.hkl_io.find_reflection_file`.
+
+    :returns: The reflection source, or ``None`` when there is none.
+    """
+    if _is_cif_object(model):
+        return model if has_reflections(model) else None
+    if isinstance(model, gemmi.SmallStructure):
+        return None
+    return find_reflection_file(model)
+
+
+def _no_reflections_message(model: ModelSource) -> str:
+    """The error text for a model whose reflection data could not be found."""
+    if _is_model_object(model):
+        return (f'No reflection data found for {_source_name(model)}. Pass the '
+                f'reflections explicitly - an in-memory model has no file to '
+                f'search next to.')
+    path = Path(model)
+    return (f'No reflection data found for {path}. Looked inside the file '
+            f'itself and for '
+            f'{", ".join(path.stem + s for s in _REFLECTION_SUFFIXES)}.')
+
+
 def calculate_residual_density(
-    model_path: str | Path,
-    hkl_path: str | Path | None = None,
+    model_path: ModelSource,
+    hkl_path: ReflectionSource | None = None,
     *,
     grid_spacing: float = DEFAULT_GRID_SPACING,
     d_min: float | None = None,
     weak_weight: float = DEFAULT_WEAK_WEIGHT,
 ) -> ResidualDensityMap:
-    """Compute a residual (Fo−Fc) density map from a model and reflection file.
+    """Compute a residual (Fo−Fc) density map from a model and reflection data.
 
-    :param model_path: The refined model — a CIF, or a SHELX ``.res``/``.ins``.
-    :param hkl_path: Reflections — a SHELX ``.hkl``, an fcf-style CIF loop, or
-        a CIF with an embedded ``_shelx_hkl_file``.  ``None`` looks them up
-        automatically with :func:`~fastmolwidget.hkl_io.find_reflection_file`.
+    :param model_path: The refined model — a CIF or SHELX ``.res``/``.ins``
+        path, an in-memory :class:`gemmi.cif.Document` or
+        :class:`gemmi.cif.Block`, or a ready :class:`gemmi.SmallStructure`.
+    :param hkl_path: Reflections — a SHELX ``.hkl``, an fcf-style CIF loop, a
+        CIF with an embedded ``_shelx_hkl_file``, an in-memory document or
+        block, or already read :class:`~fastmolwidget.hkl_io.ReflectionData`.
+        ``None`` looks them up in the model itself; for a model *path* the
+        sibling files found by
+        :func:`~fastmolwidget.hkl_io.find_reflection_file` are searched too.
     :param grid_spacing: FFT grid spacing in Å.  A fixed length, so the grid
         size depends only on the unit cell and not on the data resolution.
     :param d_min: Optional resolution cut-off in Å.  ``None`` uses all data.
@@ -842,23 +915,20 @@ def calculate_residual_density(
         :func:`_weak_data_damping`.  ``0.0`` disables it.
     :returns: The computed map.
     :raises FileNotFoundError: If *hkl_path* is ``None`` and no reflection
-        data could be found next to the model.
+        data could be found for the model.
     :raises ValueError: If the model cannot be interpreted or the reflection
-        file contains no usable data.
+        data contains nothing usable.
     """
-    model_path = Path(model_path)
-    structure, params = _load_model(model_path)
+    model = model_path if _is_model_object(model_path) else Path(model_path)
+    structure, params = _load_model(model)
     if structure.spacegroup is None:
-        raise ValueError(f'Could not determine the space group of {model_path}')
+        raise ValueError(
+            f'Could not determine the space group of {_source_name(model)}')
 
     if hkl_path is None:
-        hkl_path = find_reflection_file(model_path)
+        hkl_path = _find_reflections_for(model)
         if hkl_path is None:
-            raise FileNotFoundError(
-                f'No reflection data found for {model_path}. Looked inside the '
-                f'file itself and for '
-                f'{", ".join(model_path.stem + s for s in _REFLECTION_SUFFIXES)}.'
-            )
+            raise FileNotFoundError(_no_reflections_message(model))
 
     reflections = read_reflections(hkl_path)
 
@@ -876,7 +946,7 @@ def calculate_residual_density(
     hkl, f_obs, sigma = _merge_to_asu(reflections, structure.spacegroup, d_min,
                                       structure.cell)
     if len(hkl) == 0:
-        raise ValueError(f'No usable reflections in {hkl_path or model_path}')
+        raise ValueError(f'No usable reflections in {_source_name(hkl_path)}')
 
     f_calc = _calculated_structure_factors(structure, hkl, params, reflections)
     scale = _scale_factor(params, f_obs, np.abs(f_calc))
@@ -993,7 +1063,7 @@ def _grid_size(cell: gemmi.UnitCell, spacing: float) -> list[int]:
             for length in (cell.a, cell.b, cell.c)]
 
 
-def _load_model(path: Path) -> tuple[gemmi.SmallStructure, ShelxParameters]:
+def _load_model(source: ModelSource) -> tuple[gemmi.SmallStructure, ShelxParameters]:
     """Read the refined model and its SHELX refinement parameters.
 
     SHELX files are parsed with :mod:`shelxfile`; anything else is read as a
@@ -1001,7 +1071,22 @@ def _load_model(path: Path) -> tuple[gemmi.SmallStructure, ShelxParameters]:
     ``.res``/``.ins`` itself, from a sibling file of the same basename, or
     from a SHELX block embedded in the CIF (see
     :func:`fastmolwidget.hkl_io.read_shelx_parameters`).
+
+    A :class:`gemmi.SmallStructure` handed in directly is used as it is; it
+    carries no SHELX instructions, so the defaults apply unless the caller has
+    already scaled the data.
     """
+    if isinstance(source, gemmi.SmallStructure):
+        return source, ShelxParameters()
+
+    if _is_cif_object(source):
+        params = read_shelx_parameters(source) or ShelxParameters()
+        structure = small_structure_from_cif(source)
+        if structure.wavelength:
+            params.wavelength = structure.wavelength
+        return structure, params
+
+    path = Path(source)
     params = read_shelx_parameters(path) or ShelxParameters()
 
     if path.suffix.lower() in ('.res', '.ins'):

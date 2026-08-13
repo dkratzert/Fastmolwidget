@@ -8,13 +8,14 @@ MoleculeWidget`` keeps working unchanged.
 
 from typing import TYPE_CHECKING
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 if TYPE_CHECKING:
     from fastmolwidget.density import (
         ResidualDensityMap,
         calculate_residual_density,
     )
+    from fastmolwidget.density_controls import ResidualDensityControls
     from fastmolwidget.hkl_io import (
         ReflectionData,
         ShelxParameters,
@@ -24,7 +25,10 @@ if TYPE_CHECKING:
     from fastmolwidget.loader import MoleculeLoader
     from fastmolwidget.molecule2D import MoleculeWidget
     from fastmolwidget.molecule3D import MoleculeWidget3D
-    from fastmolwidget.molecule_base import MoleculeWidgetProtocol
+    from fastmolwidget.molecule_base import (
+        ModelSourceMixin,
+        MoleculeWidgetProtocol,
+    )
     from fastmolwidget.molecule_painter import MoleculeRendererMixin
     from fastmolwidget.molecule_quick import MoleculeQuickItem
     from fastmolwidget.sdm import Atomtuple
@@ -47,6 +51,8 @@ _LAZY_IMPORTS = {
     "MoleculeWidget3D": "fastmolwidget.molecule3D",
     "MoleculeViewer3DWidget": "fastmolwidget.viewer_widget3D",
     "MoleculeWidgetProtocol": "fastmolwidget.molecule_base",
+    "ModelSourceMixin": "fastmolwidget.molecule_base",
+    "ResidualDensityControls": "fastmolwidget.density_controls",
     "MoleculeRendererMixin": "fastmolwidget.molecule_painter",
     "Atomtuple": "fastmolwidget.sdm",
     "ResidualDensityMap": "fastmolwidget.density",
@@ -63,6 +69,7 @@ _LAZY_IMPORTS = {
 
 __all__ = [
     "Atomtuple",
+    "ModelSourceMixin",
     "MoleculeLoader",
     "MoleculeQuickItem",
     "MoleculeRendererMixin",
@@ -74,6 +81,7 @@ __all__ = [
     "MoleculeWidget3D",
     "MoleculeWidgetProtocol",
     "ReflectionData",
+    "ResidualDensityControls",
     "ResidualDensityMap",
     "ShelxParameters",
     "__version__",

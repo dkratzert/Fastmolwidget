@@ -62,6 +62,7 @@ from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
     DENSITY_LEVEL_MIN,
     DENSITY_LEVEL_STEP,
+    ModelSourceMixin,
 )
 from fastmolwidget.sdm import Atomtuple
 from fastmolwidget import shaders as _shaders
@@ -314,7 +315,7 @@ def _npd_bound_radius(atom: _Atom3D) -> float:
 # Main widget
 # ---------------------------------------------------------------------------
 
-class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
+class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-type,misc]
     """Real 3-D OpenGL crystal-structure display widget.
 
     Drop-in replacement for :class:`~fastmolwidget.molecule2D.MoleculeWidget`
@@ -1909,10 +1910,10 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
 
     def show_residual_density(
         self,
-        hkl_path: str | Path | None = None,
+        hkl_path: object | None = None,
         level: float | None = None,
         *,
-        model_path: str | Path | None = None,
+        model_path: object | None = None,
     ) -> None:
         """Compute and display a residual (Fo−Fc) electron-density isosurface.
 
@@ -1924,30 +1925,40 @@ class MoleculeWidget3D(_WidgetBase):  # type: ignore[valid-type,misc]
         The result is cached, so :meth:`set_residual_density_level` can change
         the contour afterwards without recomputing the map.
 
-        :param hkl_path: A SHELX ``.hkl`` file, or a CIF/fcf with a reflection
-            loop.  ``None`` (the default) finds the data automatically — from
-            the model file itself, or from a file of the same basename.
+        :param hkl_path: A SHELX ``.hkl`` file, a CIF/fcf with a reflection
+            loop, an in-memory document or block, or already read
+            ``ReflectionData``.  ``None`` (the default) uses the source given
+            to :meth:`set_model_source`, or finds the data automatically from
+            the model file itself or a file of the same basename.
         :param level: Contour level in e/Å³.  ``None`` (the default) uses
             :data:`~fastmolwidget.density.DEFAULT_SIGMA` times the map's RMS,
             which adapts to the quality of the structure instead of imposing
             one absolute value on every dataset.
         :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
-            Defaults to the file this widget last loaded.
+            Defaults to the source given to :meth:`set_model_source`, or the
+            file this widget last loaded.
         :raises RuntimeError: If no model is available, or the compiled
             ``density_cpp`` extension is missing.
         :raises FileNotFoundError: If no reflection data could be found.
         """
         from fastmolwidget.density import calculate_residual_density
 
-        model = model_path if model_path is not None else self._model_path
-        if model is None:
-            raise RuntimeError(
-                'No structure model available - load a .res/.ins/.cif file '
-                'before showing residual density.'
-            )
-        self._density_map = calculate_residual_density(model, hkl_path)
+        model, reflections = self._density_sources(model_path, hkl_path)
+        self._density_map = calculate_residual_density(model, reflections)
         self._density_level = (self._density_map.sigma_level()
                                if level is None else abs(float(level)))
+        self._build_density_geometry()
+        self.update()
+
+    def refresh_residual_density(self) -> None:
+        """Re-clip the cached map around the atoms that are visible now.
+
+        The map itself is kept, so this is cheap.  Only needed by hosts that
+        change what is displayed behind the widget's back; loading a molecule
+        and the hydrogen / disorder-part filters already do it themselves.
+        """
+        if self._density_map is None:
+            return
         self._build_density_geometry()
         self.update()
 

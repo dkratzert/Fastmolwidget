@@ -33,6 +33,125 @@ DENSITY_LEVEL_MIN: float = 0.01
 DENSITY_LEVEL_MAX: float = 9.99
 
 
+def _same_source(new: object | None, old: object | None) -> bool:
+    """Whether two model / reflection sources mean the same thing.
+
+    File names are compared by value, so reloading the same file (what grow
+    and pack do) is recognised as unchanged; in-memory objects are compared by
+    identity, because two documents can carry the same block name without
+    describing the same structure.
+    """
+    if new is old:
+        return True
+    if isinstance(new, (str, Path)) and isinstance(old, (str, Path)):
+        return Path(new) == Path(old)
+    return False
+
+
+class ModelSourceMixin:
+    """Bookkeeping of the model and reflections behind the displayed atoms.
+
+    A widget that was filled by :class:`~fastmolwidget.loader.MoleculeLoader`
+    knows the file it is showing, but one that was handed a list of
+    :class:`~fastmolwidget.sdm.Atomtuple` through ``open_molecule()`` does not
+    — and residual density needs the model to calculate *F*\\ :sub:`c` from.
+    This mixin lets such a host declare the sources once
+    (:meth:`set_model_source`) and answers the two questions the renderers and
+    control bars ask about them.
+
+    Both renderers mix it in, so 2-D, Qt Quick and 3-D behave identically.
+    """
+
+    #: The model backing the displayed atoms: a path, an in-memory
+    #: :class:`gemmi.cif.Document` / :class:`gemmi.cif.Block`, or a
+    #: :class:`gemmi.SmallStructure`.
+    _model_source: object | None = None
+    #: Where its reflections come from; ``None`` means "look in / next to the
+    #: model".
+    _reflection_source: object | None = None
+    #: Path of the structure file last loaded, kept in step with
+    #: :attr:`_model_source` when that is a real file.
+    _model_path: Path | None = None
+
+    def set_model_source(self, model: object | None = None,
+                         reflections: object | None = None) -> None:
+        """Declare which model and reflections back the displayed atoms.
+
+        A cached density map belongs to the previous model's reflections, so
+        it is dropped whenever the sources really change.
+
+        :param model: The refined model — a path, a :class:`gemmi.cif.Document`
+            or :class:`gemmi.cif.Block`, or a :class:`gemmi.SmallStructure`.
+            ``None`` forgets it.
+        :param reflections: Where its reflections come from — the same kinds of
+            source, or already read
+            :class:`~fastmolwidget.hkl_io.ReflectionData`.  ``None`` means
+            "look inside the model, and next to it when it is a file".
+        """
+        changed = not (_same_source(model, self._model_source)
+                       and _same_source(reflections, self._reflection_source))
+        self._model_source = model
+        self._reflection_source = reflections
+        self._model_path = Path(model) if isinstance(model, (str, Path)) else None
+        if changed:
+            self.clear_residual_density()  # type: ignore[attr-defined]
+
+    @property
+    def model_source(self) -> object | None:
+        """The model the residual density is calculated from, if any."""
+        return self._model_source if self._model_source is not None else self._model_path
+
+    @property
+    def reflection_source(self) -> object | None:
+        """The declared reflection source, or ``None`` when it is implicit."""
+        return self._reflection_source
+
+    @property
+    def has_residual_density_data(self) -> bool:
+        """``True`` when a map could be calculated for the current model.
+
+        Only the declared sources are inspected — no map is computed — so a
+        host can enable or disable its density control right after loading a
+        structure.
+        """
+        from fastmolwidget.density import HAS_DENSITY_CPP
+        from fastmolwidget.hkl_io import find_reflection_file, has_reflections
+
+        if not HAS_DENSITY_CPP:
+            return False
+        source = self._reflection_source
+        if source is None:
+            source = self.model_source
+        if source is None:
+            return False
+        try:
+            if isinstance(source, (str, Path)):
+                return find_reflection_file(source) is not None
+            return has_reflections(source)
+        except Exception:  # noqa: BLE001 - "no data" is an answer, not a failure
+            return False
+
+    def _density_sources(
+        self,
+        model: object | None = None,
+        reflections: object | None = None,
+    ) -> tuple[object, object | None]:
+        """Resolve the arguments of ``show_residual_density`` against the state.
+
+        :returns: ``(model, reflections)`` ready for
+            :func:`~fastmolwidget.density.calculate_residual_density`.
+        :raises RuntimeError: If no model is available at all.
+        """
+        if model is None:
+            model = self.model_source
+        if model is None:
+            raise RuntimeError(
+                'No structure model available - load a .res/.ins/.cif file '
+                'or call set_model_source() before showing residual density.'
+            )
+        return model, reflections if reflections is not None else self._reflection_source
+
+
 @runtime_checkable
 class MoleculeWidgetProtocol(Protocol):
     """Protocol defining the common public API shared by all molecule widgets.
@@ -152,7 +271,21 @@ class MoleculeWidgetProtocol(Protocol):
         """
         ...
 
-    def show_residual_density(self, hkl_path: str | Path | None = None,
+    def set_model_source(self, model: object | None = None,
+                         reflections: object | None = None) -> None:
+        """Declare the model and reflections behind the displayed atoms.
+
+        See
+        :meth:`~fastmolwidget.molecule_base.ModelSourceMixin.set_model_source`.
+        """
+        ...
+
+    @property
+    def has_residual_density_data(self) -> bool:
+        """``True`` when a residual-density map could be computed right now."""
+        ...
+
+    def show_residual_density(self, hkl_path: object | None = None,
                               level: float | None = None) -> None:
         """Compute and display a residual (Fo−Fc) electron-density isosurface.
 
@@ -200,6 +333,10 @@ class MoleculeWidgetProtocol(Protocol):
 
     def clear_residual_density(self) -> None:
         """Remove any residual-density isosurface currently displayed."""
+        ...
+
+    def refresh_residual_density(self) -> None:
+        """Re-clip the cached map around the atoms that are visible now."""
         ...
 
     @property

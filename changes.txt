@@ -1,6 +1,28 @@
 Fastmolwidget changes
 =====================
 
+v1.2.0
+------
+- New: host applications that feed the widget their own atoms (via
+  open_molecule()) can now use residual density too. set_model_source(model,
+  reflections) declares what the displayed atoms came from - a file path, an
+  in-memory gemmi.cif Document or Block, or a gemmi.SmallStructure - and the
+  map is dropped automatically when the sources change. Reloading the same
+  file (grow / pack) keeps the map as before.
+- New: has_residual_density_data tells a host whether a map could be computed
+  at all, without computing one, and refresh_residual_density() re-clips a
+  cached map around the atoms that are visible now.
+- New: calculate_residual_density() accepts in-memory models and reflections,
+  so no temporary CIF has to be written for an edited document. hkl_io gained
+  block-level readers (block_has_reflections, read_block_reflections,
+  block_shelx_hkl, block_shelx_res, block_shelx_parameters) and all its CIF
+  readers take a path, a Document or a Block.
+- New: ResidualDensityControls - the "Residual Density" button plus Level spin
+  box as one ready-made widget for hosts with their own layout, and
+  DensityControlsMixin.allow_reflection_dialog / update_density_availability()
+  to disable the button (with an explanatory tooltip) instead of opening a
+  file dialog when there is no usable reflection data.
+
 v1.1.0
 ------
 - New: residual (Fo-Fc) density maps in all three renderers (2D QPainter,

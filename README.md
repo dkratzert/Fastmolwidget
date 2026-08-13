@@ -321,10 +321,13 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 
 #### Residual-density Methods
 
-- **`show_residual_density(hkl_path=None, level=None, *, model_path=None)`** — compute a residual (Fo−Fc) map and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `level=None` contours at **3σ of the map**, which adapts to each structure; `hkl_path=None` finds the reflections automatically — the model file itself, then siblings of the same basename; `model_path` defaults to the file the widget last loaded. Note the *control-bar button* is deliberately stricter and only auto-uses reflections embedded in the model, asking for anything else. On `MoleculeViewer3DWidget` this also presses the Residual Density button in and updates the Level spin box, so the controls never disagree with the view. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing, and `FileNotFoundError` when no reflection data can be found.
+- **`show_residual_density(hkl_path=None, level=None, *, model_path=None)`** — compute a residual (Fo−Fc) map and display it as wireframe isosurfaces (green at `+level`, red at `-level`, in e/Å³). `level=None` contours at **3σ of the map**, which adapts to each structure; `hkl_path=None` uses the source declared with `set_model_source()`, else finds the reflections automatically — the model file itself, then siblings of the same basename; `model_path` defaults to the declared model or the file the widget last loaded. Both accept a path, an in-memory `gemmi.cif.Document`/`Block`, a `gemmi.SmallStructure` (model) or `ReflectionData` (reflections). Note the *control-bar button* is deliberately stricter and only auto-uses reflections that are declared or embedded in the model, asking for anything else. On `MoleculeViewer3DWidget` this also presses the Residual Density button in and updates the Level spin box, so the controls never disagree with the view. Raises `RuntimeError` when no model is available or the compiled `density_cpp` extension is missing, and `FileNotFoundError` when no reflection data can be found.
+- **`set_model_source(model=None, reflections=None)`** — declare what the displayed atoms came from when they were handed over with `open_molecule()` instead of loaded from a file. Accepts a path, a `gemmi.cif.Document`/`Block` or a `gemmi.SmallStructure`; a cached map is dropped when the sources really change (reloading the same file, as Grow and Pack do, keeps it).
+- **`has_residual_density_data`** *(property)* — whether a map could be computed right now, checked without computing one. Use it to enable or disable a density control after loading a structure.
 - **`set_residual_density_level(level: float)`** — re-contour the already computed map; much cheaper than recomputing. No-op when no map is loaded. Emits `densityLevelChanged(float)` when the value actually changes.
 - **`step_residual_density_level(steps: int) -> bool`** — raise or lower the level by *steps* wheel notches (`molecule_base.DENSITY_LEVEL_STEP`, 0.02 e/Å³ each), clamped to `DENSITY_LEVEL_MIN`…`DENSITY_LEVEL_MAX`. Backs **Ctrl + mouse wheel**; returns `False` when no map is loaded.
 - **`clear_residual_density()`** — remove the isosurface.
+- **`refresh_residual_density()`** — re-clip the cached map around the atoms that are visible now. Only needed by hosts that change the displayed atoms behind the widget's back; loading a molecule and the hydrogen / disorder-part filters do it themselves.
 - **`residual_density_map`** *(property)* — the computed `ResidualDensityMap` (with `.max`, `.min`, `.rms`, `.d_min` and the raw `.array` grid), or `None`.
 - **`residual_density_level`** *(property)* — the contour level the surface is currently drawn at, in e/Å³.
 
@@ -560,6 +563,34 @@ Called programmatically without arguments, `show_residual_density()` searches
 more widely than the button does: the model file itself first, then files of
 the same basename with a `.hkl`, `.fcf`, `.fco` or `.cif` extension
 (`fastmolwidget.hkl_io.find_reflection_file`).
+
+### Density in a host application's own layout
+
+An application that builds its atom list itself and hands it to
+`open_molecule()` has no file for the widget to work from. It declares the
+model once, drops in the ready-made control bar, and never sees a file dialog:
+
+```python
+from fastmolwidget import MoleculeWidget, ResidualDensityControls
+
+render_widget = MoleculeWidget()
+controls = ResidualDensityControls(render_widget=render_widget,
+                                   allow_reflection_dialog=False)
+my_layout.addWidget(controls)
+
+render_widget.open_molecule(atoms, cell=cell)
+render_widget.set_model_source(block, reflections=block)  # gemmi.cif.Block
+controls.update_density_availability()   # greys the button out when there
+                                         # is no usable reflection data
+```
+
+`set_model_source()` takes a path, an in-memory `gemmi.cif.Document` or
+`Block`, or a `gemmi.SmallStructure`, so an edited document does not have to be
+written to a temporary file first; the same kinds of source (plus already read
+`ReflectionData`) work for the reflections. `has_residual_density_data` answers
+whether a map is possible without computing one, and
+`allow_reflection_dialog=False` makes a missing dataset simply do nothing
+instead of asking the user for a file.
 
 Positive density is drawn as a **green** wireframe at `+level`, negative
 density as a **red** wireframe at `-level`. The level defaults to **3σ of the

@@ -81,16 +81,13 @@ class MoleculeLoader:
 
         # A different structure invalidates any residual-density map, which
         # belongs to the reflections of the *previous* model.  Reloading the
-        # same file (what grow / pack do) keeps it.
-        previous = getattr(self._widget, '_model_path', None)
-        if previous is not None and Path(previous) != path:
-            self._widget.clear_residual_density()
-
+        # same file (what grow / pack do) keeps it, which is exactly what
+        # ``set_model_source`` does — it only clears on a real change.  It is
+        # called before the atoms are loaded so that a stale map is gone by the
+        # time the new molecule re-clips its isosurface.
+        self._widget.set_model_source(path)
         loader = getattr(self, loader_name)
         loader(path, keep_view=keep_view)
-        # Let the widget know which file it is showing, so that features which
-        # need the model itself (e.g. residual-density maps) can find it.
-        self._widget._model_path = path
 
     _GROWABLE_FORMATS: frozenset[str] = frozenset({'.cif', '.res', '.ins'})
 

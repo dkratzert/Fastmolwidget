@@ -66,9 +66,13 @@ QPushButton:checked:hover {
 
 _DENSITY_TOOLTIP_OFF = "Show the residual Fo-Fc density map."
 
+_DENSITY_TOOLTIP_NO_DATA = ("No usable reflection data for this structure - "
+                            "residual density is unavailable.")
+
 __all__ = [
     'HAS_DENSITY_CPP',
     'DensityControlsMixin',
+    'ResidualDensityControls',
     'ask_for_reflection_file',
     'auto_reflection_file',
     'density_statistics_text',
@@ -80,28 +84,38 @@ __all__ = [
 # UI-toolkit-agnostic helpers, shared with the Qt Quick backend
 # ---------------------------------------------------------------------------
 
-def auto_reflection_file(render_widget: Any) -> Path | None:
-    """Return the model file when it carries its own reflection data.
+def auto_reflection_file(render_widget: Any) -> object | None:
+    """Return the reflection source the renderer already knows about.
 
-    Deliberately does *not* look at sibling files: picking up a separate
-    ``.hkl`` silently would hide which dataset is being used, so that case
-    goes through the file dialog instead.
+    That is either what a host declared through
+    :meth:`~fastmolwidget.molecule_base.ModelSourceMixin.set_model_source`, or
+    the model itself when it carries its own reflection data.  Deliberately
+    does *not* look at sibling files: picking up a separate ``.hkl`` silently
+    would hide which dataset is being used, so that case goes through the file
+    dialog instead.
 
-    :param render_widget: The renderer whose ``_model_path`` to inspect.
-    :returns: The model path when it contains reflections, else ``None``.
+    :param render_widget: The renderer whose sources to inspect.
+    :returns: A reflection source usable straight away, else ``None``.
     """
-    model_path = getattr(render_widget, "_model_path", None)
-    if model_path is None:
+    declared = getattr(render_widget, "reflection_source", None)
+    if declared is not None:
+        return declared
+
+    model = getattr(render_widget, "model_source", None)
+    if model is None:
+        model = getattr(render_widget, "_model_path", None)
+    if model is None:
         return None
     try:
         from fastmolwidget.hkl_io import has_reflections
 
-        model_path = Path(model_path)
-        if model_path.suffix.lower() != ".hkl" and has_reflections(model_path):
-            return model_path
+        if isinstance(model, (str, Path)):
+            model = Path(model)
+            if model.suffix.lower() == ".hkl":
+                return None
+        return model if has_reflections(model) else None
     except Exception:  # noqa: BLE001 - fall back to asking the user
         return None
-    return None
 
 
 def reflection_file_start_path(render_widget: Any) -> str:
@@ -153,6 +167,12 @@ class DensityControlsMixin(_HostBase):
     #: :class:`~fastmolwidget.molecule_base.MoleculeWidgetProtocol` is used
     #: here.
     _render_widget: Any
+
+    #: Whether a file dialog may be opened when no reflection data can be
+    #: found.  A host that knows there is nothing to offer — because it feeds
+    #: the widget from its own document — sets this to ``False``, and switching
+    #: density on then simply does nothing instead of asking for a file.
+    allow_reflection_dialog: bool = True
 
     def _init_density_controls(self) -> None:
         """Create and wire the density controls.
@@ -212,7 +232,7 @@ class DensityControlsMixin(_HostBase):
     # Public API
     # ------------------------------------------------------------------
 
-    def show_residual_density(self, hkl_path: str | Path | None = None,
+    def show_residual_density(self, hkl_path: object | None = None,
                               level: float | None = None) -> None:
         """Compute and show a residual electron-density map.
 
@@ -220,8 +240,9 @@ class DensityControlsMixin(_HostBase):
         Level spin box is set to the level actually used, so the view and the
         controls stay consistent when this is called from code.
 
-        :param hkl_path: Path to the reflection file.  ``None`` finds the data
-            automatically from the loaded model.
+        :param hkl_path: The reflection source — a path, an in-memory CIF
+            document or block, or already read ``ReflectionData``.  ``None``
+            finds the data automatically from the loaded model.
         :param level: Absolute contour level in e/Å³.  ``None`` contours at
             3σ of the map, which adapts to each structure.
         :raises RuntimeError: If no model is loaded or density support is unavailable.
@@ -242,6 +263,25 @@ class DensityControlsMixin(_HostBase):
         self._render_widget.clear_residual_density()
         self._set_density_controls_active(False)
 
+    def update_density_availability(self) -> None:
+        """Enable or disable the button from what the renderer can offer.
+
+        Call after loading a structure: when there are no reflections to work
+        with, the button is greyed out with an explanatory tooltip instead of
+        failing (or asking for a file) once it is pressed.  Any map still on
+        screen is removed, since it belongs to the previous structure.
+        """
+        if not HAS_DENSITY_CPP:
+            return
+        available = bool(getattr(self._render_widget,
+                                 'has_residual_density_data', False))
+        self._residual_density_button.setEnabled(available)
+        if available:
+            self._sync_density_controls()
+            return
+        self.clear_residual_density()
+        self._residual_density_button.setToolTip(_DENSITY_TOOLTIP_NO_DATA)
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -257,10 +297,10 @@ class DensityControlsMixin(_HostBase):
             self.clear_residual_density()
             return
 
-        hkl_path = self._auto_reflection_file()
-        if hkl_path is None:
-            hkl_path = self._ask_for_reflection_file()
-            if hkl_path is None:  # dialog cancelled
+        hkl_source = self._auto_reflection_file()
+        if hkl_source is None:
+            hkl_source = self._ask_for_reflection_file()
+            if hkl_source is None:  # dialog cancelled, or none offered
                 self._set_density_button_checked(False)
                 self._set_density_controls_active(False)
                 return
@@ -270,7 +310,7 @@ class DensityControlsMixin(_HostBase):
         try:
             # level=None -> contour at 3 sigma of this particular map, and let
             # show_residual_density() put the resulting value in the spin box.
-            self.show_residual_density(hkl_path)
+            self.show_residual_density(hkl_source)
         except Exception as exc:  # noqa: BLE001 - never take the host app down
             error_message = str(exc)
         finally:
@@ -279,7 +319,8 @@ class DensityControlsMixin(_HostBase):
         if error_message:
             self._set_density_button_checked(False)
             self._set_density_controls_active(False)
-            QtWidgets.QMessageBox.warning(self, "Residual density", error_message)
+            if self.allow_reflection_dialog:
+                QtWidgets.QMessageBox.warning(self, "Residual density", error_message)
 
     def _set_density_button_checked(self, checked: bool) -> None:
         """Set the button's checked state without re-entering the handler."""
@@ -312,15 +353,21 @@ class DensityControlsMixin(_HostBase):
             self._render_widget.residual_density_map is not None
         )
 
-    def _auto_reflection_file(self) -> Path | None:
-        """Return the model file when it carries its own reflection data.
+    def _auto_reflection_file(self) -> object | None:
+        """Return the reflection source the renderer already knows about.
 
         See :func:`auto_reflection_file`.
         """
         return auto_reflection_file(self._render_widget)
 
     def _ask_for_reflection_file(self) -> Path | None:
-        """Last resort: let the user pick a reflection file."""
+        """Last resort: let the user pick a reflection file.
+
+        Returns ``None`` without asking anything when
+        :attr:`allow_reflection_dialog` is ``False``.
+        """
+        if not self.allow_reflection_dialog:
+            return None
         return ask_for_reflection_file(self, self._render_widget)
 
     def _residual_density_start_path(self) -> str:
@@ -334,3 +381,49 @@ class DensityControlsMixin(_HostBase):
             return
         self._residual_density_button.setToolTip(
             density_statistics_text(density_map))
+
+
+class ResidualDensityControls(DensityControlsMixin, QtWidgets.QWidget):
+    """Ready-made "Residual Density" control bar for any host layout.
+
+    The three viewer widgets build their own tool bar and only mix
+    :class:`DensityControlsMixin` in, but an application that already has a
+    layout of its own — FinalCif's structure page, for instance — just wants
+    the button and the Level spin box as one widget it can insert::
+
+        controls = ResidualDensityControls(render_widget=self.render_widget)
+        controls.allow_reflection_dialog = False
+        my_layout.addWidget(controls)
+        render_widget.set_model_source(block, reflections=block)
+        controls.update_density_availability()
+
+    :param render_widget: The renderer to drive.
+    :param parent: Parent widget.
+    :param allow_reflection_dialog: Whether a file dialog may be opened when no
+        reflection data is found.  ``False`` makes the control silently do
+        nothing instead, which suits hosts that know their own data.
+    """
+
+    def __init__(self, render_widget: Any,
+                 parent: QtWidgets.QWidget | None = None,
+                 *, allow_reflection_dialog: bool = True) -> None:
+        super().__init__(parent)
+        self._render_widget = render_widget
+        self.allow_reflection_dialog = allow_reflection_dialog
+        self._init_density_controls()
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._residual_density_button)
+        layout.addWidget(self._density_level_label)
+        layout.addWidget(self._density_level_spinbox)
+
+    @property
+    def button(self) -> QtWidgets.QPushButton:
+        """The checkable *Residual Density* button."""
+        return self._residual_density_button
+
+    @property
+    def level_spinbox(self) -> QtWidgets.QDoubleSpinBox:
+        """The *Level* spin box, in e/Å³."""
+        return self._density_level_spinbox
