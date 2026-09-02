@@ -13,14 +13,14 @@ Usage::
 
 """
 
+from __future__ import annotations
+
 """
 TODO:
 * Split-Rotate about selected bond
 * While splitting, check for inverted moiety
 * While dragging, adjust occupancy, so that residual density fits better. 
 """
-
-from __future__ import annotations
 
 from argparse import ArgumentParser
 from pathlib import Path
