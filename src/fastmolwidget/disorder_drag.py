@@ -67,11 +67,11 @@ DENSITY_GRADIENT_STEP: float = 0.05
 #: local density gradient.  Small enough to feel like gentle guidance rather
 #: than a hard snap; the elastic/rigid solver re-applies afterwards so the
 #: fragment's own geometry is not destroyed by the nudge.
-DENSITY_NUDGE_STRENGTH: float = 0.06
+DENSITY_NUDGE_STRENGTH: float = 0.09
 
 #: Gradient magnitude (e/Å⁴, roughly) below which the moiety is considered to
 #: have settled into a local density maximum ("snapped").
-SNAP_GRADIENT_TOL: float = 0.05
+SNAP_GRADIENT_TOL: float = 0.1
 
 #: Extra mouse-target displacement (Å) required to leave a snapped pose - the
 #: "more force" needed to drag the moiety further once it has snapped.
