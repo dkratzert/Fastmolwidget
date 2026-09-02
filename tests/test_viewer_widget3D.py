@@ -1689,3 +1689,115 @@ def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
     widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
     assert widget._disorder_drag_session is None
+
+
+# ------------------------------------------------------------------
+# Single free-atom dragging (Ctrl+Shift+drag)
+# ------------------------------------------------------------------
+
+def _ctrl_shift_left_mouse_event(event_type, pos) -> QtGui.QMouseEvent:
+    mods = (
+        QtCore.Qt.KeyboardModifier.ControlModifier
+        | QtCore.Qt.KeyboardModifier.ShiftModifier
+    )
+    return QtGui.QMouseEvent(
+        event_type,
+        pos,
+        pos,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        mods,
+    )
+
+
+def test_ctrl_shift_drag_moves_only_the_grabbed_atom():
+    """Ctrl+Shift+drag on C3 must move only C3; C1/C2 stay untouched and
+    nothing is duplicated."""
+    widget = _make_chain_widget3d()
+    n_atoms_before = len(widget.atoms)
+    c1_before = widget.atoms[0].center.copy()
+    c2_before = widget.atoms[1].center.copy()
+
+    c3 = next(a for a in widget.atoms if a.label == "C3")
+    sx, sy = _project_to_screen(widget, c3.center)
+    press_pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_shift_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
+    assert widget._single_atom_drag_index is None  # not yet - press alone never starts it
+
+    target_world = np.array([5.0, 5.0, 0.0], dtype=np.float32)
+    tx, ty = _project_to_screen(widget, target_world)
+    move_pos = QtCore.QPointF(tx, ty)
+    widget.mouseMoveEvent(_ctrl_shift_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
+
+    assert widget._single_atom_drag_index is not None
+    # No duplication at all.
+    assert len(widget.atoms) == n_atoms_before
+
+    by_label = {a.label: a for a in widget.atoms}
+    assert by_label["C1"].center == pytest.approx(c1_before, abs=1e-9)
+    assert by_label["C2"].center == pytest.approx(c2_before, abs=1e-9)
+    assert by_label["C3"].center == pytest.approx(target_world, abs=1e-3)
+    # Parts/labels are untouched.
+    assert by_label["C3"].part == 0
+    assert not any(a.label.endswith("B") for a in widget.atoms)
+
+    widget.mouseReleaseEvent(QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease,
+        move_pos, move_pos,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    ))
+    assert widget._single_atom_drag_index is None
+
+
+def test_ctrl_shift_click_without_movement_moves_nothing():
+    """A plain Ctrl+Shift+click (press+release, no movement) must not move
+    or duplicate anything."""
+    widget = _make_chain_widget3d()
+    n_atoms_before = len(widget.atoms)
+    positions_before = {a.label: a.center.copy() for a in widget.atoms}
+
+    c3 = next(a for a in widget.atoms if a.label == "C3")
+    sx, sy = _project_to_screen(widget, c3.center)
+    pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_shift_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    assert widget._single_atom_drag_index is None
+    widget.mouseReleaseEvent(QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease, pos, pos,
+        QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+    ))
+
+    assert len(widget.atoms) == n_atoms_before
+    for label, center in positions_before.items():
+        by_label = next(a for a in widget.atoms if a.label == label)
+        assert by_label.center == pytest.approx(center)
+
+
+def test_ctrl_shift_drag_ignores_selected_anchors():
+    """Ctrl+Shift+drag must behave identically regardless of selection - it
+    never treats any atom as an anchor and never builds a moiety."""
+    widget = _make_chain_widget3d()
+    widget.selected_atoms = {"C1"}  # would be an anchor for plain Ctrl+drag
+    n_atoms_before = len(widget.atoms)
+
+    c2 = next(a for a in widget.atoms if a.label == "C2")
+    sx, sy = _project_to_screen(widget, c2.center)
+    press_pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_shift_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
+
+    target_world = np.array([2.0, 4.0, 0.0], dtype=np.float32)
+    tx, ty = _project_to_screen(widget, target_world)
+    move_pos = QtCore.QPointF(tx, ty)
+    widget.mouseMoveEvent(_ctrl_shift_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
+
+    assert widget._single_atom_drag_index is not None
+    assert widget._disorder_drag_session is None
+    assert len(widget.atoms) == n_atoms_before
+
+    by_label = {a.label: a for a in widget.atoms}
+    assert by_label["C2"].center == pytest.approx(target_world, abs=1e-3)
+    assert by_label["C1"].center == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-9)
+    assert by_label["C3"].center == pytest.approx(np.array([3.0, 0.0, 0.0]), abs=1e-9)
+

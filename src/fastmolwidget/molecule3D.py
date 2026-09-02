@@ -51,6 +51,9 @@ Mouse controls
   selected, the whole connected molecule under the cursor is dragged as a
   free body instead, for modelling whole-molecule disorder.  See
   :mod:`fastmolwidget.disorder_drag`.
+* **Ctrl + Shift + left drag** (starting on an atom) – freely reposition just
+  that one atom.  No moiety, no anchors, no duplication - only the picked
+  atom's position changes, everything else stays exactly as it was.
 """
 
 from __future__ import annotations
@@ -514,6 +517,17 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         #: Indices of atoms that *are* such a duplicate (part 2), so grabbing
         #: one directly is recognised without creating yet another copy.
         self._disorder_is_duplicate: set[int] = set()
+
+        # ---- Single free-atom dragging (Ctrl+Shift+drag) -------------------
+        #: Index of the atom being freely repositioned, or ``None`` between
+        #: drags.  No moiety, no anchors, no duplication - just that one
+        #: atom's position changes, everything else (bonds, parts, labels)
+        #: stays exactly as it was.
+        self._single_atom_drag_index: int | None = None
+        #: Fixed eye-space depth plane the dragged atom stays on.
+        self._single_atom_drag_eye_z: float = 0.0
+        #: Inverse model-view matrix cached for the duration of one drag.
+        self._single_atom_drag_mv_inv: np.ndarray | None = None
 
         # ---- Widget appearance --------------------------------------------
         # NB: do NOT enable autoFillBackground on a QOpenGLWidget.  The Qt
@@ -2298,7 +2312,20 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             return
 
         ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        if event.buttons() == Qt.MouseButton.LeftButton and ctrl:
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+        if event.buttons() == Qt.MouseButton.LeftButton and ctrl and shift:
+            # Free single-atom drag: only materialises once real movement is
+            # confirmed, for the same reason as the moiety drag below - a
+            # plain Ctrl+Shift+click must not do anything by itself.
+            if self._single_atom_drag_index is None and self._pressPos is not None:
+                self._try_start_single_atom_drag(self._pressPos)
+            if self._single_atom_drag_index is not None:
+                self._update_single_atom_drag(pos)
+                self._lastPos = pos
+                return
+
+        if event.buttons() == Qt.MouseButton.LeftButton and ctrl and not shift:
             # Only materialise the drag (and duplicate the moiety) once real
             # movement is confirmed, never on a plain Ctrl+click - that must
             # keep behaving as ordinary add/remove-from-selection.  The pick
@@ -2310,6 +2337,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 self._update_disorder_drag(pos)
                 self._lastPos = pos
                 return
+
 
         # Any drag suppresses the hover label until the mouse stops moving.
         if self._hover_atom_label is not None:
@@ -2381,6 +2409,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             # applied to self.atoms in _update_disorder_drag() are kept.
             self._disorder_drag_session = None
             self._disorder_drag_mv_inv = None
+            # Likewise for a single free-atom drag.
+            self._single_atom_drag_index = None
+            self._single_atom_drag_mv_inv = None
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # type: ignore[override]
@@ -2826,23 +2857,30 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.partsChanged.emit(self.available_parts)
         return duplicate_map
 
-    def _disorder_drag_target(self, pos: QtCore.QPointF) -> np.ndarray:
-        """World-space point the grabbed atom should follow for cursor *pos*.
+    def _screen_to_world_at_depth(
+        self, pos: QtCore.QPointF, eye_z: float, mv_inv: np.ndarray,
+    ) -> np.ndarray:
+        """World-space point under cursor *pos* at a fixed eye-space depth.
 
-        The mouse ray is intersected with the screen-parallel plane at the
-        grabbed atom's view-space depth when the drag started, so the target
-        stays at a constant depth for the whole gesture.
+        Shared by the moiety drag and the single free-atom drag: the mouse
+        ray is intersected with the screen-parallel plane at *eye_z* (the
+        grabbed atom's view-space depth when the drag started), so the
+        target stays at a constant depth for the whole gesture.
         """
         w = max(1, self.width())
         h = max(1, self.height())
         half_w, half_h = self._ortho_half_extents()
         nx = 2.0 * pos.x() / w - 1.0
         ny = 1.0 - 2.0 * pos.y() / h
-        eye_point = np.array(
-            [nx * half_w, ny * half_h, self._disorder_drag_eye_z, 1.0], dtype=np.float64,
-        )
-        world = self._disorder_drag_mv_inv @ eye_point
+        eye_point = np.array([nx * half_w, ny * half_h, eye_z, 1.0], dtype=np.float64)
+        world = mv_inv @ eye_point
         return world[:3]
+
+    def _disorder_drag_target(self, pos: QtCore.QPointF) -> np.ndarray:
+        """World-space point the grabbed atom should follow for cursor *pos*."""
+        return self._screen_to_world_at_depth(
+            pos, self._disorder_drag_eye_z, self._disorder_drag_mv_inv,
+        )
 
     def _update_disorder_drag(self, pos: QtCore.QPointF) -> None:
         """Advance the active moiety drag towards the cursor and repaint."""
@@ -2887,6 +2925,62 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
 
         self._disorder_density_guide = DensityGuide.from_map(density_map)
         return self._disorder_density_guide
+
+    # ------------------------------------------------------------------
+    # Single free-atom dragging (Ctrl+Shift+drag)
+    # ------------------------------------------------------------------
+
+    def _try_start_single_atom_drag(self, pos: QtCore.QPointF) -> None:
+        """Begin freely repositioning the single atom under *pos*, if any.
+
+        Unlike Ctrl+drag, this never looks at ``selected_atoms``, never
+        duplicates anything and never touches any other atom: it simply lets
+        the one picked atom follow the mouse.  Called from
+        :meth:`mouseMoveEvent` only once real Ctrl+Shift+left-button movement
+        is confirmed, so a plain Ctrl+Shift+click does nothing.
+        """
+        if not self.atoms:
+            return
+
+        mv = self._compute_mv_matrix()
+        atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()), mv=mv)
+        if atom is None:
+            return
+
+        label_to_index = {a.label: i for i, a in enumerate(self.atoms)}
+        index = label_to_index.get(atom.label)
+        if index is None:
+            return
+
+        try:
+            mv_inv = np.linalg.inv(mv.astype(np.float64))
+        except np.linalg.LinAlgError:
+            return
+
+        self._single_atom_drag_index = index
+        self._single_atom_drag_mv_inv = mv_inv
+        c4 = np.array([*atom.center, 1.0], dtype=np.float64)
+        self._single_atom_drag_eye_z = float((mv.astype(np.float64) @ c4)[2])
+
+    def _update_single_atom_drag(self, pos: QtCore.QPointF) -> None:
+        """Move the grabbed atom to follow the cursor and repaint.
+
+        Only ``center`` of that one atom changes - no bonds, parts, labels
+        or any other atom are touched.
+        """
+        index = self._single_atom_drag_index
+        if index is None or self._single_atom_drag_mv_inv is None:
+            return
+
+        target = self._screen_to_world_at_depth(
+            pos, self._single_atom_drag_eye_z, self._single_atom_drag_mv_inv,
+        )
+        self.atoms[index].center = target.astype(np.float32)
+
+        self._build_geometry()
+        if self._density_map is not None:
+            self._build_density_geometry()
+        self.update()
 
     def _is_click_drag(self, pos: QtCore.QPointF) -> bool:
         """Return ``True`` when the cursor moved more than 5 px from the
