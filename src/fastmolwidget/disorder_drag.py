@@ -8,18 +8,21 @@ the fragment ("moiety") with the mouse to reposition it, guided by a residual
 implements the geometry/optimisation; :mod:`fastmolwidget.molecule3D` wires it
 to mouse events.
 
-Two rigid/elastic modes, chosen by the number of anchors:
+Two rigid/elastic modes are implemented, but :func:`build_drag_session`
+always picks the elastic one (see below) regardless of anchor count:
 
 * **One anchor** — the moiety is a rigid body pinned to that single point
   (ball-and-socket).  Dragging any atom rotates the whole fragment about the
   anchor; all internal distances are preserved exactly because it is a pure
-  rotation (:class:`RigidPivotDrag`).
+  rotation (:class:`RigidPivotDrag`).  Still available for direct use/testing,
+  but not used by :func:`build_drag_session`.
 * **Two or more anchors** — a rigid body would be over-constrained, so the
   moiety is treated as an elastic mass-spring system: every bonded pair (both
   inside the moiety and between the moiety and an anchor) is a distance
   constraint with the original bond length as its rest length, solved with a
   few Gauss-Seidel relaxation passes per drag step (:class:`ElasticDrag`).
-  Anchors have infinite mass (never move).
+  Anchors have infinite mass (never move).  :func:`build_drag_session` always
+  uses this mode, even for a single anchor, for a consistently "gummy" feel.
 
 :class:`DensityGuide` samples a residual-density grid (trilinear
 interpolation) and its numerical gradient, so the moiety can be nudged
@@ -479,30 +482,27 @@ def build_drag_session(
 ) -> MoietyDragSession | None:
     """Build a :class:`MoietyDragSession` for dragging from *grabbed_index*.
 
+    Always uses the elastic (mass-spring) solver, even for a single anchor,
+    so the drag feel is consistent regardless of how many anchors are
+    selected - see the module docstring.
+
     :param connections: Every bond in the molecule as ``(i, j)`` atom-index
         pairs.
     :param positions: Current Cartesian position of every atom, keyed by
         index (only the moiety's and the anchors' entries are used).
-    :param anchors: The user-selected fixed border atoms.
+    :param anchors: The user-selected fixed border atoms.  An empty set
+        means "no anchors at all" - the whole fragment connected to
+        *grabbed_index* is then dragged as a free body (nothing holds it in
+        place), which is how a whole-molecule disorder is modelled.
     :param grabbed_index: The atom under the cursor when the drag started.
     :param density: Optional density guide for snapping; ``None`` disables
         density guidance (the moiety still drags, just without a target).
     :returns: The session, or ``None`` when *grabbed_index* does not belong
-        to a moiety anchored by *anchors* (nothing to drag).
+        to a moiety reachable from *anchors* (nothing to drag).
     """
-    if not anchors:
-        return None
     moiety = find_moiety(connections, anchors, grabbed_index)
     if grabbed_index not in moiety:
         return None
-
-    if len(anchors) == 1:
-        pivot = positions[next(iter(anchors))]
-        base = {i: positions[i] for i in moiety}
-        solver = RigidPivotDrag(pivot, base)
-        return MoietyDragSession(
-            grabbed_index=grabbed_index, mode='rigid', _solver=solver, density=density,
-        )
 
     edges = moiety_edges(connections, moiety, anchors)
     combined = {i: positions[i] for i in moiety}

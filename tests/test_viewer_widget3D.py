@@ -1552,49 +1552,93 @@ def _ctrl_left_mouse_event(event_type, pos) -> QtGui.QMouseEvent:
     )
 
 
-def test_ctrl_drag_starts_no_session_without_selected_anchor():
-    """Ctrl+drag on an atom does nothing when no anchor is selected."""
+def test_ctrl_drag_no_selection_drags_whole_molecule_as_free_body():
+    """No anchor selected: Ctrl+drag treats the whole connected molecule as
+    a free body and still creates a permanent part-2 duplicate."""
     widget = _make_chain_widget3d()
+    assert not widget.selected_atoms
+    n_atoms_before = len(widget.atoms)
+
     sx, sy = _project_to_screen(widget, widget.atoms[2].center)
     pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    # Duplication only happens once real movement is confirmed, never on a
+    # plain Ctrl+click - a move event at the same position is enough.
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
 
+    assert widget._disorder_drag_session is not None
+    # Every original atom duplicated: C1, C2, C3 -> +3 new atoms.
+    assert len(widget.atoms) == n_atoms_before + 3
+    labels = {a.label for a in widget.atoms}
+    assert {"C1B", "C2B", "C3B"} <= labels
+    parts = {a.label: a.part for a in widget.atoms}
+    assert parts["C1"] == 1 and parts["C2"] == 1 and parts["C3"] == 1
+    assert parts["C1B"] == 2 and parts["C2B"] == 2 and parts["C3B"] == 2
+
+
+def test_ctrl_click_without_movement_does_not_duplicate_anything():
+    """A plain Ctrl+click (press+release, no movement) must not split
+    anything - it is ordinary add/remove-from-selection."""
+    widget = _make_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    c3 = next(a for a in widget.atoms if a.label == "C3")
+    n_atoms_before = len(widget.atoms)
+
+    sx, sy = _project_to_screen(widget, c3.center)
+    pos = QtCore.QPointF(sx, sy)
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
     assert widget._disorder_drag_session is None
+    widget.mouseReleaseEvent(QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease, pos, pos,
+        QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    ))
+
+    assert len(widget.atoms) == n_atoms_before
+    # Ordinary Ctrl+click semantics: C3 toggled into the selection.
+    assert "C3" in widget.selected_atoms
 
 
-def test_ctrl_drag_rotates_moiety_about_selected_anchor():
-    """Ctrl+drag on C3 (with C1 selected as anchor) rotates {C2, C3} rigidly."""
+def test_ctrl_drag_duplicates_moiety_and_keeps_originals_fixed():
+    """Ctrl+drag on C3 (with C1 selected as anchor) never moves C2/C3
+    themselves; a permanent part-2 duplicate is dragged instead."""
     widget = _make_chain_widget3d()
     widget.selected_atoms = {"C1"}
     c1 = next(a for a in widget.atoms if a.label == "C1")
-    c2 = next(a for a in widget.atoms if a.label == "C2")
-    c3 = next(a for a in widget.atoms if a.label == "C3")
-    c2_c1_dist_before = float(np.linalg.norm(c2.center - c1.center))
-    c3_c1_dist_before = float(np.linalg.norm(c3.center - c1.center))
+    c2_before = next(a for a in widget.atoms if a.label == "C2").center.copy()
+    c3_before = next(a for a in widget.atoms if a.label == "C3").center.copy()
 
-    sx, sy = _project_to_screen(widget, c3.center)
+    press_pos_world = next(a for a in widget.atoms if a.label == "C3").center
+    sx, sy = _project_to_screen(widget, press_pos_world)
     press_pos = QtCore.QPointF(sx, sy)
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
-    assert widget._disorder_drag_session is not None
-    assert widget._disorder_drag_session.mode == 'rigid'
+    assert widget._disorder_drag_session is None  # not yet - press alone never starts it
 
-    # Drag towards a point rotated away from the anchor, in the same
-    # screen-parallel plane (same Z as the grabbed atom, since the view has
-    # no rotation applied yet).
     target_world = c1.center + np.array([0.0, 3.0, 0.0], dtype=np.float32)
     tx, ty = _project_to_screen(widget, target_world)
     move_pos = QtCore.QPointF(tx, ty)
     widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
 
-    # Anchor never moves.
-    assert c1.center == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-4)
-    # Distances from the anchor are preserved (pure rotation).
-    assert float(np.linalg.norm(c2.center - c1.center)) == pytest.approx(
-        c2_c1_dist_before, abs=1e-3)
-    assert float(np.linalg.norm(c3.center - c1.center)) == pytest.approx(
-        c3_c1_dist_before, abs=1e-3)
-    # The grabbed atom moved towards +Y, away from its original position.
-    assert c3.center[1] > 1.0
+    assert widget._disorder_drag_session is not None
+    assert widget._disorder_drag_session.mode == 'elastic'
+
+    by_label = {a.label: a for a in widget.atoms}
+    assert "C2B" in by_label and "C3B" in by_label
+    assert by_label["C2"].part == 1 and by_label["C3"].part == 1
+    assert by_label["C2B"].part == 2 and by_label["C3B"].part == 2
+    # Anchor is not duplicated.
+    assert not any(a.label == "C1B" for a in widget.atoms)
+
+    # Originals never moved.
+    assert by_label["C2"].center == pytest.approx(c2_before, abs=1e-9)
+    assert by_label["C3"].center == pytest.approx(c3_before, abs=1e-9)
+    assert by_label["C1"].center == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-9)
+    # The duplicate moved towards the target instead.
+    assert by_label["C3B"].center[1] > 1.0
+    assert float(np.linalg.norm(by_label["C2B"].center - c1.center)) == pytest.approx(1.5, abs=0.1)
+    assert float(
+        np.linalg.norm(by_label["C3B"].center - by_label["C2B"].center)
+    ) == pytest.approx(1.5, abs=0.1)
 
     widget.mouseReleaseEvent(QtGui.QMouseEvent(
         QtCore.QEvent.Type.MouseButtonRelease,
@@ -1604,6 +1648,35 @@ def test_ctrl_drag_rotates_moiety_about_selected_anchor():
         QtCore.Qt.KeyboardModifier.ControlModifier,
     ))
     assert widget._disorder_drag_session is None
+    # The split is permanent: still there after release.
+    assert any(a.label == "C3B" for a in widget.atoms)
+
+
+def test_ctrl_drag_again_reuses_existing_duplicate():
+    """Re-dragging the original atom must not create a second duplicate."""
+    widget = _make_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    c3 = next(a for a in widget.atoms if a.label == "C3")
+
+    sx, sy = _project_to_screen(widget, c3.center)
+    pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
+    assert widget._disorder_drag_session is not None
+    widget.mouseReleaseEvent(QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease, pos, pos,
+        QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    ))
+    n_atoms_after_first_drag = len(widget.atoms)
+
+    # Grab the (now fixed) original C3 again and move.
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
+    assert widget._disorder_drag_session is not None
+    assert len(widget.atoms) == n_atoms_after_first_drag  # no new duplicate
+    c3_index = next(i for i, a in enumerate(widget.atoms) if a.label == "C3")
+    assert widget._disorder_drag_session.grabbed_index == widget._disorder_duplicate_of[c3_index]
 
 
 def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
@@ -1614,4 +1687,5 @@ def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
     pos = QtCore.QPointF(sx, sy)
 
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
     assert widget._disorder_drag_session is None

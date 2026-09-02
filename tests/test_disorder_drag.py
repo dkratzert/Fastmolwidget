@@ -217,10 +217,16 @@ def test_density_guide_is_periodic():
 # build_drag_session / MoietyDragSession
 # ---------------------------------------------------------------------------
 
-def test_build_drag_session_none_when_no_anchors():
+def test_build_drag_session_drags_whole_molecule_when_no_anchors():
+    """No anchors: the whole connected fragment drags as a free body."""
     connections = [(0, 1)]
     positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
-    assert build_drag_session(connections, positions, set(), 1) is None
+    session = build_drag_session(connections, positions, set(), 1)
+    assert session is not None
+    assert session.mode == 'elastic'
+    new = session.update(np.array([1.5, 2.0, 0.0]))
+    # No anchors: even atom 0 (the other end of the bond) is free to move.
+    assert 0 in new and 1 in new
 
 
 def test_build_drag_session_none_when_grabbed_atom_not_in_moiety():
@@ -230,12 +236,12 @@ def test_build_drag_session_none_when_grabbed_atom_not_in_moiety():
     assert build_drag_session(connections, positions, {0}, 0) is None
 
 
-def test_build_drag_session_picks_rigid_for_one_anchor():
+def test_build_drag_session_always_uses_elastic_even_for_one_anchor():
     connections = [(0, 1)]
     positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
     session = build_drag_session(connections, positions, {0}, 1)
     assert session is not None
-    assert session.mode == 'rigid'
+    assert session.mode == 'elastic'
 
 
 def test_build_drag_session_picks_elastic_for_two_anchors():
