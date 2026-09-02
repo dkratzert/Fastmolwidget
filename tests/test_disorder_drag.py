@@ -13,6 +13,7 @@ from fastmolwidget.disorder_drag import (
     DensityGuide,
     ElasticDrag,
     RigidPivotDrag,
+    atomic_mass,
     build_drag_session,
     find_moiety,
     moiety_edges,
@@ -175,6 +176,175 @@ def test_elastic_drag_grabbed_atom_reaches_target():
     target = np.array([1.5, 1.0, 0.0])
     new = drag.update(1, target)
     assert new[1] == pytest.approx(target)
+
+
+def test_atomic_mass_hydrogen_lighter_than_carbon():
+    assert atomic_mass('H') < atomic_mass('C')
+    assert atomic_mass('D') > atomic_mass('H')  # deuterium is heavier than protium
+    assert atomic_mass('D') < atomic_mass('C')
+
+
+def test_atomic_mass_unknown_symbol_falls_back_to_light_dummy():
+    """An unrecognised label must not act like an infinitely heavy anchor."""
+    assert atomic_mass('Zz') == pytest.approx(1.0)
+
+
+def test_elastic_drag_light_atom_trails_heavy_neighbour_more():
+    """Between two movable atoms, the lighter one absorbs most of the
+    correction (riding-model-like), the heavier one barely moves."""
+    # anchor(0, heavy) -- grabbed(1, heavy) -- movable_heavy(2) -- movable_light(3)
+    connections = [(0, 1), (1, 2), (2, 3)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([3.0, 0.0, 0.0]),
+        3: np.array([4.0, 0.0, 0.0]),
+    }
+    edges = moiety_edges(connections, {1, 2, 3}, {0})
+    combined = {0: positions[0], 1: positions[1], 2: positions[2], 3: positions[3]}
+    masses = {0: 12.0, 1: 12.0, 2: 12.0, 3: 1.0}
+
+    drag = ElasticDrag(combined, {0}, edges, masses=masses)
+    target = np.array([1.5, 3.0, 0.0])
+    new = drag.update(1, target)
+
+    unweighted = ElasticDrag(dict(combined), {0}, edges)
+    new_unweighted = unweighted.update(1, target)
+
+    # The light atom (3) ends up farther from its pre-drag position than the
+    # heavy one (2) does, relative to the unweighted (equal-mass) baseline.
+    heavy_displacement = float(np.linalg.norm(new[2] - positions[2]))
+    heavy_displacement_unweighted = float(np.linalg.norm(new_unweighted[2] - positions[2]))
+    assert heavy_displacement < heavy_displacement_unweighted
+
+
+def test_elastic_drag_equal_masses_matches_unweighted_default():
+    """Explicit equal masses must reproduce the default (no masses) result."""
+    connections = [(0, 1), (1, 2), (2, 3)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([3.0, 0.0, 0.0]),
+        3: np.array([4.5, 0.0, 0.0]),
+    }
+    edges = moiety_edges(connections, {1, 2}, {0, 3})
+    combined_a = {i: positions[i] for i in (0, 1, 2, 3)}
+    combined_b = {i: positions[i] for i in (0, 1, 2, 3)}
+    target = np.array([1.5, 2.0, 0.0])
+
+    default_drag = ElasticDrag(combined_a, {0, 3}, edges)
+    equal_mass_drag = ElasticDrag(combined_b, {0, 3}, edges, masses={0: 5.0, 1: 5.0, 2: 5.0, 3: 5.0})
+
+    new_default = default_drag.update(1, target)
+    new_equal = equal_mass_drag.update(1, target)
+    for i in new_default:
+        assert new_default[i] == pytest.approx(new_equal[i])
+
+
+def test_build_drag_session_accepts_masses():
+    connections = [(0, 1), (1, 2)]
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0]), 2: np.array([1.5, 1.0, 0.0])}
+    masses = {0: 12.0, 1: 12.0, 2: 1.0}
+    session = build_drag_session(connections, positions, {0}, 1, masses=masses)
+    assert session is not None
+    new = session.update(np.array([1.5, 3.0, 0.0]))
+    assert 2 in new  # the light atom is still dragged along
+
+
+# ---------------------------------------------------------------------------
+# Riding atoms (exact rigid attachment, e.g. terminal hydrogens)
+# ---------------------------------------------------------------------------
+
+def test_elastic_drag_riding_atom_keeps_exact_offset_from_parent():
+    """A riding atom must end up at *exactly* its original offset from the
+    parent, translated by however far the parent moved - not merely close."""
+    # anchor(0) - C(1, grabbed) - H(2, riding)
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([1.5, 1.0, 0.0]),
+    }
+    edges = [(0, 1), (1, 2)]
+    combined = {i: positions[i] for i in (0, 1, 2)}
+    drag = ElasticDrag(combined, {0}, edges, riding={2: 1})
+
+    target = np.array([1.5, 3.0, 0.0])
+    new = drag.update(1, target)
+
+    original_offset = positions[2] - positions[1]
+    assert new[1] == pytest.approx(target)
+    assert new[2] - new[1] == pytest.approx(original_offset, abs=1e-12)
+    assert np.linalg.norm(new[2] - new[1]) == pytest.approx(np.linalg.norm(original_offset), abs=1e-12)
+
+
+def test_elastic_drag_riding_atom_follows_parent_through_relaxation():
+    """The offset stays exact even when the parent itself is only indirectly
+    moved by the spring solve (not the grabbed atom)."""
+    # anchor(0) - C1(1) - C2(2, grabbed) with a riding H(3) on C1.
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([3.0, 0.0, 0.0]),
+        3: np.array([1.5, 1.0, 0.0]),
+    }
+    edges = [(0, 1), (1, 2), (1, 3)]
+    combined = {i: positions[i] for i in (0, 1, 2, 3)}
+    drag = ElasticDrag(combined, {0}, edges, riding={3: 1}, iterations=40)
+
+    target = np.array([3.0, 2.0, 0.0])
+    new = drag.update(2, target)
+
+    original_offset = positions[3] - positions[1]
+    assert new[3] - new[1] == pytest.approx(original_offset, abs=1e-9)
+
+
+def test_elastic_drag_riding_atom_grabbed_directly_is_solved_normally():
+    """Grabbing the riding atom itself must let it follow the mouse exactly,
+    not force it to stay glued to its parent's rigid offset."""
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([1.5, 1.0, 0.0]),
+    }
+    edges = [(0, 1), (1, 2)]
+    combined = {i: positions[i] for i in (0, 1, 2)}
+    drag = ElasticDrag(combined, {0}, edges, riding={2: 1})
+
+    target = np.array([1.5, 5.0, 0.0])
+    new = drag.update(2, target)
+    assert new[2] == pytest.approx(target)
+
+
+def test_build_drag_session_riding_atoms_ride_exactly():
+    """End-to-end through build_drag_session with a riding_atoms mapping."""
+    connections = [(0, 1), (1, 2)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([1.5, 1.0, 0.0]),
+    }
+    session = build_drag_session(
+        connections, positions, {0}, 1, riding_atoms={2: 1},
+    )
+    assert session is not None
+    target = np.array([1.5, 4.0, 0.0])
+    new = session.update(target)
+    original_offset = positions[2] - positions[1]
+    assert new[2] - new[1] == pytest.approx(original_offset, abs=1e-9)
+
+
+def test_build_drag_session_riding_atoms_outside_moiety_are_ignored():
+    """A riding_atoms entry pointing outside the actual moiety/anchors must
+    be silently dropped rather than raising a KeyError."""
+    connections = [(0, 1)]
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
+    # Index 99 does not exist in this tiny graph at all.
+    session = build_drag_session(
+        connections, positions, {0}, 1, riding_atoms={99: 1},
+    )
+    assert session is not None
+    new = session.update(np.array([1.5, 2.0, 0.0]))
+    assert 99 not in new
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,15 @@ always picks the elastic one (see below) regardless of anchor count:
   few Gauss-Seidel relaxation passes per drag step (:class:`ElasticDrag`).
   Anchors have infinite mass (never move).  :func:`build_drag_session` always
   uses this mode, even for a single anchor, for a consistently "gummy" feel.
+  Optional atomic masses (:func:`atomic_mass`) let a constraint's correction
+  split unevenly between two solved atoms of different weight.
+
+Terminal hydrogens ride exactly rather than take part in the spring solve at
+all: :class:`ElasticDrag`'s ``riding`` mapping (atom → its parent) keeps such
+an atom at its *exact* original offset from the parent - identical bond
+length and direction, always - translated by however far the parent moved.
+This is a hard rule, not an approximation, which is what "a hydrogen keeps
+the same relative geometry to its carbon" means physically.
 
 :class:`DensityGuide` samples a residual-density grid (trilinear
 interpolation) and its numerical gradient, so the moiety can be nudged
@@ -49,6 +58,7 @@ __all__ = [
     'ElasticDrag',
     'MoietyDragSession',
     'RigidPivotDrag',
+    'atomic_mass',
     'build_drag_session',
     'find_moiety',
     'moiety_edges',
@@ -76,6 +86,22 @@ SNAP_GRADIENT_TOL: float = 0.1
 #: Extra mouse-target displacement (Å) required to leave a snapped pose - the
 #: "more force" needed to drag the moiety further once it has snapped.
 BREAKAWAY_DISTANCE: float = 0.6
+
+
+def atomic_mass(element: str) -> float:
+    """Return the standard atomic weight of *element* in u (g/mol).
+
+    Thin wrapper around :class:`gemmi.Element` so callers building the
+    ``masses`` argument of :func:`build_drag_session` / :class:`ElasticDrag`
+    don't need their own periodic table.  Deuterium (``"D"``) is recognised
+    with its correct (roughly doubled) mass; unrecognised symbols fall back
+    to gemmi's dummy element weight of ``1.0``, which is deliberately light
+    so an unknown label still behaves like a hydrogen rather than silently
+    acting as an infinitely heavy anchor.
+    """
+    import gemmi
+
+    return float(gemmi.Element(element).weight)
 
 
 # ---------------------------------------------------------------------------
@@ -246,22 +272,49 @@ class ElasticDrag:
         anchors: set[int],
         edges: list[tuple[int, int]],
         iterations: int = 12,
+        masses: dict[int, float] | None = None,
+        riding: dict[int, int] | None = None,
     ):
         """
-        :param positions: Starting positions of every atom involved (moiety
-            *and* anchors), keyed by atom index.
+        :param positions: Starting positions of every atom involved (moiety,
+            anchors, *and* any riding atoms), keyed by atom index.
         :param anchors: Indices that never move.
         :param edges: Bonded pairs to keep at their original length, from
             :func:`moiety_edges`.
         :param iterations: Constraint-relaxation passes per :meth:`update`.
+        :param masses: Optional per-atom mass (any consistent unit, e.g.
+            atomic mass units), keyed by atom index.  Between two movable
+            atoms of a bonded pair that are *not* riding, the lighter one
+            absorbs the larger share of every constraint correction (see
+            :meth:`update`).  Missing entries default to ``1.0``; ``None``
+            gives every atom equal mass.
+        :param riding: Maps a riding atom's index to its parent's index (e.g.
+            a terminal hydrogen and the heavy atom it is bonded to).  Riding
+            atoms take no part in the spring solve at all - they simply keep
+            their exact original offset from the parent, translated by
+            however far the parent moved, so a hydrogen stays glued to its
+            carbon with identical bond length and direction (true riding,
+            not an approximation).  A riding atom that is also
+            *grabbed_index* is treated as a normal solved atom instead (it
+            must follow the mouse exactly).
         """
-        self.positions = {i: np.array(p, dtype=float) for i, p in positions.items()}
         self.anchors = set(anchors)
         self.iterations = iterations
-        self._rest_length = {
-            (a, b): float(np.linalg.norm(self.positions[a] - self.positions[b]))
-            for a, b in edges
+        self.masses = dict(masses) if masses else {}
+        self._base_positions = {i: np.array(p, dtype=float) for i, p in positions.items()}
+        self.riding = dict(riding) if riding else {}
+        self.positions = {
+            i: np.array(p, dtype=float) for i, p in positions.items()
+            if i not in self.riding
         }
+        self._rest_length = {
+            (a, b): float(np.linalg.norm(self._base_positions[a] - self._base_positions[b]))
+            for a, b in edges
+            if a not in self.riding and b not in self.riding
+        }
+
+    def _mass(self, index: int) -> float:
+        return self.masses.get(index, 1.0)
 
     def update(
         self,
@@ -272,15 +325,27 @@ class ElasticDrag:
         """Relax the moiety towards *target* and return the new positions.
 
         :param grabbed_index: The atom index being dragged; pinned to
-            *target* at the start of every relaxation pass.
+            *target* at the start of every relaxation pass.  If this is a
+            riding atom, it is solved normally for this call instead (it has
+            to follow the mouse exactly, so it cannot also just trail its
+            parent).
         :param target: The world-space point the grabbed atom follows.
         :param external_forces: Optional per-atom displacement added once
             before the constraint passes (e.g. a density-gradient nudge);
             the constraint solve then partially, but not fully, absorbs it,
             which is what gives the density guidance a soft pull rather than
             an instant jump.
-        :returns: Positions for every atom that is not an anchor.
+        :returns: Positions for every atom that is not an anchor, including
+            riding atoms.
         """
+        if grabbed_index in self.riding:
+            # Grabbed a riding atom directly: solve it like any other atom
+            # for this (and every subsequent) call instead of deriving its
+            # position from a parent it is simultaneously supposed to be
+            # dragging around.
+            del self.riding[grabbed_index]
+            self.positions[grabbed_index] = self._base_positions[grabbed_index].copy()
+
         pos = self.positions
         pos[grabbed_index] = np.asarray(target, dtype=float)
 
@@ -301,15 +366,36 @@ class ElasticDrag:
                 move_a = a in movable
                 move_b = b in movable
                 if move_a and move_b:
-                    pos[a] = pa + 0.5 * correction * delta
-                    pos[b] = pb - 0.5 * correction * delta
+                    # Mass-weighted split conserving the pair's centre of
+                    # mass: the lighter atom's share of the correction is the
+                    # heavier atom's mass fraction, and vice versa, so a
+                    # light hydrogen trails a heavy neighbour almost exactly
+                    # (riding model) while two similar masses split evenly.
+                    m_a, m_b = self._mass(a), self._mass(b)
+                    total_mass = m_a + m_b
+                    frac_a = m_b / total_mass
+                    frac_b = m_a / total_mass
+                    pos[a] = pa + frac_a * correction * delta
+                    pos[b] = pb - frac_b * correction * delta
                 elif move_a:
                     pos[a] = pa + correction * delta
                 elif move_b:
                     pos[b] = pb - correction * delta
             pos[grabbed_index] = np.asarray(target, dtype=float)
 
-        return {i: p.copy() for i, p in pos.items() if i not in self.anchors}
+        result = {i: p.copy() for i, p in pos.items() if i not in self.anchors}
+
+        # Riding atoms never entered the spring solve: they simply keep
+        # their exact original offset from the parent, translated by
+        # however far the parent moved - identical bond length and
+        # direction to the parent, always, not just approximately.
+        for riding_atom, parent in self.riding.items():
+            parent_new = pos.get(parent, self._base_positions[parent])
+            parent_old = self._base_positions[parent]
+            offset = self._base_positions[riding_atom] - parent_old
+            result[riding_atom] = parent_new + offset
+
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +565,8 @@ def build_drag_session(
     anchors: set[int],
     grabbed_index: int,
     density: DensityGuide | None = None,
+    masses: dict[int, float] | None = None,
+    riding_atoms: dict[int, int] | None = None,
 ) -> MoietyDragSession | None:
     """Build a :class:`MoietyDragSession` for dragging from *grabbed_index*.
 
@@ -497,6 +585,14 @@ def build_drag_session(
     :param grabbed_index: The atom under the cursor when the drag started.
     :param density: Optional density guide for snapping; ``None`` disables
         density guidance (the moiety still drags, just without a target).
+    :param masses: Optional per-atom mass, keyed by atom index (see
+        :class:`ElasticDrag`).  ``None`` gives every solved atom equal
+        weight.
+    :param riding_atoms: Optional mapping of a riding atom's index to its
+        parent's index (typically a terminal hydrogen and the heavy atom it
+        is bonded to, see :class:`ElasticDrag`).  Riding atoms keep their
+        exact original offset from the parent - same bond length, same
+        direction - rather than taking part in the spring solve.
     :returns: The session, or ``None`` when *grabbed_index* does not belong
         to a moiety reachable from *anchors* (nothing to drag).
     """
@@ -507,7 +603,11 @@ def build_drag_session(
     edges = moiety_edges(connections, moiety, anchors)
     combined = {i: positions[i] for i in moiety}
     combined.update({i: positions[i] for i in anchors})
-    solver = ElasticDrag(combined, set(anchors), edges)
+    riding = {
+        i: p for i, p in (riding_atoms or {}).items()
+        if i in combined and p in combined
+    }
+    solver = ElasticDrag(combined, set(anchors), edges, masses=masses, riding=riding)
     return MoietyDragSession(
         grabbed_index=grabbed_index, mode='elastic', _solver=solver, density=density,
     )

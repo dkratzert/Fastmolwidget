@@ -2743,7 +2743,11 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         a split, or by grabbing the split copy directly - moves the existing
         duplicate rather than creating another one.
         """
-        from fastmolwidget.disorder_drag import build_drag_session, find_moiety
+        from fastmolwidget.disorder_drag import (
+            atomic_mass,
+            build_drag_session,
+            find_moiety,
+        )
 
         if not self.atoms:
             return
@@ -2781,10 +2785,12 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             drag_grabbed_index = duplicate_map[grabbed_index]
 
         positions = {i: a.center.astype(np.float64) for i, a in enumerate(self.atoms)}
+        masses = {i: atomic_mass(a.type_) for i, a in enumerate(self.atoms)}
+        riding_atoms = self._compute_riding_atoms()
         density_guide = self._get_disorder_density_guide()
         session = build_drag_session(
             self.connections, positions, anchor_indices, drag_grabbed_index,
-            density=density_guide,
+            density=density_guide, masses=masses, riding_atoms=riding_atoms,
         )
         if session is None:
             return
@@ -2856,6 +2862,33 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.available_parts = frozenset(a.part for a in self.atoms)
         self.partsChanged.emit(self.available_parts)
         return duplicate_map
+
+    def _compute_riding_atoms(self) -> dict[int, int]:
+        """Map every terminal hydrogen to the heavy atom it rides on.
+
+        A "riding" atom is a hydrogen/deuterium with exactly one bond in
+        :attr:`connections` - it is passed to
+        :func:`~fastmolwidget.disorder_drag.build_drag_session` so the drag
+        solver keeps it at its exact original offset from that one bonded
+        (parent) atom instead of letting it take part in the spring solve,
+        which is what "riding" means physically: identical bond length and
+        direction to the parent, always.
+
+        :returns: ``{hydrogen_index: parent_index}`` for every such atom.
+        """
+        degree: dict[int, int] = {}
+        neighbour: dict[int, int] = {}
+        for a, b in self.connections:
+            degree[a] = degree.get(a, 0) + 1
+            degree[b] = degree.get(b, 0) + 1
+            neighbour[a] = b
+            neighbour[b] = a
+
+        return {
+            i: neighbour[i]
+            for i, atom in enumerate(self.atoms)
+            if atom.type_ in ('H', 'D') and degree.get(i, 0) == 1
+        }
 
     def _screen_to_world_at_depth(
         self, pos: QtCore.QPointF, eye_z: float, mv_inv: np.ndarray,

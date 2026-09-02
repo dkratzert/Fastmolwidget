@@ -1689,6 +1689,52 @@ def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
     widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
     assert widget._disorder_drag_session is None
+def test_ctrl_drag_riding_hydrogen_keeps_exact_offset_from_its_carbon():
+    """A terminal hydrogen on the dragged moiety must ride its carbon
+    exactly: identical offset vector before and after the drag."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 0),
+        Atomtuple("H1", "H", 1.5, 1.0, 0.0, 0),
+    ])
+    widget.selected_atoms = {"C1"}
+
+    by_label_before = {a.label: a.center.copy() for a in widget.atoms}
+    original_offset = by_label_before["H1"] - by_label_before["C2"]
+
+    c2 = next(a for a in widget.atoms if a.label == "C2")
+    sx, sy = _project_to_screen(widget, c2.center)
+    press_pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
+
+    target_world = np.array([1.5, 4.0, 0.0], dtype=np.float32)
+    tx, ty = _project_to_screen(widget, target_world)
+    move_pos = QtCore.QPointF(tx, ty)
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
+
+    by_label = {a.label: a for a in widget.atoms}
+    assert "C2B" in by_label and "H1B" in by_label
+    new_offset = by_label["H1B"].center - by_label["C2B"].center
+    assert new_offset == pytest.approx(original_offset, abs=1e-4)
+    assert np.linalg.norm(new_offset) == pytest.approx(np.linalg.norm(original_offset), abs=1e-4)
+    # Originals are untouched, as with any moiety drag.
+    assert by_label["C2"].center == pytest.approx(by_label_before["C2"])
+    assert by_label["H1"].center == pytest.approx(by_label_before["H1"])
+
+
+def test_compute_riding_atoms_finds_only_terminal_hydrogens():
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("H1", "H", 0.0, 1.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 0),
+    ])
+    label_to_index = {a.label: i for i, a in enumerate(widget.atoms)}
+    riding = widget._compute_riding_atoms()
+    assert riding == {label_to_index["H1"]: label_to_index["C1"]}
 
 
 # ------------------------------------------------------------------
