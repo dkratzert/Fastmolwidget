@@ -113,6 +113,7 @@ __all__ = [
     'ModelSource',
     'ResidualDensityMap',
     'calculate_residual_density',
+    'force_isotropic_adps',
     'small_structure_from_block',
     'small_structure_from_cif',
     'small_structure_from_shelx',
@@ -896,6 +897,7 @@ def calculate_residual_density(
     grid_spacing: float = DEFAULT_GRID_SPACING,
     d_min: float | None = None,
     weak_weight: float = DEFAULT_WEAK_WEIGHT,
+    iso_u_override: float | None = None,
 ) -> ResidualDensityMap:
     """Compute a residual (Fo−Fc) density map from a model and reflection data.
 
@@ -913,6 +915,12 @@ def calculate_residual_density(
     :param d_min: Optional resolution cut-off in Å.  ``None`` uses all data.
     :param weak_weight: Strength of the down-weighting of weak data, see
         :func:`_weak_data_damping`.  ``0.0`` disables it.
+    :param iso_u_override: When given, every atom's ADP is replaced by an
+        isotropic ``U`` of this value (Å²) before *F*\\ :sub:`c` is summed,
+        see :func:`force_isotropic_adps`.  Used for interactive disorder-
+        moiety fitting, where refined ADPs would otherwise bias the shape of
+        the alternate-site peak.  ``None`` (the default) uses the model's own
+        ADPs.
     :returns: The computed map.
     :raises FileNotFoundError: If *hkl_path* is ``None`` and no reflection
         data could be found for the model.
@@ -921,6 +929,8 @@ def calculate_residual_density(
     """
     model = model_path if _is_model_object(model_path) else Path(model_path)
     structure, params = _load_model(model)
+    if iso_u_override is not None:
+        structure = force_isotropic_adps(structure, iso_u_override)
     if structure.spacegroup is None:
         raise ValueError(
             f'Could not determine the space group of {_source_name(model)}')
@@ -1100,6 +1110,41 @@ def _load_model(source: ModelSource) -> tuple[gemmi.SmallStructure, ShelxParamet
     if structure.wavelength:
         params.wavelength = structure.wavelength
     return structure, params
+
+
+def force_isotropic_adps(
+    structure: gemmi.SmallStructure, u_iso: float,
+) -> gemmi.SmallStructure:
+    """Return a copy of *structure* with every site forced isotropic at *u_iso*.
+
+    Used to compute a residual-density map for interactively fitting a
+    disorder moiety: a refined ADP tends to "suction" the electron density of
+    its own disorder partner into itself, distorting or hiding the very peak
+    the map is meant to reveal.  Flattening every atom to the same small,
+    plausible ``U`` (0.04-0.05 Å² is a typical well-behaved value) removes that
+    bias so the alternate-site peak shows its own shape.
+
+    :param structure: The structure to copy (not modified in place).
+    :param u_iso: The isotropic displacement parameter to assign to every
+        site, in Å².
+    :returns: A new :class:`gemmi.SmallStructure` with the same sites,
+        occupancies and symmetry, but flattened ADPs.
+    """
+    flat = gemmi.SmallStructure()
+    flat.name = structure.name
+    flat.cell = structure.cell
+    flat.spacegroup = structure.spacegroup
+    flat.wavelength = structure.wavelength
+    for site in structure.sites:
+        new_site = site.clone()
+        new_site.aniso = gemmi.SMat33d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        new_site.u_iso = u_iso
+        flat.add_site(new_site)
+    # The structure-factor calculator reads symmetry from the cell images,
+    # not from the space group alone (see small_structure_from_shelx); a
+    # freshly built SmallStructure does not inherit that cache.
+    flat.setup_cell_images()
+    return flat
 
 
 def _merge_to_asu(

@@ -1523,3 +1523,95 @@ class TestViewerPartControls3D:
         viewer._render_widget.open_molecule([Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0)])
         assert viewer._part_widget.isHidden()
 
+
+
+# ------------------------------------------------------------------
+# Interactive disorder-moiety dragging (Ctrl+drag)
+# ------------------------------------------------------------------
+
+def _make_chain_widget3d() -> MoleculeWidget3D:
+    """Anchor C1 - moiety C2 - moiety C3, a straight chain along X."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 0),
+        Atomtuple("C3", "C", 3.0, 0.0, 0.0, 0),
+    ])
+    return widget
+
+
+def _ctrl_left_mouse_event(event_type, pos) -> QtGui.QMouseEvent:
+    return QtGui.QMouseEvent(
+        event_type,
+        pos,
+        pos,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    )
+
+
+def test_ctrl_drag_starts_no_session_without_selected_anchor():
+    """Ctrl+drag on an atom does nothing when no anchor is selected."""
+    widget = _make_chain_widget3d()
+    sx, sy = _project_to_screen(widget, widget.atoms[2].center)
+    pos = QtCore.QPointF(sx, sy)
+
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    assert widget._disorder_drag_session is None
+
+
+def test_ctrl_drag_rotates_moiety_about_selected_anchor():
+    """Ctrl+drag on C3 (with C1 selected as anchor) rotates {C2, C3} rigidly."""
+    widget = _make_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    c1 = next(a for a in widget.atoms if a.label == "C1")
+    c2 = next(a for a in widget.atoms if a.label == "C2")
+    c3 = next(a for a in widget.atoms if a.label == "C3")
+    c2_c1_dist_before = float(np.linalg.norm(c2.center - c1.center))
+    c3_c1_dist_before = float(np.linalg.norm(c3.center - c1.center))
+
+    sx, sy = _project_to_screen(widget, c3.center)
+    press_pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
+    assert widget._disorder_drag_session is not None
+    assert widget._disorder_drag_session.mode == 'rigid'
+
+    # Drag towards a point rotated away from the anchor, in the same
+    # screen-parallel plane (same Z as the grabbed atom, since the view has
+    # no rotation applied yet).
+    target_world = c1.center + np.array([0.0, 3.0, 0.0], dtype=np.float32)
+    tx, ty = _project_to_screen(widget, target_world)
+    move_pos = QtCore.QPointF(tx, ty)
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
+
+    # Anchor never moves.
+    assert c1.center == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-4)
+    # Distances from the anchor are preserved (pure rotation).
+    assert float(np.linalg.norm(c2.center - c1.center)) == pytest.approx(
+        c2_c1_dist_before, abs=1e-3)
+    assert float(np.linalg.norm(c3.center - c1.center)) == pytest.approx(
+        c3_c1_dist_before, abs=1e-3)
+    # The grabbed atom moved towards +Y, away from its original position.
+    assert c3.center[1] > 1.0
+
+    widget.mouseReleaseEvent(QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease,
+        move_pos, move_pos,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    ))
+    assert widget._disorder_drag_session is None
+
+
+def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
+    widget = _make_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    c1 = widget.atoms[0]
+    sx, sy = _project_to_screen(widget, c1.center)
+    pos = QtCore.QPointF(sx, sy)
+
+    widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
+    assert widget._disorder_drag_session is None

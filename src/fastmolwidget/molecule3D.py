@@ -43,6 +43,10 @@ Mouse controls
 * **Ctrl + scroll wheel** – raise / lower the residual-density contour level.
 * **Left click** – select atom or bond; emit ``atomClicked`` / ``bondClicked``.
 * **Ctrl + left click** – add to / remove from selection.
+* **Ctrl + left drag** (starting on an atom, with one or more atoms already
+  selected as fixed anchors) – interactively drag the disordered fragment
+  beyond the anchors to reposition it, guided by a residual-density map
+  towards the alternate-site peak.  See :mod:`fastmolwidget.disorder_drag`.
 """
 
 from __future__ import annotations
@@ -469,6 +473,17 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._hover_cursor: QtCore.QPointF | None = None
         # Enable mouse-move events without a button held (for hover detection)
         self.setMouseTracking(True)
+
+        # ---- Interactive disorder-moiety dragging (Ctrl+drag) --------------
+        #: The active drag session, or ``None`` between drags.
+        self._disorder_drag_session = None
+        #: Fixed eye-space depth plane the grabbed atom is dragged within.
+        self._disorder_drag_eye_z: float = 0.0
+        #: Inverse model-view matrix cached for the duration of one drag.
+        self._disorder_drag_mv_inv: np.ndarray | None = None
+        #: Cached dedicated density map (flattened isotropic ADPs) used only
+        #: for snapping a dragged moiety - separate from the displayed map.
+        self._disorder_density_guide = None
 
         # ---- Widget appearance --------------------------------------------
         # NB: do NOT enable autoFillBackground on a QOpenGLWidget.  The Qt
@@ -2003,6 +2018,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._density_pos_count = 0
         self._density_neg_count = 0
         self._density_dirty = True
+        # The dedicated flattened-ADP map used for moiety-drag snapping is
+        # tied to the same model/reflections and must be recomputed too.
+        self._disorder_density_guide = None
         self.update()
 
     @property
@@ -2226,6 +2244,10 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._pressPos = event.position()
         self._mouse_moved = False
 
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+        if ctrl and event.button() == Qt.MouseButton.LeftButton:
+            self._try_start_disorder_drag(event.position())
+
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:
         if self._lastPos is None:
             # Hover only — no prior press. Update the hovered-atom label.
@@ -2241,6 +2263,11 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         if event.buttons() == Qt.MouseButton.NoButton:
             # Pure hover (no drag in progress)
             self._update_hover(pos)
+            self._lastPos = pos
+            return
+
+        if self._disorder_drag_session is not None and event.buttons() == Qt.MouseButton.LeftButton:
+            self._update_disorder_drag(pos)
             self._lastPos = pos
             return
 
@@ -2309,6 +2336,11 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             and self._pressPos is not None
         ):
             self._handle_middle_click(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            # End of a moiety drag, if one was in progress. Positions already
+            # applied to self.atoms in _update_disorder_drag() are kept.
+            self._disorder_drag_session = None
+            self._disorder_drag_mv_inv = None
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # type: ignore[override]
@@ -2607,6 +2639,119 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._molecule_center = atom.center.astype(np.float32).copy()
         self._pan = np.zeros(2, dtype=np.float32)
         self.update()
+
+    # ------------------------------------------------------------------
+    # Interactive disorder-moiety dragging (Ctrl+drag)
+    # ------------------------------------------------------------------
+
+    def _try_start_disorder_drag(self, pos: QtCore.QPointF) -> None:
+        """Begin a moiety drag if the cursor is over a valid moiety atom.
+
+        The currently Ctrl-selected atoms (``self.selected_atoms``) are the
+        fixed anchors; the picked atom must belong to the fragment reachable
+        from them (see :func:`~fastmolwidget.disorder_drag.find_moiety`).
+        Does nothing (leaves ``_disorder_drag_session`` as ``None``) when
+        there is no valid moiety under the cursor, so a plain Ctrl+drag with
+        no anchors selected keeps its previous behaviour (view rotation).
+        """
+        from fastmolwidget.disorder_drag import build_drag_session
+
+        if not self.atoms or not self.selected_atoms:
+            return
+
+        mv = self._compute_mv_matrix()
+        atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()), mv=mv)
+        if atom is None:
+            return
+
+        label_to_index = {a.label: i for i, a in enumerate(self.atoms)}
+        anchor_indices = {
+            label_to_index[label] for label in self.selected_atoms
+            if label in label_to_index
+        }
+        grabbed_index = label_to_index.get(atom.label)
+        if not anchor_indices or grabbed_index is None:
+            return
+
+        positions = {i: a.center.astype(np.float64) for i, a in enumerate(self.atoms)}
+        density_guide = self._get_disorder_density_guide()
+        session = build_drag_session(
+            self.connections, positions, anchor_indices, grabbed_index,
+            density=density_guide,
+        )
+        if session is None:
+            return
+
+        self._disorder_drag_session = session
+        try:
+            self._disorder_drag_mv_inv = np.linalg.inv(mv.astype(np.float64))
+        except np.linalg.LinAlgError:
+            self._disorder_drag_session = None
+            return
+        c4 = np.array([*atom.center, 1.0], dtype=np.float64)
+        self._disorder_drag_eye_z = float((mv.astype(np.float64) @ c4)[2])
+
+    def _disorder_drag_target(self, pos: QtCore.QPointF) -> np.ndarray:
+        """World-space point the grabbed atom should follow for cursor *pos*.
+
+        The mouse ray is intersected with the screen-parallel plane at the
+        grabbed atom's view-space depth when the drag started, so the target
+        stays at a constant depth for the whole gesture.
+        """
+        w = max(1, self.width())
+        h = max(1, self.height())
+        half_w, half_h = self._ortho_half_extents()
+        nx = 2.0 * pos.x() / w - 1.0
+        ny = 1.0 - 2.0 * pos.y() / h
+        eye_point = np.array(
+            [nx * half_w, ny * half_h, self._disorder_drag_eye_z, 1.0], dtype=np.float64,
+        )
+        world = self._disorder_drag_mv_inv @ eye_point
+        return world[:3]
+
+    def _update_disorder_drag(self, pos: QtCore.QPointF) -> None:
+        """Advance the active moiety drag towards the cursor and repaint."""
+        session = self._disorder_drag_session
+        if session is None or self._disorder_drag_mv_inv is None:
+            return
+
+        target = self._disorder_drag_target(pos)
+        new_positions = session.update(target)
+        for index, position in new_positions.items():
+            self.atoms[index].center = position.astype(np.float32)
+
+        self._build_geometry()
+        if self._density_map is not None:
+            self._build_density_geometry()
+        self.update()
+
+    def _get_disorder_density_guide(self):
+        """Lazily compute and cache the flattened-ADP density map for snapping.
+
+        Uses the same model/reflection sources as the displayed residual
+        density (:meth:`_density_sources`), but with every ADP forced
+        isotropic (see :func:`~fastmolwidget.density.force_isotropic_adps`)
+        so a refined ADP does not bias the shape of the alternate-site peak.
+        Returns ``None`` (drag still works, just without density guidance)
+        when no model/reflections are available or the map cannot be
+        computed.
+        """
+        if self._disorder_density_guide is not None:
+            return self._disorder_density_guide
+
+        from fastmolwidget.density import calculate_residual_density
+        from fastmolwidget.disorder_drag import DEFAULT_ISO_U, DensityGuide
+
+        try:
+            model, reflections = self._density_sources(None, None)
+            density_map = calculate_residual_density(
+                model, reflections, iso_u_override=DEFAULT_ISO_U,
+            )
+        except Exception:  # noqa: BLE001 - guidance is optional, dragging still works
+            return None
+
+        self._disorder_density_guide = DensityGuide.from_map(density_map)
+        return self._disorder_density_guide
 
     def _is_click_drag(self, pos: QtCore.QPointF) -> bool:
         """Return ``True`` when the cursor moved more than 5 px from the

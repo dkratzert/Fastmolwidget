@@ -31,6 +31,7 @@ from fastmolwidget.density import (
     HAS_DENSITY_CPP,
     ResidualDensityMap,
     calculate_residual_density,
+    force_isotropic_adps,
     small_structure_from_cif,
     small_structure_from_shelx,
 )
@@ -922,6 +923,37 @@ def test_good_adps_are_left_alone(cif_structure):
     aniso = [s for s in cif_structure.sites if s.aniso.u11 != 0.0]
 
     assert len(aniso) > 30
+
+
+def test_force_isotropic_adps_flattens_every_site(shelx_structure):
+    flat = force_isotropic_adps(shelx_structure, 0.045)
+    assert len(flat.sites) == len(shelx_structure.sites)
+    for site in flat.sites:
+        assert site.aniso.u11 == 0.0 and site.aniso.u22 == 0.0 and site.aniso.u33 == 0.0
+        assert site.u_iso == pytest.approx(0.045)
+    # The original structure is untouched.
+    assert any(s.aniso.u11 != 0.0 for s in shelx_structure.sites)
+
+
+def test_force_isotropic_adps_keeps_positions_and_elements(shelx_structure):
+    flat = force_isotropic_adps(shelx_structure, 0.05)
+    for original, flattened in zip(shelx_structure.sites, flat.sites):
+        assert flattened.label == original.label
+        assert flattened.element.name == original.element.name
+        assert flattened.fract.x == pytest.approx(original.fract.x)
+        assert flattened.fract.y == pytest.approx(original.fract.y)
+        assert flattened.fract.z == pytest.approx(original.fract.z)
+        assert flattened.occ == pytest.approx(original.occ)
+
+
+def test_calculate_residual_density_accepts_iso_u_override():
+    """A dedicated map for disorder-fitting: same reflections, flattened ADPs."""
+    normal = calculate_residual_density(RES, HKL)
+    flattened = calculate_residual_density(RES, HKL, iso_u_override=0.045)
+    assert flattened.array.shape == normal.array.shape
+    # Flattening the ADPs changes Fc and therefore the map - it should not be
+    # byte-identical to the normal map.
+    assert not np.allclose(flattened.array, normal.array)
 
 
 def test_global_block_is_ignored(tmp_path):
