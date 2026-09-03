@@ -2087,3 +2087,92 @@ def test_matching_split_atom_maps_between_parts():
     assert widget._matching_split_atom(index["C2"], index["C3"]) == index["C2"]
     # An atom that was never duplicated (the anchor) has only one version.
     assert widget._matching_split_atom(index["C1"], index["C2B"]) == index["C1"]
+
+
+# ------------------------------------------------------------------
+# Disorder-part colouring
+# ------------------------------------------------------------------
+
+def test_part_fade_leaves_the_first_part_untouched():
+    assert molecule3d._part_fade(0) == 0.0
+    assert molecule3d._part_fade(1) == 0.0
+
+
+def test_part_fade_grows_with_the_part_number_and_is_capped():
+    fade2 = molecule3d._part_fade(2)
+    fade3 = molecule3d._part_fade(3)
+    assert 0.0 < fade2 < fade3
+    assert molecule3d._part_fade(99) == pytest.approx(molecule3d._PART_FADE_MAX)
+
+
+def test_fade_towards_white_blends_and_clamps():
+    green = (0.0, 1.0, 0.0)
+    assert molecule3d._fade_towards_white(green, 0.0) == pytest.approx(green)
+    assert molecule3d._fade_towards_white(green, 1.0) == pytest.approx((1.0, 1.0, 1.0))
+    assert molecule3d._fade_towards_white(green, 0.5) == pytest.approx((0.5, 1.0, 0.5))
+    # Out-of-range amounts must not produce colours outside [0, 1].
+    assert molecule3d._fade_towards_white(green, 5.0) == pytest.approx((1.0, 1.0, 1.0))
+    assert molecule3d._fade_towards_white(green, -3.0) == pytest.approx(green)
+
+
+def test_atom_colour_fades_the_second_part_only():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+    widget.selected_atoms.clear()
+
+    by_label = {a.label: a for a in widget.atoms}
+    normal = widget._atom_color(by_label["C3"])
+    faded = widget._atom_color(by_label["C3B"])
+
+    assert normal == pytest.approx(by_label["C3"].color_f)  # part 1 unchanged
+    assert faded != pytest.approx(normal)
+    # Paler means every channel moved towards white.
+    assert all(f >= n for f, n in zip(faded, normal, strict=True))
+    assert any(f > n for f, n in zip(faded, normal, strict=True))
+
+
+def test_atom_colour_keeps_the_element_hue_ordering():
+    """Fading must wash the colour out, not recolour it - so a green atom
+    stays greener than it is red even in the second part."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("F1", "F", 1.4, 0.0, 0.0, 2),
+    ])
+    fluorine = next(a for a in widget.atoms if a.label == "F1")
+    faded = widget._atom_color(fluorine)
+    assert faded[1] > faded[0]  # still green-dominant
+
+
+def test_selection_colour_wins_over_part_fade():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    widget.selected_atoms = {"C3B"}
+    by_label = {a.label: a for a in widget.atoms}
+    assert widget._atom_color(by_label["C3B"]) == pytest.approx(molecule3d._SEL_COLOR)
+
+
+def test_bond_colour_follows_the_later_part():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+    widget.selected_atoms.clear()
+
+    by_label = {a.label: a for a in widget.atoms}
+    part1_bond = widget._bond_color(by_label["C1"], by_label["C2"])
+    part2_bond = widget._bond_color(by_label["C1"], by_label["C2B"])
+
+    assert part1_bond == pytest.approx(widget._bond_rgb)
+    assert all(p2 >= p1 for p2, p1 in zip(part2_bond, part1_bond, strict=True))
+    assert any(p2 > p1 for p2, p1 in zip(part2_bond, part1_bond, strict=True))
+
+
+def test_undisordered_structure_is_not_faded_at_all():
+    widget = _make_bent_chain_widget3d()
+    for atom in widget.atoms:
+        assert widget._atom_color(atom) == pytest.approx(atom.color_f)
+        assert widget._bond_color(atom, atom) == pytest.approx(widget._bond_rgb)

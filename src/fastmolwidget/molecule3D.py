@@ -127,6 +127,32 @@ def _hex_to_rgb_float(hex_color: str) -> tuple[float, float, float]:
     return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
 
 
+def _fade_towards_white(
+    rgb: tuple[float, float, float] | np.ndarray, amount: float,
+) -> tuple[float, float, float]:
+    """Blend *rgb* towards white by *amount* (0 = unchanged, 1 = pure white).
+
+    Used to tell disorder parts apart: keeping the element's own hue but
+    washing it out reads as "the same atom type, other part" at a glance,
+    whereas recolouring by part would fight the element colours the eye is
+    already using to identify atoms.
+    """
+    amount = min(max(float(amount), 0.0), 1.0)
+    return tuple(float(c) + (1.0 - float(c)) * amount for c in rgb)  # type: ignore[return-value]
+
+
+def _part_fade(part: int) -> float:
+    """How much an atom of disorder *part* is washed out when drawn.
+
+    Part 0 (not disordered) and part 1 keep their normal element colours;
+    every further part is progressively paler, so a two-part disorder - by
+    far the common case - shows as one solid and one pastel copy.
+    """
+    if part < 2:
+        return 0.0
+    return min(_PART_FADE_BASE + _PART_FADE_STEP * (part - 2), _PART_FADE_MAX)
+
+
 def _normalize_rgb_color(color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int]
                          ) -> tuple[float, float, float]:
     """Normalise a QColor/hex/RGB triple to float RGB in ``[0, 1]``."""
@@ -302,6 +328,14 @@ DENSITY_MARGIN: float = 1.5
 
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
+
+# How far towards white a disorder part is washed out so the parts can be
+# told apart at a glance (see _part_fade).  Part 2 uses the base amount;
+# each further part adds a step, capped so even part 5+ stays visible
+# against a white background.
+_PART_FADE_BASE: float = 0.55
+_PART_FADE_STEP: float = 0.12
+_PART_FADE_MAX: float = 0.8
 
 # Default bond colour (grey-brown)
 _DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#d1812a")
@@ -869,6 +903,32 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._build_cylinder_geometry()
         self._geometry_dirty = True
 
+    def _atom_color(self, atom: _Atom3D) -> tuple[float, float, float]:
+        """The colour *atom* is drawn in, honouring selection and its part.
+
+        A selected atom always wins (it has to stay obvious), otherwise the
+        element colour is washed out according to the atom's disorder part so
+        the parts of a split can be told apart - see :func:`_part_fade`.
+        """
+        if atom.label in self.selected_atoms:
+            return _SEL_COLOR
+        fade = _part_fade(atom.part)
+        if fade <= 0.0:
+            return atom.color_f
+        return _fade_towards_white(atom.color_f, fade)
+
+    def _bond_color(self, at1: _Atom3D, at2: _Atom3D) -> tuple[float, float, float]:
+        """The colour the bond between *at1* and *at2* is drawn in.
+
+        Faded by whichever of the two atoms belongs to the later disorder
+        part, so a bond joining a shared atom to a part-2 copy reads as
+        belonging to that part rather than to the undisordered backbone.
+        """
+        fade = _part_fade(max(at1.part, at2.part))
+        if fade <= 0.0:
+            return self._bond_rgb
+        return _fade_towards_white(self._bond_rgb, fade)
+
     def _build_sphere_geometry(self) -> None:
         """Create billboard quad data for non-ADP atoms.
 
@@ -912,7 +972,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         for i, atom in enumerate(sphere_atoms):
             c = atom.center
             is_selected = atom.label in self.selected_atoms
-            col = _SEL_COLOR if is_selected else atom.color_f
+            col = self._atom_color(atom)
             sel_flag = 1.0 if is_selected else 0.0
             r = (sqrt(atom.u_iso) * _ADP_SCALE) if atom.u_iso is not None else atom.display_radius
             for j in range(4):
@@ -954,7 +1014,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             if is_selected:
                 bond_color = _SEL_COLOR
             else:
-                bond_color = self._bond_rgb
+                bond_color = self._bond_color(at1, at2)
 
             verts, bond_idx = _make_cylinder(
                 at1.center, at2.center, cyl_r, bond_color, n_seg,
@@ -1009,8 +1069,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         )
         colors = np.repeat(
             np.array(
-                [_SEL_COLOR if a.label in self.selected_atoms else a.color_f
-                 for a in atoms],
+                [self._atom_color(a) for a in atoms],
                 dtype=np.float32,
             ),
             4, axis=0,
@@ -1121,7 +1180,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             half = float(atom.npd_half_edge) if atom.npd_half_edge > 0.0 \
                 else 0.5 * float(atom.display_radius)
             is_selected = atom.label in self.selected_atoms
-            color = _SEL_COLOR if is_selected else atom.color_f
+            color = self._atom_color(atom)
             sel_flag = 1.0 if is_selected else 0.0
             base_v = ai * 24
             base_i = ai * 36
