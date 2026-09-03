@@ -49,7 +49,11 @@ Mouse controls
   peak; the original atoms are duplicated into a permanent "part 2" the
   first time this happens and only the copy moves.  With **no** atoms
   selected, the whole connected molecule under the cursor is dragged as a
-  free body instead, for modelling whole-molecule disorder.  See
+  free body instead, for modelling whole-molecule disorder.  With a single
+  **bond** selected instead of atoms, that bond is the split point: its far
+  end is the anchor and the fragment rotates about the bond, with elastic
+  give and with the near end free to drift off the axis so a tumble rather
+  than only a clean torsion can be modelled.  See
   :mod:`fastmolwidget.disorder_drag`.
 * **Ctrl + Shift + left drag** (starting on an atom) – freely reposition just
   that one atom.  No moiety, no anchors, no duplication - only the picked
@@ -2735,6 +2739,13 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         (leaves ``_disorder_drag_session`` as ``None``) when there is no atom
         under the cursor.
 
+        Alternatively a single **bond** may be selected instead of atoms
+        (the two selections are mutually exclusive, see :meth:`_handle_click`).
+        The split point is then that bond: its far end becomes the anchor and
+        the fragment rotates about the bond, with elastic give and with the
+        near end free to drift off the axis so a tumble can be modelled - see
+        :class:`~fastmolwidget.disorder_drag.TorsionDrag`.
+
         The *original* atoms never move: the very first time a given moiety
         is dragged, it is duplicated into a permanent "part 2" (see
         :meth:`_create_disorder_duplicate`) and the duplicate is dragged
@@ -2745,6 +2756,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         """
         from fastmolwidget.disorder_drag import (
             atomic_mass,
+            bond_split_ends,
             build_drag_session,
             find_moiety,
         )
@@ -2766,6 +2778,25 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         if grabbed_index is None or grabbed_index in anchor_indices:
             return
 
+        # A single selected bond defines the split point instead of anchor
+        # atoms: its far end becomes the anchor and the fragment rotates
+        # about the bond.  Atom and bond selection are mutually exclusive in
+        # _handle_click, so there is never both to reconcile.
+        split_bond: tuple[int, int] | None = None
+        if len(self.selected_bonds) == 1 and not anchor_indices:
+            label_a, label_b = next(iter(self.selected_bonds))
+            index_a = label_to_index.get(label_a)
+            index_b = label_to_index.get(label_b)
+            if index_a is None or index_b is None:
+                return
+            ends = bond_split_ends(self.connections, (index_a, index_b), grabbed_index)
+            if ends is None:
+                return  # the bond has nothing to do with the grabbed fragment
+            split_bond = (index_a, index_b)
+            anchor_indices = {ends[0]}
+            if grabbed_index in anchor_indices:
+                return
+
         if grabbed_index in self._disorder_is_duplicate:
             # Grabbed the split copy directly: drag it, nothing to duplicate.
             drag_grabbed_index = grabbed_index
@@ -2783,6 +2814,14 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             self._disorder_duplicate_of.update(duplicate_map)
             self._disorder_is_duplicate.update(duplicate_map.values())
             drag_grabbed_index = duplicate_map[grabbed_index]
+            if split_bond is not None:
+                # The moiety (including the bond's near end) was duplicated,
+                # so the torsion axis has to point at the *copy* that is
+                # actually being dragged; the far end stays the original.
+                split_bond = (
+                    duplicate_map.get(split_bond[0], split_bond[0]),
+                    duplicate_map.get(split_bond[1], split_bond[1]),
+                )
 
         positions = {i: a.center.astype(np.float64) for i, a in enumerate(self.atoms)}
         masses = {i: atomic_mass(a.type_) for i, a in enumerate(self.atoms)}
@@ -2791,6 +2830,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         session = build_drag_session(
             self.connections, positions, anchor_indices, drag_grabbed_index,
             density=density_guide, masses=masses, riding_atoms=riding_atoms,
+            bond=split_bond,
         )
         if session is None:
             return

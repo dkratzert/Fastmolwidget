@@ -14,7 +14,9 @@ from fastmolwidget.disorder_drag import (
     DensityGuide,
     ElasticDrag,
     RigidPivotDrag,
+    TorsionDrag,
     atomic_mass,
+    bond_split_ends,
     build_drag_session,
     find_moiety,
     moiety_angle_pairs,
@@ -625,3 +627,206 @@ def test_bias_target_is_identity_without_density():
     target = np.array([2.0, 3.0, 4.0])
     assert session._bias_target(target) is target
 
+
+
+# ---------------------------------------------------------------------------
+# bond_split_ends
+# ---------------------------------------------------------------------------
+
+def test_bond_split_ends_picks_the_near_end_from_either_side():
+    """The bond end on the grabbed atom's side is the near (moving) one."""
+    connections = [(0, 1), (1, 2), (2, 3), (3, 4)]
+    # Grabbing beyond atom 2 -> 2 is near, 1 is the far anchor.
+    assert bond_split_ends(connections, (1, 2), grabbed_index=4) == (1, 2)
+    assert bond_split_ends(connections, (1, 2), grabbed_index=3) == (1, 2)
+    # Grabbing on the other side flips which end anchors.
+    assert bond_split_ends(connections, (1, 2), grabbed_index=0) == (2, 1)
+
+
+def test_bond_split_ends_grabbing_a_bond_end_itself():
+    connections = [(0, 1), (1, 2), (2, 3)]
+    assert bond_split_ends(connections, (1, 2), grabbed_index=2) == (1, 2)
+    assert bond_split_ends(connections, (1, 2), grabbed_index=1) == (2, 1)
+
+
+def test_bond_split_ends_ring_falls_back_to_graph_distance():
+    """Cutting one ring bond separates nothing, so the closer end wins."""
+    # Ring 0-1-2-3-0 with a tail 3-4.
+    connections = [(0, 1), (1, 2), (2, 3), (3, 0), (3, 4)]
+    # From atom 4: 0 is two bonds away, 1 is three, so 0 is near, 1 anchors.
+    assert bond_split_ends(connections, (0, 1), grabbed_index=4) == (1, 0)
+
+
+def test_bond_split_ends_none_for_unrelated_bond():
+    connections = [(0, 1), (5, 6)]
+    assert bond_split_ends(connections, (5, 6), grabbed_index=0) is None
+
+
+def test_bond_split_ends_none_for_degenerate_bond():
+    connections = [(0, 1), (1, 2)]
+    assert bond_split_ends(connections, (1, 1), grabbed_index=2) is None
+
+
+# ---------------------------------------------------------------------------
+# ElasticDrag pin_grabbed
+# ---------------------------------------------------------------------------
+
+def test_elastic_drag_pin_grabbed_false_does_not_force_the_target():
+    """Without pinning, the grabbed atom relaxes instead of jumping onto the
+    mouse target."""
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
+    drag = ElasticDrag(positions, {0}, [(0, 1)])
+    target = np.array([5.0, 0.0, 0.0])
+    new = drag.update(1, target, pin_grabbed=False)
+    assert not np.allclose(new[1], target)
+    # The bond length constraint is still honoured.
+    assert float(np.linalg.norm(new[1] - positions[0])) == pytest.approx(1.5, abs=1e-6)
+
+
+def test_elastic_drag_pin_grabbed_true_is_the_default():
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
+    drag = ElasticDrag(positions, {0}, [(0, 1)])
+    target = np.array([1.5, 2.0, 0.0])
+    assert drag.update(1, target)[1] == pytest.approx(target)
+
+
+# ---------------------------------------------------------------------------
+# TorsionDrag
+# ---------------------------------------------------------------------------
+
+def _torsion_setup():
+    """far(0) - near(1) along +X, with a bent tail 2, 3 off the axis."""
+    connections = [(0, 1), (1, 2), (2, 3)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([2.2, 1.2, 0.0]),
+        3: np.array([3.4, 1.6, 0.0]),
+    }
+    moiety = find_moiety(connections, {0}, 2)
+    edges = moiety_edges(connections, moiety, {0})
+    soft = moiety_angle_pairs(connections, moiety, {0})
+    return connections, positions, edges, soft
+
+
+def _distance_to_x_axis(point):
+    return float(np.linalg.norm(np.asarray(point)[1:]))
+
+
+def test_torsion_drag_zero_flexibility_is_a_pure_rotation():
+    """With no flexibility every atom keeps its exact distance to the axis."""
+    _, positions, edges, soft = _torsion_setup()
+    drag = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.0)
+    new = drag.update(2, np.array([2.2, 0.0, 1.2]))
+
+    assert 0 not in new  # the far end is the anchor and never moves
+    for i in (1, 2, 3):
+        assert _distance_to_x_axis(new[i]) == pytest.approx(
+            _distance_to_x_axis(positions[i]), abs=1e-9)
+    # The grabbed atom reaches a target that lies on its rotation circle.
+    assert new[2] == pytest.approx(np.array([2.2, 0.0, 1.2]), abs=1e-9)
+
+
+def test_torsion_drag_zero_flexibility_keeps_the_near_end_on_the_axis():
+    _, positions, edges, soft = _torsion_setup()
+    drag = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.0)
+    new = drag.update(2, np.array([2.2, 0.0, 1.2]))
+    assert new[1] == pytest.approx(positions[1], abs=1e-9)
+
+
+def test_torsion_drag_flexibility_lets_the_near_end_tumble():
+    """With flexibility the near bond end drifts off the axis - that is what
+    makes a tumble, rather than only a clean torsion, possible."""
+    _, positions, edges, soft = _torsion_setup()
+    off_circle = np.array([3.5, 0.0, 2.5])  # not reachable by rotation alone
+
+    rigid = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.0)
+    flexible = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.5)
+    rigid_new = rigid.update(2, off_circle)
+    flexible_new = flexible.update(2, off_circle)
+
+    assert _distance_to_x_axis(rigid_new[1]) == pytest.approx(0.0, abs=1e-9)
+    assert _distance_to_x_axis(flexible_new[1]) > 0.01
+    # Flexibility gets the grabbed atom closer to where the mouse actually is.
+    assert float(np.linalg.norm(flexible_new[2] - off_circle)) < float(
+        np.linalg.norm(rigid_new[2] - off_circle))
+
+
+def test_torsion_drag_flexibility_still_respects_the_anchor_bond():
+    _, positions, edges, soft = _torsion_setup()
+    drag = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.5)
+    new = drag.update(2, np.array([3.5, 0.0, 2.5]))
+    assert float(np.linalg.norm(new[1] - positions[0])) == pytest.approx(1.5, rel=0.05)
+
+
+def test_torsion_drag_is_stateless_across_calls():
+    """Repeated updates must not accumulate drift - each is solved from the
+    original geometry, like RigidPivotDrag."""
+    _, positions, edges, soft = _torsion_setup()
+    drag = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.0)
+    drag.update(2, np.array([2.2, 0.0, 1.2]))
+    drag.update(2, np.array([2.2, -1.2, 0.0]))
+    final = drag.update(2, np.array([2.2, 1.2, 0.0]))  # back to the start
+    for i in (1, 2, 3):
+        assert final[i] == pytest.approx(positions[i], abs=1e-6)
+
+
+def test_torsion_drag_anchor_never_moves():
+    _, positions, edges, soft = _torsion_setup()
+    drag = TorsionDrag(positions, 0, 1, edges, soft_edges=soft, flexibility=0.8)
+    drag.update(2, np.array([4.0, 3.0, 2.0]))
+    assert drag.positions[0] == pytest.approx(positions[0], abs=1e-12)
+
+
+def test_torsion_drag_degenerate_axis_does_not_raise():
+    """A zero-length bond has no axis; the solver must still run."""
+    positions = {0: np.zeros(3), 1: np.zeros(3), 2: np.array([1.5, 0.0, 0.0])}
+    drag = TorsionDrag(positions, 0, 1, [(0, 1), (1, 2)])
+    new = drag.update(2, np.array([0.0, 1.5, 0.0]))
+    assert np.all(np.isfinite(new[2]))
+
+
+# ---------------------------------------------------------------------------
+# build_drag_session with a bond
+# ---------------------------------------------------------------------------
+
+def test_build_drag_session_bond_builds_a_torsion_session():
+    connections, positions, _, _ = _torsion_setup()
+    session = build_drag_session(connections, positions, set(), 2, bond=(0, 1))
+    assert session is not None
+    assert session.mode == 'torsion'
+    assert session._solver.far == 0
+    assert session._solver.near == 1
+
+
+def test_build_drag_session_bond_anchors_the_far_end_only():
+    connections, positions, _, _ = _torsion_setup()
+    session = build_drag_session(connections, positions, set(), 2, bond=(0, 1))
+    assert session is not None
+    new = session.update(np.array([2.2, 0.0, 1.2]))
+    assert 0 not in new       # far end is the anchor
+    assert 1 in new           # near end travels with the fragment
+    assert 2 in new and 3 in new
+
+
+def test_build_drag_session_bond_ignores_supplied_anchors():
+    """The bond determines the anchor, so a stale atom selection cannot
+    silently pin the wrong atom."""
+    connections, positions, _, _ = _torsion_setup()
+    session = build_drag_session(connections, positions, {3}, 2, bond=(0, 1))
+    assert session is not None
+    assert session.mode == 'torsion'
+    new = session.update(np.array([2.2, 0.0, 1.2]))
+    assert 3 in new  # would have been an anchor (absent) without the override
+
+
+def test_build_drag_session_bond_none_when_unrelated():
+    connections, positions, _, _ = _torsion_setup()
+    assert build_drag_session(connections, positions, set(), 2, bond=(7, 8)) is None
+
+
+def test_build_drag_session_without_bond_is_still_elastic():
+    connections, positions, _, _ = _torsion_setup()
+    session = build_drag_session(connections, positions, {0}, 2)
+    assert session is not None
+    assert session.mode == 'elastic'

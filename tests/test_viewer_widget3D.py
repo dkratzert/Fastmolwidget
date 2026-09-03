@@ -1847,3 +1847,119 @@ def test_ctrl_shift_drag_ignores_selected_anchors():
     assert by_label["C1"].center == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-9)
     assert by_label["C3"].center == pytest.approx(np.array([3.0, 0.0, 0.0]), abs=1e-9)
 
+
+
+# ------------------------------------------------------------------
+# Bond-split torsion dragging (Ctrl+drag with a bond selected)
+# ------------------------------------------------------------------
+
+def _make_bent_chain_widget3d() -> MoleculeWidget3D:
+    """C1 - C2 along +X, then a bent tail C3 - C4 off that axis."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 0),
+        Atomtuple("C3", "C", 2.2, 1.2, 0.0, 0),
+        Atomtuple("C4", "C", 3.4, 1.6, 0.0, 0),
+    ])
+    return widget
+
+
+def _run_bond_split_drag(widget: MoleculeWidget3D, grab_label: str, target_world):
+    """Ctrl+press on *grab_label*, then Ctrl+move to *target_world*."""
+    grabbed = next(a for a in widget.atoms if a.label == grab_label)
+    sx, sy = _project_to_screen(widget, grabbed.center)
+    press_pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(
+        _ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
+    tx, ty = _project_to_screen(widget, np.asarray(target_world, dtype=np.float32))
+    move_pos = QtCore.QPointF(tx, ty)
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
+    return move_pos
+
+
+def test_bond_split_drag_uses_torsion_mode():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_bonds = {("C1", "C2")}
+    _run_bond_split_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    assert widget._disorder_drag_session is not None
+    assert widget._disorder_drag_session.mode == 'torsion'
+
+
+def test_bond_split_drag_anchors_the_far_end_and_duplicates_the_rest():
+    """The far bond end is the anchor: it neither moves nor is duplicated,
+    while everything from the near end onwards becomes part 2."""
+    widget = _make_bent_chain_widget3d()
+    widget.selected_bonds = {("C1", "C2")}
+    _run_bond_split_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    by_label = {a.label: a for a in widget.atoms}
+    # Far end: untouched, never duplicated.
+    assert "C1B" not in by_label
+    assert by_label["C1"].center == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-9)
+    # Near end and beyond: duplicated into part 2.
+    assert {"C2B", "C3B", "C4B"} <= set(by_label)
+    for label in ("C2", "C3", "C4"):
+        assert by_label[label].part == 1
+    for label in ("C2B", "C3B", "C4B"):
+        assert by_label[label].part == 2
+
+
+def test_bond_split_drag_keeps_the_originals_fixed():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_bonds = {("C1", "C2")}
+    before = {a.label: a.center.copy() for a in widget.atoms}
+    _run_bond_split_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    by_label = {a.label: a for a in widget.atoms}
+    for label in ("C1", "C2", "C3", "C4"):
+        assert by_label[label].center == pytest.approx(before[label], abs=1e-9)
+
+
+def test_bond_split_drag_lets_the_near_bond_atom_tumble():
+    """The near end of the selected bond travels with the fragment rather
+    than being pinned, so it may leave the bond axis (a tumble)."""
+    widget = _make_bent_chain_widget3d()
+    widget.selected_bonds = {("C1", "C2")}
+    # A target that no pure rotation about the C1-C2 axis can reach, so the
+    # flexibility term has to contribute.
+    _run_bond_split_drag(widget, "C3", [3.6, 0.0, 2.6])
+
+    by_label = {a.label: a for a in widget.atoms}
+    near = by_label["C2B"].center
+    # Distance from the C1-C2 axis (the X axis) must have grown from zero.
+    assert float(np.linalg.norm(near[1:])) > 0.01
+    # ...while the bond to the fixed far end is still respected.
+    assert float(np.linalg.norm(near - by_label["C1"].center)) == pytest.approx(
+        1.5, rel=0.1)
+
+
+def test_bond_split_drag_declines_an_unrelated_bond():
+    """Selecting a bond in a different fragment must not start a drag."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("C1", "C", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C2", "C", 1.5, 0.0, 0.0, 0),
+        Atomtuple("O1", "O", 9.0, 0.0, 0.0, 0),
+        Atomtuple("O2", "O", 10.4, 0.0, 0.0, 0),
+    ])
+    n_atoms_before = len(widget.atoms)
+    widget.selected_bonds = {("O1", "O2")}
+    _run_bond_split_drag(widget, "C2", [1.5, 1.5, 0.0])
+
+    assert widget._disorder_drag_session is None
+    assert len(widget.atoms) == n_atoms_before  # nothing duplicated either
+
+
+def test_atom_selection_still_uses_elastic_mode():
+    """The bond path must not disturb the existing atom-anchored drag."""
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    assert not widget.selected_bonds
+    _run_bond_split_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    assert widget._disorder_drag_session is not None
+    assert widget._disorder_drag_session.mode == 'elastic'

@@ -1,12 +1,22 @@
 """
 Interactive disorder-moiety dragging: pure math, no Qt and no OpenGL.
 
-Lets a user pick one or more fixed "anchor" atoms (the border between a
-disordered fragment and the rest of the molecule) and then drag any atom of
-the fragment ("moiety") with the mouse to reposition it, guided by a residual
-(Fo-Fc) density map towards the alternate-site peak.  This module only
-implements the geometry/optimisation; :mod:`fastmolwidget.molecule3D` wires it
-to mouse events.
+Lets a user pick either one or more fixed "anchor" atoms, or a single
+**bond**, as the border between a disordered fragment and the rest of the
+molecule, and then drag any atom of the fragment ("moiety") with the mouse to
+reposition it, guided by a residual (Fo-Fc) density map towards the
+alternate-site peak.  This module only implements the geometry/optimisation;
+:mod:`fastmolwidget.molecule3D` wires it to mouse events.
+
+Splitting at a **bond** (pass ``bond=`` to :func:`build_drag_session`) is
+handled by :class:`TorsionDrag`: the bond end away from the grabbed atom
+becomes the sole anchor, the bond becomes the axis, and the fragment rotates
+about it with elastic give on top (:data:`TORSION_FLEXIBILITY`).  The near
+bond end travels *with* the fragment rather than being pinned, so it can
+drift off the axis and a tumble - not just a clean torsion - can be
+modelled.  See :func:`bond_split_ends` for how the two ends are told apart,
+including inside a ring, where cutting one bond separates nothing and the
+ring simply deforms elastically as it rotates.
 
 Two rigid/elastic modes are implemented, but :func:`build_drag_session`
 always picks the elastic one (see below) regardless of anchor count:
@@ -86,11 +96,14 @@ __all__ = [
     'DENSITY_GRADIENT_STEP',
     'DENSITY_NUDGE_STRENGTH',
     'SNAP_GRADIENT_TOL',
+    'TORSION_FLEXIBILITY',
     'DensityGuide',
     'ElasticDrag',
     'MoietyDragSession',
     'RigidPivotDrag',
+    'TorsionDrag',
     'atomic_mass',
+    'bond_split_ends',
     'build_drag_session',
     'find_moiety',
     'moiety_angle_pairs',
@@ -135,6 +148,15 @@ BREAKAWAY_DISTANCE: float = 0.7
 #: angle while it is dragged, so they must not compete with - and degrade
 #: the convergence of - the actual bond-length constraints.
 ANGLE_CONSTRAINT_STIFFNESS: float = 0.3
+
+#: How far the grabbed atom is allowed to leave the ideal torsion path
+#: towards where the mouse actually is, as a fraction of that offset per
+#: :meth:`TorsionDrag.update` (``0.0`` = a perfectly rigid rotation about the
+#: bond, ``1.0`` = the mouse fully overrides the rotation).  Rotation about
+#: the selected bond stays the dominant motion; this is the "bit of
+#: flexibility" on top, and it is also what lets the near bond atom drift off
+#: the axis so a tumble - rather than only a clean torsion - can be modelled.
+TORSION_FLEXIBILITY: float = 0.5
 
 
 def atomic_mass(element: str) -> float:
@@ -200,6 +222,73 @@ def find_moiety(
             frontier.append(neighbour)
 
     return moiety
+
+
+def bond_split_ends(
+    connections: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    bond: tuple[int, int],
+    grabbed_index: int,
+) -> tuple[int, int] | None:
+    """Return ``(far, near)`` for splitting the molecule at *bond*.
+
+    Splitting at a bond rather than at an atom means one end of the bond
+    becomes the fixed anchor and the other end travels with the dragged
+    fragment.  Which is which depends on where the user grabbed: the end on
+    the same side as *grabbed_index* is the *near* one (it moves), the other
+    is the *far* one (it is the anchor, and together with *near* it defines
+    the torsion axis the fragment swings about).
+
+    Sidedness is decided by a breadth-first search from *grabbed_index* with
+    only the ``bond`` edge removed - not the whole atom - so a genuine split
+    point cleanly separates the two ends.  Inside a ring, cutting one bond
+    separates nothing and both ends stay reachable; the nearer one by graph
+    distance is then taken, which still gives the axis the user pointed at
+    and lets the ring rotate about that bond (deforming elastically) rather
+    than refusing the drag.
+
+    :param connections: Every bond in the molecule as ``(i, j)`` atom-index
+        pairs.
+    :param bond: The selected bond as an ``(i, j)`` atom-index pair.
+    :param grabbed_index: The atom under the cursor when the drag started.
+    :returns: ``(far, near)``, or ``None`` when *bond* is malformed (both
+        ends identical) or neither end can be reached from *grabbed_index*,
+        i.e. the bond has nothing to do with the fragment being dragged.
+    """
+    a, b = bond
+    if a == b:
+        return None
+
+    adjacency: dict[int, set[int]] = {}
+    for i, j in connections:
+        adjacency.setdefault(i, set()).add(j)
+        adjacency.setdefault(j, set()).add(i)
+
+    # Breadth-first distances from the grabbed atom, never crossing the bond
+    # itself, so an acyclic fragment only ever reaches the near end.
+    cut = {a: b, b: a}
+    distance: dict[int, int] = {grabbed_index: 0}
+    frontier: list[int] = [grabbed_index]
+    while frontier:
+        next_frontier: list[int] = []
+        for current in frontier:
+            for neighbour in adjacency.get(current, ()):
+                if cut.get(current) == neighbour:
+                    continue  # this is the bond being split - do not cross it
+                if neighbour in distance:
+                    continue
+                distance[neighbour] = distance[current] + 1
+                next_frontier.append(neighbour)
+        frontier = next_frontier
+
+    d_a, d_b = distance.get(a), distance.get(b)
+    if d_a is None and d_b is None:
+        return None
+    if d_b is None:
+        return b, a
+    if d_a is None:
+        return a, b
+    # Both reachable: a ring, so fall back to whichever end is closer.
+    return (b, a) if d_a <= d_b else (a, b)
 
 
 def moiety_edges(
@@ -430,6 +519,7 @@ class ElasticDrag:
         grabbed_index: int,
         target: np.ndarray,
         external_forces: dict[int, np.ndarray] | None = None,
+        pin_grabbed: bool = True,
     ) -> dict[int, np.ndarray]:
         """Relax the moiety towards *target* and return the new positions.
 
@@ -444,6 +534,14 @@ class ElasticDrag:
             the constraint solve then partially, but not fully, absorbs it,
             which is what gives the density guidance a soft pull rather than
             an instant jump.
+        :param pin_grabbed: When ``True`` (the default) the grabbed atom is
+            held exactly at *target* throughout, so it tracks the mouse
+            perfectly.  :class:`TorsionDrag` passes ``False``: there the
+            fragment's position comes from a rotation about the bond and the
+            grabbed atom is only *pulled* towards the mouse by a soft
+            external force, so pinning it would override the rotation
+            entirely.  With ``False`` the grabbed atom takes part in the
+            relaxation like any other movable atom and *target* is ignored.
         :returns: Positions for every atom that is not an anchor, including
             riding atoms.
         """
@@ -456,14 +554,20 @@ class ElasticDrag:
             self.positions[grabbed_index] = self._base_positions[grabbed_index].copy()
 
         pos = self.positions
-        pos[grabbed_index] = np.asarray(target, dtype=float)
+        if pin_grabbed:
+            pos[grabbed_index] = np.asarray(target, dtype=float)
 
         if external_forces:
             for i, delta in external_forces.items():
-                if i in pos and i != grabbed_index and i not in self.anchors:
-                    pos[i] = pos[i] + delta
+                if i not in pos or i in self.anchors:
+                    continue
+                if pin_grabbed and i == grabbed_index:
+                    continue
+                pos[i] = pos[i] + delta
 
-        movable = (set(pos) - self.anchors) - {grabbed_index}
+        movable = set(pos) - self.anchors
+        if pin_grabbed:
+            movable -= {grabbed_index}
         for _ in range(self.iterations):
             for (a, b), (rest, stiffness) in self._rest_length.items():
                 pa, pb = pos[a], pos[b]
@@ -490,7 +594,8 @@ class ElasticDrag:
                     pos[a] = pa + correction * delta
                 elif move_b:
                     pos[b] = pb - correction * delta
-            pos[grabbed_index] = np.asarray(target, dtype=float)
+            if pin_grabbed:
+                pos[grabbed_index] = np.asarray(target, dtype=float)
 
         result = {i: p.copy() for i, p in pos.items() if i not in self.anchors}
 
@@ -505,6 +610,163 @@ class ElasticDrag:
             result[riding_atom] = parent_new + offset
 
         return result
+
+
+# ---------------------------------------------------------------------------
+# Torsion drag: rotation about a selected bond, with elastic give
+# ---------------------------------------------------------------------------
+
+class TorsionDrag:
+    """Rotate a fragment about a selected bond, with a bit of flexibility.
+
+    Used when the split point is a **bond** rather than a set of atoms.  The
+    far end of that bond is the fixed anchor, the near end travels with the
+    fragment, and the bond itself is the axis the fragment swings about (see
+    :func:`bond_split_ends`).
+
+    Each :meth:`update` does two things, in order:
+
+    1. **Rotate.**  The angle about the axis that best carries the grabbed
+       atom's *original* position towards the mouse target is computed, and
+       every moiety atom is rigidly rotated about the axis by it.  This is
+       recomputed from the stored base positions every call - never
+       accumulated - so repeated updates cannot drift, exactly as in
+       :class:`RigidPivotDrag`.  Rotation about the bond stays the dominant,
+       intended motion.
+    2. **Relax.**  Those rotated positions seed an internal
+       :class:`ElasticDrag`, which is then run with the grabbed atom *not*
+       pinned (``pin_grabbed=False``) and only softly pulled towards where
+       the mouse actually is, by :data:`TORSION_FLEXIBILITY` of the offset.
+       This is the "bit of flexibility": the fragment may deviate from a
+       perfect rotation, deform, and be pulled by the density - and, because
+       the near bond atom is an ordinary moiety member rather than an anchor,
+       it may drift off the axis so a *tumble* rather than only a clean
+       torsion can be modelled.
+
+    A bond inside a ring is not rejected: cutting it separates nothing, so
+    the moiety simply comes out larger and the ring deforms elastically as it
+    rotates.
+    """
+
+    def __init__(
+        self,
+        positions: dict[int, np.ndarray],
+        far: int,
+        near: int,
+        edges: list[tuple[int, int]],
+        iterations: int = 12,
+        masses: dict[int, float] | None = None,
+        riding: dict[int, int] | None = None,
+        soft_edges: list[tuple[int, int]] | None = None,
+        flexibility: float = TORSION_FLEXIBILITY,
+    ):
+        """
+        :param positions: Starting positions of every atom involved (moiety,
+            the anchor, *and* any riding atoms), keyed by atom index.
+        :param far: The bond end that stays fixed - the anchor.
+        :param near: The bond end that travels with the fragment.  Together
+            with *far* it defines the rotation axis.
+        :param edges: Bonded pairs to keep at their original length, from
+            :func:`moiety_edges`.
+        :param iterations: Relaxation passes per :meth:`update`.
+        :param masses: Optional per-atom mass, see :class:`ElasticDrag`.
+        :param riding: Optional riding-atom mapping, see :class:`ElasticDrag`.
+        :param soft_edges: Optional loose 1,3 restraints, see
+            :class:`ElasticDrag`.
+        :param flexibility: How far the grabbed atom may leave the ideal
+            torsion path towards the mouse, see :data:`TORSION_FLEXIBILITY`.
+        """
+        self.far = far
+        self.near = near
+        self.anchors = {far}
+        self.flexibility = float(flexibility)
+        self._base_positions = {i: np.array(p, dtype=float) for i, p in positions.items()}
+
+        self._origin = self._base_positions[far]
+        axis = self._base_positions[near] - self._origin
+        norm = float(np.linalg.norm(axis))
+        # A zero-length bond has no meaningful axis; fall back to +Z so the
+        # solver still runs (as a pure elastic drag) instead of dividing by 0.
+        self._axis = axis / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
+
+        self._solver = ElasticDrag(
+            positions, {far}, edges, iterations=iterations, masses=masses,
+            riding=riding, soft_edges=soft_edges,
+        )
+
+    @property
+    def positions(self) -> dict[int, np.ndarray]:
+        """The internal solver's live positions (used for density nudges)."""
+        return self._solver.positions
+
+    @property
+    def riding(self) -> dict[int, int]:
+        """The internal solver's riding-atom mapping."""
+        return self._solver.riding
+
+    def _rotation_towards(self, grabbed_index: int, target: np.ndarray) -> np.ndarray:
+        """Rotation matrix about the bond axis aiming *grabbed_index* at *target*.
+
+        Both the grabbed atom's original position and the target are
+        projected onto the plane perpendicular to the axis; the signed angle
+        between those two projections is the torsion angle.  Returns the
+        identity when either projection is degenerate (the point lies
+        essentially *on* the axis, where no rotation is defined).
+        """
+        base = self._base_positions[grabbed_index] - self._origin
+        wanted = np.asarray(target, dtype=float) - self._origin
+
+        base_perp = base - self._axis * float(np.dot(base, self._axis))
+        wanted_perp = wanted - self._axis * float(np.dot(wanted, self._axis))
+
+        base_norm = float(np.linalg.norm(base_perp))
+        wanted_norm = float(np.linalg.norm(wanted_perp))
+        if base_norm < 1e-9 or wanted_norm < 1e-9:
+            return np.eye(3)
+
+        u = base_perp / base_norm
+        v = wanted_perp / wanted_norm
+        angle = float(np.arctan2(float(np.dot(np.cross(u, v), self._axis)),
+                                 float(np.dot(u, v))))
+        return _axis_angle(self._axis, angle)
+
+    def update(
+        self,
+        grabbed_index: int,
+        target: np.ndarray,
+        external_forces: dict[int, np.ndarray] | None = None,
+    ) -> dict[int, np.ndarray]:
+        """Rotate about the bond towards *target*, then relax elastically.
+
+        :param grabbed_index: The atom index being dragged.
+        :param target: The world-space point the mouse is at.
+        :param external_forces: Optional extra per-atom displacements (the
+            density-gradient nudges) applied alongside this solver's own
+            flexibility pull on the grabbed atom, so density guidance works
+            in torsion mode exactly as it does for a plain elastic drag.
+        :returns: New positions for every atom that is not the anchor.
+        """
+        target = np.asarray(target, dtype=float)
+        rotation = self._rotation_towards(grabbed_index, target)
+
+        # Step 1: rigid rotation about the bond, always from the base
+        # geometry so repeated calls cannot accumulate drift.
+        for i in self._solver.positions:
+            base = self._base_positions[i] - self._origin
+            self._solver.positions[i] = self._origin + rotation @ base
+
+        # Step 2: pull the grabbed atom part-way towards where the mouse
+        # really is, then let the constraints redistribute that pull through
+        # the fragment.  This is the flexibility on top of the rotation.
+        forces = dict(external_forces) if external_forces else {}
+        if grabbed_index in self._solver.positions and self.flexibility > 0.0:
+            offset = target - self._solver.positions[grabbed_index]
+            forces[grabbed_index] = forces.get(grabbed_index, 0.0) + offset * self.flexibility
+
+        return self._solver.update(
+            grabbed_index, target, external_forces=forces or None,
+            pin_grabbed=False,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -590,11 +852,16 @@ class MoietyDragSession:
     Construct with :func:`build_drag_session`; :mod:`molecule3D` calls
     :meth:`update` from ``mouseMoveEvent`` and discards the session on
     release.
+
+    ``mode`` is ``'elastic'`` for the usual atom-anchored drag and
+    ``'torsion'`` when the split point was a bond, in which case the solver
+    rotates the fragment about that bond (see :class:`TorsionDrag`).  Both
+    take the same arguments and are driven identically from here.
     """
 
     grabbed_index: int
-    mode: str  # 'rigid' or 'elastic'
-    _solver: RigidPivotDrag | ElasticDrag
+    mode: str  # 'rigid', 'elastic' or 'torsion'
+    _solver: RigidPivotDrag | ElasticDrag | TorsionDrag
     density: DensityGuide | None = None
     snapped: bool = False
     _snap_target: np.ndarray | None = field(default=None, repr=False)
@@ -623,7 +890,7 @@ class MoietyDragSession:
             # fragment along.
             positions = self._solver.update(self.grabbed_index, self._bias_target(target))
         else:
-            assert isinstance(self._solver, ElasticDrag)
+            assert isinstance(self._solver, ElasticDrag | TorsionDrag)
             # The grabbed atom is normally pinned to the mouse exactly, so
             # without this it would never itself feel the density pull -
             # only the *other*, passive atoms of the moiety would (see
@@ -631,7 +898,8 @@ class MoietyDragSession:
             # common case - dragging one terminal atom) with no guidance at
             # all, since there is no other atom to nudge.  Biasing the
             # grabbed atom's own drive point fixes that for every moiety
-            # size.
+            # size.  TorsionDrag takes the same two arguments and applies
+            # them the same way, on top of its rotation about the bond.
             external_forces = self._density_nudges(self._solver.positions)
             positions = self._solver.update(
                 self.grabbed_index, self._bias_target(target), external_forces=external_forces,
@@ -699,12 +967,14 @@ def build_drag_session(
     density: DensityGuide | None = None,
     masses: dict[int, float] | None = None,
     riding_atoms: dict[int, int] | None = None,
+    bond: tuple[int, int] | None = None,
 ) -> MoietyDragSession | None:
     """Build a :class:`MoietyDragSession` for dragging from *grabbed_index*.
 
-    Always uses the elastic (mass-spring) solver, even for a single anchor,
-    so the drag feel is consistent regardless of how many anchors are
-    selected - see the module docstring.
+    Uses the elastic (mass-spring) solver, even for a single anchor, so the
+    drag feel is consistent regardless of how many anchors are selected - see
+    the module docstring.  When *bond* is given the split point is that bond
+    instead, and the fragment rotates about it (:class:`TorsionDrag`).
 
     :param connections: Every bond in the molecule as ``(i, j)`` atom-index
         pairs.
@@ -714,6 +984,7 @@ def build_drag_session(
         means "no anchors at all" - the whole fragment connected to
         *grabbed_index* is then dragged as a free body (nothing holds it in
         place), which is how a whole-molecule disorder is modelled.
+        Ignored when *bond* is given, since the bond determines the anchor.
     :param grabbed_index: The atom under the cursor when the drag started.
     :param density: Optional density guide for snapping; ``None`` disables
         density guidance (the moiety still drags, just without a target).
@@ -725,9 +996,25 @@ def build_drag_session(
         is bonded to, see :class:`ElasticDrag`).  Riding atoms keep their
         exact original offset from the parent - same bond length, same
         direction - rather than taking part in the spring solve.
+    :param bond: Optional ``(i, j)`` bond to split at instead of using
+        *anchors*.  Its far end (the one away from *grabbed_index*, see
+        :func:`bond_split_ends`) becomes the sole anchor and the bond becomes
+        the axis the fragment rotates about; the near end travels with the
+        fragment and may drift off that axis, so a tumble rather than only a
+        clean torsion can be modelled.
     :returns: The session, or ``None`` when *grabbed_index* does not belong
-        to a moiety reachable from *anchors* (nothing to drag).
+        to a moiety reachable from *anchors*, or when *bond* is unrelated to
+        the fragment being dragged (nothing to drag either way).
     """
+    far: int | None = None
+    near: int | None = None
+    if bond is not None:
+        ends = bond_split_ends(connections, bond, grabbed_index)
+        if ends is None:
+            return None
+        far, near = ends
+        anchors = {far}
+
     moiety = find_moiety(connections, anchors, grabbed_index)
     if grabbed_index not in moiety:
         return None
@@ -740,6 +1027,17 @@ def build_drag_session(
         i: p for i, p in (riding_atoms or {}).items()
         if i in combined and p in combined
     }
+
+    if far is not None and near is not None:
+        torsion = TorsionDrag(
+            combined, far, near, bonds, masses=masses, riding=riding,
+            soft_edges=angle_pairs,
+        )
+        return MoietyDragSession(
+            grabbed_index=grabbed_index, mode='torsion', _solver=torsion,
+            density=density,
+        )
+
     solver = ElasticDrag(
         combined, set(anchors), bonds, masses=masses, riding=riding,
         soft_edges=angle_pairs,
