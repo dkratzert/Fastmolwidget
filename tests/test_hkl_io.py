@@ -255,8 +255,14 @@ def _reference_parse(text: str):
     ('   1   2   3   12.34    1.23\n\n   1   2   4    5.00    0.50   2\n', True),
     ('  -1  -2  -3   12.34    1.23\n 100  99 -99  5.00     0.50\n', True),
     ('1 2 3 12.34 1.23\n1 2 4 5.0 0.5 2\n', False),           # free format
-    # A stray record is dropped and the rest still goes down the fast path -
-    # real files do contain such lines and one of them must not cost a whole
+    # SADABS appends its scaling report after the terminator.  Everything from
+    # the 0 0 0 record on is ignored, so this is an ordinary file.
+    (('   1   2   3   12.34    1.23\n   0   0   0    0.00    0.00\n'
+      '_exptl_absorpt_correction_type multi-scan\n'
+      '_exptl_absorpt_process_details\n;\n'
+      ' SADABS 2016/2: Krause, L., Herbst-Irmer, R. et al.\n;\n'), True),
+    # A stray record with no terminator to hide behind is dropped and the rest
+    # still goes down the fast path - one such line must not cost a whole
     # 350 000 record file its vectorised parse.
     ('   1   2   3   12.34    1.23\nrubbish, and plenty of it here\n', True),
     ('   1   2   3   12.34    1.23\n! a comment\n   1   2   4    5.00    0.50\n',
@@ -289,6 +295,51 @@ def test_fast_path_matches_the_fallback_on_a_real_file():
     assert np.array_equal(fast.f_sq_meas, slow.f_sq_meas)
     assert np.array_equal(fast.sigma, slow.sigma)
     assert np.array_equal(np.asarray(fast.batch), np.asarray(slow.batch))
+
+
+def test_sadabs_trailer_needs_no_repair_pass():
+    """The scaling report after the terminator is cut, not repaired.
+
+    Everything from the ``0 0 0`` record on is ignored outright, so a file
+    with a SADABS trailer must go through the plain conversion and never
+    reach the drop-what-cannot-be-a-record retry.
+    """
+    from fastmolwidget import hkl_io as module
+
+    text = (
+        '   1   2   3   12.34    1.23\n'
+        '   0   0   0    0.00    0.00\n'
+        '_exptl_absorpt_correction_type multi-scan\n'
+        '_exptl_absorpt_process_details\n;\n'
+        ' SADABS 2016/2: Krause, L., Herbst-Irmer, R. et al.\n;\n'
+    )
+
+    calls = []
+    original = module._fixed_format_mask
+    module._fixed_format_mask = lambda codes: calls.append(1) or original(codes)
+    try:
+        data = module._parse_fixed_format(text.splitlines())
+    finally:
+        module._fixed_format_mask = original
+
+    assert data is not None
+    assert calls == []  # the retry was not needed
+    assert np.array_equal(data.hkl, np.array([[1, 2, 3]], dtype=np.int32))
+
+
+def test_records_after_the_terminator_are_ignored():
+    """A trailer cannot add reflections, whatever it looks like."""
+    from fastmolwidget.hkl_io import parse_shelx_hkl
+
+    text = (
+        '   1   2   3   12.34    1.23\n'
+        '   0   0   0    0.00    0.00\n'
+        '   9   9   9   99.99    9.99\n'
+    )
+
+    data = parse_shelx_hkl(text)
+
+    assert np.array_equal(data.hkl, np.array([[1, 2, 3]], dtype=np.int32))
 
 
 # ---------------------------------------------------------------------------

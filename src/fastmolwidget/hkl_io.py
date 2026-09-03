@@ -386,6 +386,38 @@ def _build_char_classes() -> np.ndarray:
 _CHAR_CLASS: np.ndarray = _build_char_classes()
 
 
+def _terminator_row(codes: np.ndarray) -> int | None:
+    """Index of the ``0 0 0`` record that ends the reflection list.
+
+    Found by a character test on the three index fields - every character a
+    space, a NUL (the padding of a short record) or a zero, with at least one
+    zero per field - so the list can be cut *before* anything is converted.
+    That matters because SADABS appends its scaling report to the file after
+    the terminator::
+
+        0   0   0    0.00    0.00
+        _exptl_absorpt_correction_type multi-scan
+        _exptl_absorpt_process_details
+        ;
+         SADABS 2016/2: Krause, L., Herbst-Irmer, R., ...
+
+    SHELX ignores everything from the terminator on, so those lines are
+    perfectly normal and must not be treated as damaged records.
+
+    :param codes: ``(N, _HKL_RECORD_WIDTH)`` byte values of the records.
+    :returns: The row index, or ``None`` when the list has no terminator.
+    """
+    zero = codes == 0x30
+    blank = (codes == 0x20) | (codes == 0x00)
+    terminator = np.ones(len(codes), dtype=bool)
+    for start, stop in _HKL_COLUMNS[:3]:
+        field_zero = zero[:, start:stop]
+        terminator &= (field_zero | blank[:, start:stop]).all(axis=1)
+        terminator &= field_zero.any(axis=1)
+    found = np.flatnonzero(terminator)
+    return int(found[0]) if found.size else None
+
+
 def _fixed_format_mask(codes: np.ndarray) -> np.ndarray:
     """Mark the records whose fixed-format columns can hold a number.
 
@@ -458,15 +490,17 @@ def _parse_fixed_format(lines: list[str]) -> ReflectionData | None:
     reflection file, and that cost is paid every time a residual-density map is
     computed.
 
-    Real files do contain the odd stray record - a comment, or, as in
-    ``41467_2015_BFncomms9288_MOESM1369_ESM.cif``, a CIF item that ended up
-    inside the ``_shelx_hkl_file`` text block.  A single one of those used to
-    send the entire file down the record-by-record parser, so if the straight
-    conversion fails, the records that cannot be fixed-format numbers are
-    dropped (:func:`_fixed_format_mask`) - exactly what the record-by-record
-    parser does with them - and the conversion is tried once more.  Clean
-    files never reach that second attempt and pay nothing for it.  If the
-    retry fails too, the file really is not fixed-format and the
+    The list is cut at the ``0 0 0`` terminator first
+    (:func:`_terminator_row`), so the scaling report SADABS writes after it is
+    never looked at - that trailer is normal content, not damage, and it is
+    what most real files carry.  A file that has no terminator can still hold
+    stray lines (a CIF item that ended up inside a ``_shelx_hkl_file`` block,
+    say); a single one of those used to cost the whole file its vectorised
+    parse, so if the conversion fails, records that cannot be fixed-format
+    numbers are dropped (:func:`_fixed_format_mask`) - exactly what the
+    record-by-record parser does with them - and the conversion is tried once
+    more.  Clean files never reach that second attempt and pay nothing for it.
+    If the retry fails too, the file really is not fixed-format and the
     record-by-record parser takes over.
 
     :param lines: The raw records, blank ones included.
@@ -486,6 +520,12 @@ def _parse_fixed_format(lines: list[str]) -> ReflectionData | None:
         return None
 
     chars = rows.view('S1').reshape(len(rows), _HKL_RECORD_WIDTH)
+    end = _terminator_row(chars.view(np.uint8))
+    if end is not None:
+        chars = chars[:end]
+        if len(chars) == 0:
+            return None
+
     data = _convert_fixed_records(chars)
     if data is not None:
         return data
