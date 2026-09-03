@@ -1354,22 +1354,24 @@ def _apply_extinction(
 
     where *x* is the refined ``EXTI`` parameter.  Returns *f_calc* unchanged
     when no extinction was refined.
+
+    Evaluated over the whole reflection array at once - the per-reflection
+    Python loop this replaces spent most of its time in one
+    :meth:`gemmi.UnitCell.calculate_d` call per Miller index, which
+    :meth:`~gemmi.UnitCell.calculate_d_array` does for the entire set in a
+    single call.  The result is identical to machine precision.
     """
     if not params.exti:
         return f_calc
 
     lambda_ = params.wavelength
-    corrected = np.empty_like(f_calc)
-    for i, index in enumerate(hkl):
-        d = cell.calculate_d(list(index))
-        sin_theta = min(lambda_ / (2.0 * d), 1.0)
-        sin_2theta = max(2.0 * sin_theta * sqrt(max(1.0 - sin_theta ** 2, 0.0)),
-                         1e-6)
-        amplitude_sq = abs(f_calc[i]) ** 2
-        factor = (1.0 + 0.001 * params.exti * amplitude_sq
-                  * lambda_ ** 3 / sin_2theta) ** -0.25
-        corrected[i] = f_calc[i] * factor
-    return corrected
+    d = cell.calculate_d_array(hkl)
+    sin_theta = np.minimum(lambda_ / (2.0 * d), 1.0)
+    sin_2theta = np.maximum(
+        2.0 * sin_theta * np.sqrt(np.maximum(1.0 - sin_theta ** 2, 0.0)), 1e-6)
+    factor = (1.0 + 0.001 * params.exti * np.abs(f_calc) ** 2
+              * lambda_ ** 3 / sin_2theta) ** -0.25
+    return f_calc * factor
 
 
 def _scale_factor(

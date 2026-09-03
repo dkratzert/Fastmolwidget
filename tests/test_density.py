@@ -172,6 +172,55 @@ def test_r1_against_published_value(shelx_structure):
 # The map
 # ---------------------------------------------------------------------------
 
+def test_extinction_matches_the_per_reflection_formula():
+    """The vectorised correction reproduces SHELXL's formula exactly.
+
+    ``_apply_extinction`` evaluates the whole reflection array at once; this
+    pins it against a literal, one-reflection-at-a-time transcription of
+
+        Fc* = Fc (1 + 0.001 x Fc² λ³ / sin 2θ)^(-1/4)
+    """
+    from math import sqrt
+
+    from fastmolwidget.density import _apply_extinction
+    from fastmolwidget.hkl_io import ShelxParameters
+
+    cell = gemmi.UnitCell(10.1, 12.3, 14.7, 90.0, 101.2, 90.0)
+    hkl = np.asarray(
+        gemmi.make_miller_array(cell, gemmi.SpaceGroup('P 21/c'), 0.9),
+        dtype=np.int32)
+    rng = np.random.default_rng(0)
+    f_calc = (rng.normal(size=len(hkl)) + 1j * rng.normal(size=len(hkl))) * 50.0
+    params = ShelxParameters(exti=0.0038, wavelength=0.71073)
+
+    expected = np.empty_like(f_calc)
+    for i, index in enumerate(hkl):
+        d = cell.calculate_d(list(index))
+        sin_theta = min(params.wavelength / (2.0 * d), 1.0)
+        sin_2theta = max(
+            2.0 * sin_theta * sqrt(max(1.0 - sin_theta ** 2, 0.0)), 1e-6)
+        expected[i] = f_calc[i] * (
+            1.0 + 0.001 * params.exti * abs(f_calc[i]) ** 2
+            * params.wavelength ** 3 / sin_2theta) ** -0.25
+
+    assert np.allclose(_apply_extinction(f_calc, hkl, cell, params), expected,
+                       rtol=1e-12, atol=1e-12)
+
+
+def test_extinction_is_skipped_without_a_refined_exti():
+    """No EXTI card means the amplitudes are handed back untouched."""
+    from fastmolwidget.density import _apply_extinction
+    from fastmolwidget.hkl_io import ShelxParameters
+
+    cell = gemmi.UnitCell(10.0, 10.0, 10.0, 90.0, 90.0, 90.0)
+    hkl = np.array([[1, 0, 0], [0, 2, 1]], dtype=np.int32)
+    f_calc = np.array([3.0 + 1.0j, -2.0 + 0.5j])
+
+    result = _apply_extinction(f_calc, hkl, cell, ShelxParameters())
+
+    assert result is f_calc
+
+
 def test_map_uses_shelxl_scale_factor(density_map):
     """The refined OSF from FVAR is used, not a re-derived estimate."""
     assert density_map.scale == pytest.approx(0.22604)
