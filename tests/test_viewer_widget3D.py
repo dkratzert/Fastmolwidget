@@ -1653,7 +1653,9 @@ def test_ctrl_drag_duplicates_moiety_and_keeps_originals_fixed():
 
 
 def test_ctrl_drag_again_reuses_existing_duplicate():
-    """Re-dragging the original atom must not create a second duplicate."""
+    """Re-dragging the original atom must not create a second duplicate, and
+    must move that original (part 1) itself so both halves of the split can
+    be positioned independently."""
     widget = _make_chain_widget3d()
     widget.selected_atoms = {"C1"}
     c3 = next(a for a in widget.atoms if a.label == "C3")
@@ -1670,13 +1672,15 @@ def test_ctrl_drag_again_reuses_existing_duplicate():
     ))
     n_atoms_after_first_drag = len(widget.atoms)
 
-    # Grab the (now fixed) original C3 again and move.
+    # Grab the original C3 again and move.
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
     widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
     assert widget._disorder_drag_session is not None
     assert len(widget.atoms) == n_atoms_after_first_drag  # no new duplicate
     c3_index = next(i for i, a in enumerate(widget.atoms) if a.label == "C3")
-    assert widget._disorder_drag_session.grabbed_index == widget._disorder_duplicate_of[c3_index]
+    # The original is dragged, not redirected to its part-2 counterpart.
+    assert widget._disorder_drag_session.grabbed_index == c3_index
+    assert c3_index in widget._disorder_duplicate_of
 
 
 def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
@@ -1963,3 +1967,123 @@ def test_atom_selection_still_uses_elastic_mode():
 
     assert widget._disorder_drag_session is not None
     assert widget._disorder_drag_session.mode == 'elastic'
+
+
+# ------------------------------------------------------------------
+# Dragging either half of an existing split (part 1 and part 2)
+# ------------------------------------------------------------------
+
+def _complete_ctrl_drag(widget: MoleculeWidget3D, grab_label: str, target_world):
+    """Full Ctrl press-move-release on *grab_label*; returns the session used."""
+    grabbed = next(a for a in widget.atoms if a.label == grab_label)
+    sx, sy = _project_to_screen(widget, grabbed.center)
+    press_pos = QtCore.QPointF(sx, sy)
+    widget.mousePressEvent(
+        _ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, press_pos))
+    tx, ty = _project_to_screen(widget, np.asarray(target_world, dtype=np.float32))
+    move_pos = QtCore.QPointF(tx, ty)
+    widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, move_pos))
+    session = widget._disorder_drag_session
+    widget.mouseReleaseEvent(QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseButtonRelease, move_pos, move_pos,
+        QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.ControlModifier,
+    ))
+    return session
+
+
+def test_dragging_part_one_after_a_split_moves_the_residual_part():
+    """Once split, grabbing an original (part 1) atom drags that half - the
+    part-2 copy is left exactly where it was."""
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+    after_split = {a.label: a.center.copy() for a in widget.atoms}
+
+    _complete_ctrl_drag(widget, "C3", [2.2, -1.4, 0.2])
+    now = {a.label: a.center for a in widget.atoms}
+
+    assert not np.allclose(now["C3"], after_split["C3"])       # part 1 moved
+    assert now["C3B"] == pytest.approx(after_split["C3B"])     # part 2 untouched
+    assert now["C1"] == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-9)
+
+
+def test_dragging_either_part_never_creates_more_duplicates():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+    n_atoms = len(widget.atoms)
+
+    _complete_ctrl_drag(widget, "C3", [2.2, -1.4, 0.2])    # part 1
+    _complete_ctrl_drag(widget, "C3B", [2.2, 0.0, -1.4])   # part 2
+    _complete_ctrl_drag(widget, "C3", [2.4, -1.0, 0.5])    # part 1 again
+
+    assert len(widget.atoms) == n_atoms
+    labels = [a.label for a in widget.atoms]
+    assert len(labels) == len(set(labels))  # no duplicate labels either
+
+
+def test_dragging_part_one_uses_the_part_one_atom_itself():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    session = _complete_ctrl_drag(widget, "C3", [2.2, -1.4, 0.2])
+    c3_index = next(i for i, a in enumerate(widget.atoms) if a.label == "C3")
+    assert session is not None
+    assert session.grabbed_index == c3_index
+
+
+def test_bond_split_can_drag_both_parts_independently():
+    """The same works in torsion mode, and each half keeps rotating about the
+    bond with the far end anchored."""
+    widget = _make_bent_chain_widget3d()
+    widget.selected_bonds = {("C1", "C2")}
+    first = _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+    assert first is not None and first.mode == 'torsion'
+    after_split = {a.label: a.center.copy() for a in widget.atoms}
+
+    second = _complete_ctrl_drag(widget, "C3", [2.2, -1.3, 0.3])
+    assert second is not None and second.mode == 'torsion'
+    now = {a.label: a.center for a in widget.atoms}
+
+    assert not np.allclose(now["C3"], after_split["C3"])
+    assert now["C3B"] == pytest.approx(after_split["C3B"])
+    assert now["C1"] == pytest.approx(np.array([0.0, 0.0, 0.0]), abs=1e-9)
+    # The part-1 fragment still hangs off the anchor at the right distance.
+    assert float(np.linalg.norm(now["C2"] - now["C1"])) == pytest.approx(1.5, rel=0.05)
+
+
+def test_bond_split_dragging_part_two_resolves_the_axis_to_part_two():
+    """With the *part-1* bond still selected, grabbing a part-2 atom must
+    rotate about the part-2 copy of that bond - not anchor the wrong atom."""
+    widget = _make_bent_chain_widget3d()
+    widget.selected_bonds = {("C1", "C2")}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+    after_split = {a.label: a.center.copy() for a in widget.atoms}
+
+    session = _complete_ctrl_drag(widget, "C3B", [2.2, 0.0, -1.5])
+    assert session is not None and session.mode == 'torsion'
+
+    labels = {i: a.label for i, a in enumerate(widget.atoms)}
+    assert labels[session._solver.far] == "C1"    # anchor is the shared atom
+    assert labels[session._solver.near] == "C2B"  # axis follows the part-2 copy
+
+    now = {a.label: a.center for a in widget.atoms}
+    assert not np.allclose(now["C3B"], after_split["C3B"])
+    assert now["C3"] == pytest.approx(after_split["C3"])
+
+
+def test_matching_split_atom_maps_between_parts():
+    widget = _make_bent_chain_widget3d()
+    widget.selected_atoms = {"C1"}
+    _complete_ctrl_drag(widget, "C3", [2.2, 0.0, 1.4])
+
+    index = {a.label: i for i, a in enumerate(widget.atoms)}
+    # Original -> duplicate side and back again.
+    assert widget._matching_split_atom(index["C2"], index["C2B"]) == index["C2B"]
+    assert widget._matching_split_atom(index["C2B"], index["C2"]) == index["C2"]
+    # Same side is a no-op.
+    assert widget._matching_split_atom(index["C2"], index["C3"]) == index["C2"]
+    # An atom that was never duplicated (the anchor) has only one version.
+    assert widget._matching_split_atom(index["C1"], index["C2B"]) == index["C1"]

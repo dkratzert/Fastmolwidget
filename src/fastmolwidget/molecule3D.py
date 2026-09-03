@@ -2783,12 +2783,20 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         # about the bond.  Atom and bond selection are mutually exclusive in
         # _handle_click, so there is never both to reconcile.
         split_bond: tuple[int, int] | None = None
+        ends: tuple[int, int] | None = None
         if len(self.selected_bonds) == 1 and not anchor_indices:
             label_a, label_b = next(iter(self.selected_bonds))
             index_a = label_to_index.get(label_a)
             index_b = label_to_index.get(label_b)
             if index_a is None or index_b is None:
                 return
+            # Once a split exists the bond's atoms exist twice, and the
+            # selection still names whichever copy was clicked.  Resolve both
+            # ends onto the side actually being grabbed first, or the search
+            # below would walk out through the *other* part and anchor the
+            # wrong atom.
+            index_a = self._matching_split_atom(index_a, grabbed_index)
+            index_b = self._matching_split_atom(index_b, grabbed_index)
             ends = bond_split_ends(self.connections, (index_a, index_b), grabbed_index)
             if ends is None:
                 return  # the bond has nothing to do with the grabbed fragment
@@ -2798,12 +2806,14 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 return
 
         if grabbed_index in self._disorder_is_duplicate:
-            # Grabbed the split copy directly: drag it, nothing to duplicate.
+            # Grabbed the split copy (part 2) directly: drag it as it is.
             drag_grabbed_index = grabbed_index
         elif grabbed_index in self._disorder_duplicate_of:
-            # This atom was split before; keep the original fixed and drag
-            # its existing part-2 counterpart instead.
-            drag_grabbed_index = self._disorder_duplicate_of[grabbed_index]
+            # Grabbed an original (part 1) that has already been split off.
+            # Drag that original, so the residual part can be positioned
+            # independently of its part-2 counterpart and both halves of the
+            # disorder can be adjusted.  Nothing is duplicated a second time.
+            drag_grabbed_index = grabbed_index
         else:
             moiety = find_moiety(self.connections, anchor_indices, grabbed_index)
             if grabbed_index not in moiety:
@@ -2814,14 +2824,14 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             self._disorder_duplicate_of.update(duplicate_map)
             self._disorder_is_duplicate.update(duplicate_map.values())
             drag_grabbed_index = duplicate_map[grabbed_index]
-            if split_bond is not None:
-                # The moiety (including the bond's near end) was duplicated,
-                # so the torsion axis has to point at the *copy* that is
-                # actually being dragged; the far end stays the original.
-                split_bond = (
-                    duplicate_map.get(split_bond[0], split_bond[0]),
-                    duplicate_map.get(split_bond[1], split_bond[1]),
-                )
+
+        if split_bond is not None:
+            # The bond's near end travels with the fragment and therefore
+            # exists twice once a split has been made.  The torsion axis has
+            # to point at whichever copy is actually being dragged - part 1
+            # or part 2 - while the far end anchors and is never duplicated.
+            far, near = ends
+            split_bond = (far, self._matching_split_atom(near, drag_grabbed_index))
 
         positions = {i: a.center.astype(np.float64) for i, a in enumerate(self.atoms)}
         masses = {i: atomic_mass(a.type_) for i, a in enumerate(self.atoms)}
@@ -2844,6 +2854,32 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         grabbed_center = self.atoms[drag_grabbed_index].center
         c4 = np.array([*grabbed_center, 1.0], dtype=np.float64)
         self._disorder_drag_eye_z = float((mv.astype(np.float64) @ c4)[2])
+
+    def _matching_split_atom(self, index: int, side_of: int) -> int:
+        """Return *index* mapped onto the same split part as *side_of*.
+
+        After a moiety has been split, most of its atoms exist twice - the
+        part-1 original and its part-2 duplicate.  Anything that has to line
+        up with the fragment currently being dragged (the torsion axis' near
+        end, in practice) must therefore be resolved to the copy on that same
+        side.  Atoms that were never duplicated - an anchor, for instance -
+        have only one version and are returned unchanged.
+
+        :param index: The atom to resolve.
+        :param side_of: An atom on the side that *index* should match.
+        :returns: The part-1 or part-2 counterpart of *index*, whichever sits
+            on the same side as *side_of*.
+        """
+        want_duplicate = side_of in self._disorder_is_duplicate
+        is_duplicate = index in self._disorder_is_duplicate
+        if want_duplicate == is_duplicate:
+            return index
+        if want_duplicate:
+            return self._disorder_duplicate_of.get(index, index)
+        for original, duplicate in self._disorder_duplicate_of.items():
+            if duplicate == index:
+                return original
+        return index
 
     def _create_disorder_duplicate(
         self, moiety: set[int], anchors: set[int],
