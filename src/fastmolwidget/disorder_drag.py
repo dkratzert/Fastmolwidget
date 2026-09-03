@@ -21,10 +21,20 @@ always picks the elastic one (see below) regardless of anchor count:
   inside the moiety and between the moiety and an anchor) is a distance
   constraint with the original bond length as its rest length, solved with a
   few Gauss-Seidel relaxation passes per drag step (:class:`ElasticDrag`).
-  Anchors have infinite mass (never move).  :func:`build_drag_session` always
-  uses this mode, even for a single anchor, for a consistently "gummy" feel.
-  Optional atomic masses (:func:`atomic_mass`) let a constraint's correction
-  split unevenly between two solved atoms of different weight.
+  :func:`moiety_angle_pairs` adds a second, weaker kind of constraint between
+  every 1,3 pair of atoms (two sharing a bonded neighbour) at their original
+  distance, so bond *angles* stay roughly fixed too - without it, a 1,2-only
+  spring system can freely fold or flatten around any shared atom while
+  every individual bond length still checks out, which looks unstable and
+  "floppy".  These 1,3 pairs are deliberately **loose restraints**, applied
+  at :data:`ANGLE_CONSTRAINT_STIFFNESS` (30 %) of a real bond's correction
+  each iteration (:class:`ElasticDrag`'s ``soft_edges``), so they stabilise
+  the shape without fighting - and degrading the convergence of - the real
+  1,2 bonds.  Anchors have infinite mass (never move).
+  :func:`build_drag_session` always uses this mode, even for a single
+  anchor, for a consistently "gummy" feel.  Optional atomic masses
+  (:func:`atomic_mass`) let a constraint's correction split unevenly between
+  two solved atoms of different weight.
 
 Terminal hydrogens ride exactly rather than take part in the spring solve at
 all: :class:`ElasticDrag`'s ``riding`` mapping (atom → its parent) keeps such
@@ -45,10 +55,12 @@ detect when it has settled onto one ("snapped").
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import combinations
 
 import numpy as np
 
 __all__ = [
+    'ANGLE_CONSTRAINT_STIFFNESS',
     'BREAKAWAY_DISTANCE',
     'DEFAULT_ISO_U',
     'DENSITY_GRADIENT_STEP',
@@ -61,6 +73,7 @@ __all__ = [
     'atomic_mass',
     'build_drag_session',
     'find_moiety',
+    'moiety_angle_pairs',
     'moiety_edges',
 ]
 
@@ -86,6 +99,13 @@ SNAP_GRADIENT_TOL: float = 0.1
 #: Extra mouse-target displacement (Å) required to leave a snapped pose - the
 #: "more force" needed to drag the moiety further once it has snapped.
 BREAKAWAY_DISTANCE: float = 0.6
+
+#: Stiffness of the 1,3 (angle-stabilising) distance constraints relative to
+#: the real 1,2 bonds (stiffness ``1.0``).  Deliberately loose: these pairs
+#: are not real bonds, only there to stop the moiety folding through an
+#: angle while it is dragged, so they must not compete with - and degrade
+#: the convergence of - the actual bond-length constraints.
+ANGLE_CONSTRAINT_STIFFNESS: float = 0.3
 
 
 def atomic_mass(element: str) -> float:
@@ -162,7 +182,12 @@ def moiety_edges(
 
     Includes every bond entirely inside the moiety, plus every bond between a
     moiety atom and one of *anchors* (these are the constraints that hold the
-    fragment in place).  Used to build :class:`ElasticDrag`'s constraint set.
+    fragment in place).  Used both as :class:`ElasticDrag`'s 1,2-distance
+    constraint set and as the actual bond list of a duplicated moiety (see
+    ``MoleculeWidget3D._create_disorder_duplicate``) - so this must keep
+    returning *real bonds only*.  Use :func:`moiety_angle_pairs` for the
+    additional 1,3 constraints that stabilise the shape without being real
+    bonds themselves.
     """
     edges: list[tuple[int, int]] = []
     for a, b in connections:
@@ -170,6 +195,52 @@ def moiety_edges(
         if a_in and b_in or a_in and b in anchors or b_in and a in anchors:
             edges.append((a, b))
     return edges
+
+
+def moiety_angle_pairs(
+    connections: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    moiety: set[int],
+    anchors: set[int],
+) -> list[tuple[int, int]]:
+    """Return 1,3 atom pairs (two bonds apart) relevant to dragging *moiety*.
+
+    A 1,2-distance (bond-length) constraint alone lets the *angle* at any
+    shared atom swing freely - two atoms bonded to the same third atom can
+    fold towards or away from each other while both bonds stay exactly the
+    right length.  Adding a distance constraint directly between such a
+    1,3-pair, with their original distance as rest length, keeps that angle
+    approximately fixed too (the law of cosines ties a triangle's angle to
+    its three side lengths), which is what keeps a dragged moiety's shape
+    recognisable instead of collapsing into a zig-zag.
+
+    :param connections: Every bond in the molecule as ``(i, j)`` atom-index
+        pairs.
+    :param moiety: The atom indices being dragged.
+    :param anchors: The fixed border atoms.
+    :returns: Pairs ``(a, b)`` with a common bonded neighbour, excluding any
+        pair that is already a direct bond (e.g. in a 3-membered ring - that
+        distance is already constrained by :func:`moiety_edges`) and any
+        pair entirely among *anchors* (fixed relative to each other anyway,
+        nothing to constrain).
+    """
+    edges = moiety_edges(connections, moiety, anchors)
+    direct_bonds = {frozenset(edge) for edge in edges}
+
+    adjacency: dict[int, set[int]] = {}
+    for a, b in edges:
+        adjacency.setdefault(a, set()).add(b)
+        adjacency.setdefault(b, set()).add(a)
+
+    pairs: set[frozenset[int]] = set()
+    for neighbours in adjacency.values():
+        for n1, n2 in combinations(neighbours, 2):
+            pair = frozenset((n1, n2))
+            if pair in direct_bonds:
+                continue
+            if n1 in moiety or n2 in moiety:
+                pairs.add(pair)
+
+    return [tuple(sorted(pair)) for pair in pairs]
 
 
 # ---------------------------------------------------------------------------
@@ -274,18 +345,19 @@ class ElasticDrag:
         iterations: int = 12,
         masses: dict[int, float] | None = None,
         riding: dict[int, int] | None = None,
+        soft_edges: list[tuple[int, int]] | None = None,
     ):
         """
         :param positions: Starting positions of every atom involved (moiety,
             anchors, *and* any riding atoms), keyed by atom index.
         :param anchors: Indices that never move.
-        :param edges: Bonded pairs to keep at their original length, from
-            :func:`moiety_edges`.
+        :param edges: Bonded pairs to keep at their original length (full
+            stiffness), from :func:`moiety_edges`.
         :param iterations: Constraint-relaxation passes per :meth:`update`.
         :param masses: Optional per-atom mass (any consistent unit, e.g.
             atomic mass units), keyed by atom index.  Between two movable
-            atoms of a bonded pair that are *not* riding, the lighter one
-            absorbs the larger share of every constraint correction (see
+            atoms of a constrained pair that are *not* riding, the lighter
+            one absorbs the larger share of every correction (see
             :meth:`update`).  Missing entries default to ``1.0``; ``None``
             gives every atom equal mass.
         :param riding: Maps a riding atom's index to its parent's index (e.g.
@@ -297,6 +369,12 @@ class ElasticDrag:
             not an approximation).  A riding atom that is also
             *grabbed_index* is treated as a normal solved atom instead (it
             must follow the mouse exactly).
+        :param soft_edges: Optional additional pairs to keep at their
+            original length, but only loosely: each correction is scaled by
+            :data:`ANGLE_CONSTRAINT_STIFFNESS` instead of applied in full, so
+            these constraints stabilise the shape (typically 1,3 pairs, see
+            :func:`moiety_angle_pairs`) without fighting - and degrading the
+            convergence of - the real bonds in *edges*.
         """
         self.anchors = set(anchors)
         self.iterations = iterations
@@ -307,11 +385,13 @@ class ElasticDrag:
             i: np.array(p, dtype=float) for i, p in positions.items()
             if i not in self.riding
         }
-        self._rest_length = {
-            (a, b): float(np.linalg.norm(self._base_positions[a] - self._base_positions[b]))
-            for a, b in edges
-            if a not in self.riding and b not in self.riding
-        }
+        self._rest_length: dict[tuple[int, int], tuple[float, float]] = {}
+        for stiffness, pairs in ((1.0, edges), (ANGLE_CONSTRAINT_STIFFNESS, soft_edges or [])):
+            for a, b in pairs:
+                if a in self.riding or b in self.riding:
+                    continue
+                length = float(np.linalg.norm(self._base_positions[a] - self._base_positions[b]))
+                self._rest_length[(a, b)] = (length, stiffness)
 
     def _mass(self, index: int) -> float:
         return self.masses.get(index, 1.0)
@@ -356,13 +436,13 @@ class ElasticDrag:
 
         movable = (set(pos) - self.anchors) - {grabbed_index}
         for _ in range(self.iterations):
-            for (a, b), rest in self._rest_length.items():
+            for (a, b), (rest, stiffness) in self._rest_length.items():
                 pa, pb = pos[a], pos[b]
                 delta = pb - pa
                 dist = float(np.linalg.norm(delta))
                 if dist < 1e-9:
                     continue
-                correction = (dist - rest) / dist
+                correction = (dist - rest) / dist * stiffness
                 move_a = a in movable
                 move_b = b in movable
                 if move_a and move_b:
@@ -600,14 +680,18 @@ def build_drag_session(
     if grabbed_index not in moiety:
         return None
 
-    edges = moiety_edges(connections, moiety, anchors)
+    bonds = moiety_edges(connections, moiety, anchors)
+    angle_pairs = moiety_angle_pairs(connections, moiety, anchors)
     combined = {i: positions[i] for i in moiety}
     combined.update({i: positions[i] for i in anchors})
     riding = {
         i: p for i, p in (riding_atoms or {}).items()
         if i in combined and p in combined
     }
-    solver = ElasticDrag(combined, set(anchors), edges, masses=masses, riding=riding)
+    solver = ElasticDrag(
+        combined, set(anchors), bonds, masses=masses, riding=riding,
+        soft_edges=angle_pairs,
+    )
     return MoietyDragSession(
         grabbed_index=grabbed_index, mode='elastic', _solver=solver, density=density,
     )

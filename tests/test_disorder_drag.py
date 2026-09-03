@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from fastmolwidget.disorder_drag import (
+    ANGLE_CONSTRAINT_STIFFNESS,
     BREAKAWAY_DISTANCE,
     DensityGuide,
     ElasticDrag,
@@ -16,6 +17,7 @@ from fastmolwidget.disorder_drag import (
     atomic_mass,
     build_drag_session,
     find_moiety,
+    moiety_angle_pairs,
     moiety_edges,
 )
 
@@ -61,6 +63,41 @@ def test_moiety_edges_includes_anchor_bonds():
     moiety = {1, 2}
     edges = moiety_edges(connections, moiety, {0, 3})
     assert set(edges) == {(0, 1), (1, 2), (2, 3)}
+
+
+def test_moiety_angle_pairs_linear_chain():
+    """Every pair of atoms two bonds apart gets a 1,3 constraint."""
+    connections = [(0, 1), (1, 2), (2, 3)]
+    moiety = {1, 2, 3}
+    pairs = moiety_angle_pairs(connections, moiety, {0})
+    assert set(pairs) == {(0, 2), (1, 3)}
+
+
+def test_moiety_angle_pairs_excludes_direct_bonds():
+    """A 1,3 pair that happens to also be directly bonded (e.g. a 3-membered
+    ring) must not be duplicated - moiety_edges already constrains it."""
+    connections = [(0, 1), (1, 2), (0, 2)]  # triangle
+    moiety = {1, 2}
+    pairs = moiety_angle_pairs(connections, moiety, {0})
+    assert (0, 2) not in pairs and (2, 0) not in pairs
+
+
+def test_moiety_angle_pairs_excludes_anchor_only_pairs():
+    """A 1,3 pair entirely among anchors needs no constraint (never moves)."""
+    connections = [(0, 1), (1, 2), (2, 3), (3, 4)]
+    moiety = {2}
+    anchors = {0, 1, 3, 4}
+    # 1 and 3 share neighbour 2, but both are anchors - no constraint needed.
+    pairs = moiety_angle_pairs(connections, moiety, anchors)
+    assert (1, 3) not in pairs and (3, 1) not in pairs
+
+
+def test_moiety_angle_pairs_branching():
+    """A branch point produces a 1,3 pair between its two branches."""
+    connections = [(0, 1), (1, 2), (1, 3)]
+    moiety = {1, 2, 3}
+    pairs = moiety_angle_pairs(connections, moiety, {0})
+    assert set(pairs) == {(0, 2), (0, 3), (2, 3)}
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +289,71 @@ def test_build_drag_session_accepts_masses():
 
 
 # ---------------------------------------------------------------------------
+# Loose 1,3 (soft) restraints
+# ---------------------------------------------------------------------------
+
+def test_soft_edge_applies_partial_correction_per_iteration():
+    """A single relaxation pass on a soft-only edge must move the free atom
+    by exactly ``stiffness`` of the full correction, not the whole way."""
+    positions = {1: np.zeros(3), 2: np.array([5.0, 0.0, 0.0])}  # rest length 5
+    drag = ElasticDrag(positions, set(), edges=[], iterations=1, soft_edges=[(1, 2)])
+    new = drag.update(1, np.array([15.0, 0.0, 0.0]))  # stretches dist(1,2) to 10
+    expected_dist = 10.0 - ANGLE_CONSTRAINT_STIFFNESS * (10.0 - 5.0)
+    assert float(np.linalg.norm(new[2] - new[1])) == pytest.approx(expected_dist)
+
+
+def test_soft_edges_converge_more_loosely_than_hard_edges():
+    """With equal iteration counts, a hard (1,2) constraint must end up much
+    closer to its rest length than a soft (1,3) one under the same stretch."""
+    hard = ElasticDrag(
+        {1: np.zeros(3), 2: np.array([5.0, 0.0, 0.0])}, set(), edges=[(1, 2)], iterations=8,
+    )
+    soft = ElasticDrag(
+        {1: np.zeros(3), 2: np.array([5.0, 0.0, 0.0])}, set(), edges=[],
+        iterations=8, soft_edges=[(1, 2)],
+    )
+    target = np.array([15.0, 0.0, 0.0])
+    hard_new = hard.update(1, target)
+    soft_new = soft.update(1, target)
+
+    hard_error = abs(float(np.linalg.norm(hard_new[2] - hard_new[1])) - 5.0)
+    soft_error = abs(float(np.linalg.norm(soft_new[2] - soft_new[1])) - 5.0)
+    assert hard_error < soft_error
+
+
+def test_moiety_bond_lengths_converge_better_with_loose_angle_constraints():
+    """The 1,3 constraints must not noticeably degrade how well the real
+    1,2 bonds converge, compared with treating everything at full stiffness."""
+    connections = [(0, 1), (1, 2), (2, 3)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([3.0, 0.0, 0.0]),
+        3: np.array([4.5, 0.0, 0.0]),
+    }
+    moiety = {1, 2, 3}
+    bonds = moiety_edges(connections, moiety, {0})
+    angle_pairs = moiety_angle_pairs(connections, moiety, {0})
+    target = np.array([1.5, 3.0, 0.0])
+
+    loose = ElasticDrag(
+        dict(positions), {0}, bonds, iterations=12, soft_edges=angle_pairs,
+    )
+    full_strength = ElasticDrag(
+        dict(positions), {0}, bonds + angle_pairs, iterations=12,
+    )
+    new_loose = loose.update(1, target)
+    new_full = full_strength.update(1, target)
+
+    def bond_error(new):
+        d12 = float(np.linalg.norm(new[2] - new[1]))
+        d23 = float(np.linalg.norm(new[3] - new[2]))
+        return abs(d12 - 1.5) + abs(d23 - 1.5)
+
+    assert bond_error(new_loose) < bond_error(new_full)
+
+
+# ---------------------------------------------------------------------------
 # Riding atoms (exact rigid attachment, e.g. terminal hydrogens)
 # ---------------------------------------------------------------------------
 
@@ -345,6 +447,26 @@ def test_build_drag_session_riding_atoms_outside_moiety_are_ignored():
     assert session is not None
     new = session.update(np.array([1.5, 2.0, 0.0]))
     assert 99 not in new
+
+
+def test_build_drag_session_keeps_1_3_distances_loosely():
+    """End-to-end: dragging a chain must keep 1,3 distances close to (but
+    not necessarily exactly) their original value, unlike a chain with no
+    angle constraints at all which is free to fold arbitrarily."""
+    connections = [(0, 1), (1, 2), (2, 3)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([3.0, 0.0, 0.0]),
+        3: np.array([4.5, 0.0, 0.0]),
+    }
+    original_13 = float(np.linalg.norm(positions[2] - positions[0]))
+
+    session = build_drag_session(connections, positions, {0}, 1)
+    new = session.update(np.array([1.5, 3.0, 0.0]))
+    new_13 = float(np.linalg.norm(new[2] - positions[0]))
+    # Loose, not exact: within 10% of the original 1,3 distance.
+    assert new_13 == pytest.approx(original_13, rel=0.1)
 
 
 # ---------------------------------------------------------------------------
