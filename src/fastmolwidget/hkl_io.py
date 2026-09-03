@@ -363,34 +363,58 @@ _HKL_COLUMNS: tuple[tuple[int, int], ...] = (
 )
 _HKL_RECORD_WIDTH: int = 32
 
+#: Character classes used by :func:`_fixed_format_mask`, as bit flags.
+_CHAR_DIGIT: int = 1
+_CHAR_IN_INTEGER: int = 2
+_CHAR_IN_NUMBER: int = 4
 
-def _parse_fixed_format(lines: list[str]) -> ReflectionData | None:
-    """Parse fixed-format ``HKLF`` records column-wise with NumPy.
 
-    Every record is turned into a row of a fixed-width byte matrix, so each
-    column can be converted in one C-level cast instead of one Python call per
-    line.  This is the difference between ~0.1 s and a few ms for a 40 000
-    reflection file, and that cost is paid every time a residual-density map is
-    computed.
+def _build_char_classes() -> np.ndarray:
+    """Byte-value → character-class table for :func:`_fixed_format_mask`."""
+    table = np.zeros(256, dtype=np.uint8)
+    for code in b'0123456789':
+        table[code] = _CHAR_DIGIT | _CHAR_IN_INTEGER | _CHAR_IN_NUMBER
+    # NUL is the padding np.array() adds to records shorter than the record
+    # width, so it has to count as blank rather than as a foreign character.
+    for code in b' +-\x00':
+        table[code] = _CHAR_IN_INTEGER | _CHAR_IN_NUMBER
+    for code in b'.eE':
+        table[code] = _CHAR_IN_NUMBER
+    return table
 
-    :param lines: The raw records, blank ones included.
-    :returns: The reflections, or ``None`` when the data is not strictly
-        fixed-format and the record-by-record parser has to take over.
+
+_CHAR_CLASS: np.ndarray = _build_char_classes()
+
+
+def _fixed_format_mask(codes: np.ndarray) -> np.ndarray:
+    """Mark the records whose fixed-format columns can hold a number.
+
+    A purely character-level test: every field must consist of characters that
+    may appear in a number and must contain at least one digit.  The
+    classification is a single table lookup over the byte matrix, after which
+    only the six narrow field slices are reduced.
+
+    :param codes: ``(N, _HKL_RECORD_WIDTH)`` byte values of the records.
+    :returns: ``(N,)`` boolean mask of the records worth converting.
     """
-    try:
-        rows = np.array(lines, dtype=f'S{_HKL_RECORD_WIDTH}')
-    except (UnicodeEncodeError, ValueError):  # non-ASCII text
-        return None
-    if rows.size == 0:
-        return None
+    classes = _CHAR_CLASS[codes]
+    valid = np.ones(len(codes), dtype=bool)
+    for position, (start, stop) in enumerate(_HKL_COLUMNS[:5]):
+        field = classes[:, start:stop]
+        allowed = _CHAR_IN_INTEGER if position < 3 else _CHAR_IN_NUMBER
+        valid &= (field & allowed).all(axis=1)
+        valid &= (field & _CHAR_DIGIT).any(axis=1)
+    start, stop = _HKL_COLUMNS[5]
+    return valid & (classes[:, start:stop] & _CHAR_IN_INTEGER).all(axis=1)
 
-    # np.array() pads short records with NUL, so blank lines become empty.
-    rows = rows[np.char.strip(rows) != b'']
-    if rows.size == 0:
-        return None
 
-    chars = rows.view('S1').reshape(len(rows), _HKL_RECORD_WIDTH)
+def _convert_fixed_records(chars: np.ndarray) -> ReflectionData | None:
+    """Convert a byte matrix of ``HKLF`` records column by column.
 
+    :param chars: ``(N, _HKL_RECORD_WIDTH)`` ``S1`` matrix of the records.
+    :returns: The reflections, or ``None`` when a column does not convert -
+        which means the data is not fixed-format after all.
+    """
     def column(start: int, stop: int) -> np.ndarray:
         block = np.ascontiguousarray(chars[:, start:stop])
         return block.view(f'S{stop - start}').ravel()
@@ -423,6 +447,53 @@ def _parse_fixed_format(lines: list[str]) -> ReflectionData | None:
         return None
 
     return ReflectionData(hkl=hkl, f_sq_meas=f_sq, sigma=sigma, batch=batch)
+
+
+def _parse_fixed_format(lines: list[str]) -> ReflectionData | None:
+    """Parse fixed-format ``HKLF`` records column-wise with NumPy.
+
+    Every record is turned into a row of a fixed-width byte matrix, so each
+    column can be converted in one C-level cast instead of one Python call per
+    line.  This is the difference between ~0.1 s and a few ms for a 40 000
+    reflection file, and that cost is paid every time a residual-density map is
+    computed.
+
+    Real files do contain the odd stray record - a comment, or, as in
+    ``41467_2015_BFncomms9288_MOESM1369_ESM.cif``, a CIF item that ended up
+    inside the ``_shelx_hkl_file`` text block.  A single one of those used to
+    send the entire file down the record-by-record parser, so if the straight
+    conversion fails, the records that cannot be fixed-format numbers are
+    dropped (:func:`_fixed_format_mask`) - exactly what the record-by-record
+    parser does with them - and the conversion is tried once more.  Clean
+    files never reach that second attempt and pay nothing for it.  If the
+    retry fails too, the file really is not fixed-format and the
+    record-by-record parser takes over.
+
+    :param lines: The raw records, blank ones included.
+    :returns: The reflections, or ``None`` when the data is not strictly
+        fixed-format and the record-by-record parser has to take over.
+    """
+    try:
+        rows = np.array(lines, dtype=f'S{_HKL_RECORD_WIDTH}')
+    except (UnicodeEncodeError, ValueError):  # non-ASCII text
+        return None
+    if rows.size == 0:
+        return None
+
+    # np.array() pads short records with NUL, so blank lines become empty.
+    rows = rows[np.char.strip(rows) != b'']
+    if rows.size == 0:
+        return None
+
+    chars = rows.view('S1').reshape(len(rows), _HKL_RECORD_WIDTH)
+    data = _convert_fixed_records(chars)
+    if data is not None:
+        return data
+
+    keep = _fixed_format_mask(chars.view(np.uint8))
+    if keep.all() or not keep.any():
+        return None
+    return _convert_fixed_records(chars[keep])
 
 
 def _parse_hkl_line(line: str) -> tuple[int, int, int, float, float, int] | None:

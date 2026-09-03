@@ -20,6 +20,8 @@ def marching_cubes(
     level: float,
     origin: Sequence[float] = ...,
     step: Sequence[float] = ...,
+    mask: NDArray[np.bool_] | None = ...,
+    block: int = ...,
 ) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
     """Extract a wireframe isosurface from a regular 3-D scalar density grid.
 
@@ -27,6 +29,11 @@ def marching_cubes(
     :param level: Isosurface level.
     :param origin: Cartesian coordinates of ``grid[0, 0, 0]``; three floats.
     :param step: Cartesian spacing along the three grid axes; three floats.
+    :param mask: Optional C-contiguous boolean occupancy mask over blocks of
+        cubes, shaped ``ceil((n - 1) / block)`` along every axis.  Cubes in a
+        block whose entry is ``False`` are skipped and never read.  ``None``
+        contours the whole grid.
+    :param block: Cubes per mask entry along each axis; ignored without a mask.
     :returns: ``(vertices, edges)`` — an ``(M, 3)`` float64 array of Cartesian
         vertices and a ``(K, 2)`` int64 array of unique undirected edges.
     """

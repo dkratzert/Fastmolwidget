@@ -255,7 +255,12 @@ def _reference_parse(text: str):
     ('   1   2   3   12.34    1.23\n\n   1   2   4    5.00    0.50   2\n', True),
     ('  -1  -2  -3   12.34    1.23\n 100  99 -99  5.00     0.50\n', True),
     ('1 2 3 12.34 1.23\n1 2 4 5.0 0.5 2\n', False),           # free format
-    ('   1   2   3   12.34    1.23\nrubbish, and plenty of it here\n', False),
+    # A stray record is dropped and the rest still goes down the fast path -
+    # real files do contain such lines and one of them must not cost a whole
+    # 350 000 record file its vectorised parse.
+    ('   1   2   3   12.34    1.23\nrubbish, and plenty of it here\n', True),
+    ('   1   2   3   12.34    1.23\n! a comment\n   1   2   4    5.00    0.50\n',
+     True),
 ])
 def test_fixed_format_fast_path_matches_the_fallback(text, uses_fast_path):
     from fastmolwidget.hkl_io import _parse_fixed_format, parse_shelx_hkl

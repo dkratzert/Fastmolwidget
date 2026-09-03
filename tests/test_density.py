@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from fastmolwidget.density import (
+    CUBE_MASK_BLOCK,
     DEFAULT_GRID_SPACING,
     DEFAULT_SIGMA,
     DEFAULT_WEAK_WEIGHT,
@@ -219,6 +220,57 @@ def test_extinction_is_skipped_without_a_refined_exti():
     result = _apply_extinction(f_calc, hkl, cell, ShelxParameters())
 
     assert result is f_calc
+
+
+@needs_cpp
+def test_cube_mask_does_not_change_the_surface(density_map, shelx_structure):
+    """Confining marching cubes to the occupied blocks is exactly lossless.
+
+    The mask only decides which cubes are visited; every cube that could carry
+    a vertex within ``margin`` of an atom must still be visited, so the
+    clipped surface has to come out exactly as it does without a mask.
+    """
+    from fastmolwidget import density_cpp
+    from fastmolwidget.density import _clip_to_atoms
+
+    atoms = np.array([
+        [p.x, p.y, p.z] for p in
+        (shelx_structure.cell.orthogonalize(s.fract)
+         for s in shelx_structure.sites)
+    ])
+    margin = 1.5
+    level = density_map.sigma_level()
+    sub, origin, step = density_map._region(atoms, margin)
+    mask = density_map._cube_mask(sub.shape, origin, step, atoms, margin)
+    assert mask is not None
+    assert not mask.all()  # otherwise the test proves nothing
+
+    arguments = (sub, float(level), tuple(map(float, origin)),
+                 tuple(map(float, step)))
+    plain = density_cpp.marching_cubes(*arguments)
+    masked = density_cpp.marching_cubes(*arguments, mask=mask,
+                                        block=CUBE_MASK_BLOCK)
+    assert len(masked[0]) < len(plain[0])  # empty space really is skipped
+
+    expected = _clip_to_atoms(plain[0] @ density_map.orth_matrix.T, plain[1],
+                              atoms, margin)
+    actual = _clip_to_atoms(masked[0] @ density_map.orth_matrix.T, masked[1],
+                            atoms, margin)
+    assert np.array_equal(expected[0], actual[0])
+    assert np.array_equal(expected[1], actual[1])
+
+
+@needs_cpp
+def test_isosurfaces_matches_separate_isosurface_calls(density_map):
+    """Asking for both lobes at once gives what two separate calls give."""
+    level = density_map.sigma_level()
+
+    both = density_map.isosurfaces((level, -level))
+    separate = [density_map.isosurface(level), density_map.isosurface(-level)]
+
+    for (verts, edges), (ref_verts, ref_edges) in zip(both, separate):
+        assert np.array_equal(verts, ref_verts)
+        assert np.array_equal(edges, ref_edges)
 
 
 def test_map_uses_shelxl_scale_factor(density_map):

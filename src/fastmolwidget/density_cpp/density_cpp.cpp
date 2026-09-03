@@ -334,6 +334,26 @@ double interpolate_mu(double level, double value_a, double value_b) {
     return std::clamp(mu, 0.0, 1.0);
 }
 
+// A coarse occupancy mask lets the caller confine the scan to the parts of the
+// grid it actually wants contoured.  The box a molecule needs is its bounding
+// box, which for anything but a compact blob is several times the molecule's
+// own volume, so most of the grid holds density that is thrown away again
+// straight after (see _clip_to_atoms on the Python side).  Skipping those
+// cubes in whole blocks means they are never even read.
+//
+// The mask has one entry per block of `block` cubes along each axis, i.e.
+// shape ceil((n - 1) / block).  Cube (x, y, z) is visited only when
+// mask[x / block, y / block, z / block] is true.  Iteration order is
+// unchanged, so the vertices are numbered exactly as they would be by an
+// unmasked scan restricted to the same cubes.
+struct CubeMask {
+    const bool* data = nullptr;
+    py::ssize_t shape[3] = {0, 0, 0};
+    int block = 1;
+
+    bool empty() const { return data == nullptr; }
+};
+
 py::tuple empty_result() {
     // The shape must be spelled out as a ShapeContainer: a braced list of two
     // ssize_t is ambiguous between array_t(ShapeContainer) and
@@ -348,7 +368,8 @@ py::tuple marching_cubes_impl(
     const py::array_t<T, py::array::c_style>& grid,
     double level,
     const std::array<double, 3>& origin,
-    const std::array<double, 3>& step
+    const std::array<double, 3>& step,
+    const CubeMask& mask
 ) {
     const py::buffer_info info = grid.request();
     const auto* data = static_cast<const T*>(info.ptr);
@@ -411,9 +432,29 @@ py::tuple marching_cubes_impl(
         return index;
     };
 
-    for (int cube_x = 0; cube_x < static_cast<int>(nx - 1); ++cube_x) {
-        for (int cube_y = 0; cube_y < static_cast<int>(ny - 1); ++cube_y) {
-            for (int cube_z = 0; cube_z < static_cast<int>(nz - 1); ++cube_z) {
+    const int cubes_x = static_cast<int>(nx - 1);
+    const int cubes_y = static_cast<int>(ny - 1);
+    const int cubes_z = static_cast<int>(nz - 1);
+    const int block = mask.empty() ? 1 : mask.block;
+    const py::ssize_t mask_stride_y = mask.empty() ? 0 : mask.shape[2];
+    const py::ssize_t mask_stride_x = mask.empty() ? 0 : mask.shape[1] * mask.shape[2];
+
+    for (int cube_x = 0; cube_x < cubes_x; ++cube_x) {
+        for (int cube_y = 0; cube_y < cubes_y; ++cube_y) {
+            const bool* mask_row = mask.empty() ? nullptr
+                : mask.data
+                    + static_cast<py::ssize_t>(cube_x / block) * mask_stride_x
+                    + static_cast<py::ssize_t>(cube_y / block) * mask_stride_y;
+            for (int cube_z = 0; cube_z < cubes_z; ++cube_z) {
+                if (mask_row != nullptr && !mask_row[cube_z / block]) {
+                    // Jump to the last cube of this block; the loop's own
+                    // increment then lands on the first cube of the next one,
+                    // so an unwanted block costs one test rather than one per
+                    // cube - and its density is never read at all.
+                    cube_z = (cube_z / block + 1) * block - 1;
+                    continue;
+                }
+
                 int case_index = 0;
 
                 for (int corner = 0; corner < kCornerCount; ++corner) {
@@ -484,7 +525,9 @@ py::tuple marching_cubes(
     py::array grid,
     double level,
     std::array<double, 3> origin,
-    std::array<double, 3> step
+    std::array<double, 3> step,
+    py::object mask_object,
+    int block
 ) {
     if (grid.ndim() != 3) {
         throw py::value_error("grid must be a 3-D NumPy array");
@@ -493,13 +536,38 @@ py::tuple marching_cubes(
         throw py::value_error("grid must be C-contiguous");
     }
 
+    CubeMask mask;
+    py::array_t<bool, py::array::c_style> mask_array;
+    if (!mask_object.is_none()) {
+        if (block < 1) {
+            throw py::value_error("block must be >= 1");
+        }
+        mask_array = py::cast<py::array_t<bool, py::array::c_style>>(mask_object);
+        if (mask_array.ndim() != 3) {
+            throw py::value_error("mask must be a 3-D NumPy array");
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            const py::ssize_t cubes = grid.shape(axis) - 1;
+            const py::ssize_t wanted = cubes > 0 ? (cubes + block - 1) / block : 0;
+            if (mask_array.shape(axis) != wanted) {
+                throw py::value_error(
+                    "mask shape must be ceil((grid shape - 1) / block) along every axis");
+            }
+        }
+        mask.data = mask_array.data();
+        mask.shape[0] = mask_array.shape(0);
+        mask.shape[1] = mask_array.shape(1);
+        mask.shape[2] = mask_array.shape(2);
+        mask.block = block;
+    }
+
     if (grid.dtype().is(py::dtype::of<float>())) {
         auto typed = py::reinterpret_borrow<py::array_t<float, py::array::c_style>>(grid);
-        return marching_cubes_impl<float>(typed, level, origin, step);
+        return marching_cubes_impl<float>(typed, level, origin, step, mask);
     }
     if (grid.dtype().is(py::dtype::of<double>())) {
         auto typed = py::reinterpret_borrow<py::array_t<double, py::array::c_style>>(grid);
-        return marching_cubes_impl<double>(typed, level, origin, step);
+        return marching_cubes_impl<double>(typed, level, origin, step, mask);
     }
 
     throw py::type_error("grid must have dtype float32 or float64");
@@ -738,6 +806,8 @@ extension has not been built.
         py::arg("level"),
         py::arg("origin") = std::array<double, 3>{0.0, 0.0, 0.0},
         py::arg("step") = std::array<double, 3>{1.0, 1.0, 1.0},
+        py::arg("mask") = py::none(),
+        py::arg("block") = 8,
         R"doc(
 Extract a wireframe isosurface from a regular 3-D scalar density grid.
 
@@ -752,6 +822,15 @@ origin : tuple[float, float, float], optional
     Cartesian coordinates of grid[0, 0, 0].
 step : tuple[float, float, float], optional
     Cartesian spacing along the x, y, and z grid axes.
+mask : numpy.ndarray or None, optional
+    Coarse C-contiguous boolean occupancy mask over blocks of cubes, with
+    shape ceil((nx - 1) / block), ceil((ny - 1) / block),
+    ceil((nz - 1) / block). Cubes in a block whose entry is False are
+    skipped and their density is never read. None (the default) contours
+    the whole grid.
+block : int, optional
+    Number of cubes per mask entry along each axis. Ignored when mask is
+    None.
 
 Returns
 -------
@@ -765,6 +844,11 @@ Notes
 Vertices are shared across neighbouring cubes by hashing the canonical identity
 of the intersected grid edge. Empty or fully solid grids return zero-row output
 arrays with the documented dtypes and shapes.
+
+The mask only restricts which cubes are visited; within the cubes it selects
+the result is identical to an unmasked run, and the cubes are visited in the
+same order, so the vertices are numbered as an unmasked scan would number
+them.
 )doc"
     );
 

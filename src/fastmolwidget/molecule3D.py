@@ -2055,10 +2055,10 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         edges_list: list[np.ndarray] = []
         counts: list[int] = []
         offset = 0
-        for level in (self._density_level, -self._density_level):
-            verts, edges = self._density_map.isosurface(
-                level, atoms=positions, margin=DENSITY_MARGIN,
-            )
+        for verts, edges in self._density_map.isosurfaces(
+            (self._density_level, -self._density_level),
+            atoms=positions, margin=DENSITY_MARGIN,
+        ):
             if len(verts) and len(edges):
                 verts_list.append(np.asarray(verts, dtype=np.float32))
                 edges_list.append(np.asarray(edges, dtype=np.uint32) + offset)

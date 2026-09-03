@@ -740,6 +740,10 @@ from fastmolwidget import calculate_residual_density
 m = calculate_residual_density("structure.res")   # reflections found automatically
 print(m.array.shape, m.rms)          # raw numpy grid, one unit cell
 vertices, edges = m.isosurface(0.3)   # Cartesian wireframe
+
+# Both lobes at once: the cut-out of the grid the two contours share is then
+# only made once, which is what the widgets use to re-contour.
+(pos, neg) = m.isosurfaces((0.3, -0.3), atoms=coordinates, margin=1.5)
 ```
 
 ## Running the Examples

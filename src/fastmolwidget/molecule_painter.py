@@ -601,10 +601,11 @@ class MoleculeRendererMixin(ModelSourceMixin):
 
         positions = self._visible_model_positions()
         lobes: list[np.ndarray] = []
-        for level in (self._density_level, -self._density_level):
-            vertices, edges = self._density_map.isosurface(
-                level, atoms=positions, margin=DENSITY_MARGIN,
-            )
+        surfaces = self._density_map.isosurfaces(
+            (self._density_level, -self._density_level),
+            atoms=positions, margin=DENSITY_MARGIN,
+        )
+        for vertices, edges in surfaces:
             if len(vertices) and len(edges):
                 lobes.append(np.asarray(vertices, dtype=float)[edges])
             else:
