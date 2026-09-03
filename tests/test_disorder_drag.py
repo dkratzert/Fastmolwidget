@@ -574,3 +574,54 @@ def test_session_snaps_near_density_peak_and_resists_breakaway():
     far_move = peak + np.array([0.0, 0.0, BREAKAWAY_DISTANCE * 3.0])
     resumed = session.update(far_move)
     assert not np.allclose(resumed[1], before)
+
+
+def test_single_atom_moiety_is_pulled_towards_a_nearby_peak():
+    """The grabbed atom itself must be nudged towards density - not only the
+    (non-existent, for a single-atom moiety) other passive atoms - otherwise
+    a lone dragged atom would never feel any snapping at all."""
+    connections = [(0, 1)]
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
+    peak = np.array([3.0, 3.0, 3.0])
+    grid = _gaussian_grid(60, 8.0, tuple(peak), sigma=0.4)
+    guide = DensityGuide(grid, np.eye(3) * 8.0)
+    session = build_drag_session(connections, positions, {0}, 1, density=guide)
+    assert session is not None
+
+    # Simulate the mouse approaching the peak in a few discrete steps, as a
+    # real drag gesture would (never landing exactly on the peak itself).
+    mouse_path = [peak + np.array([d, 0.0, 0.0]) for d in np.linspace(0.6, 0.0, 8)]
+    pos = None
+    for mouse_target in mouse_path:
+        pos = session.update(mouse_target)[1]
+
+    assert session.snapped is True
+    assert float(np.linalg.norm(pos - peak)) < 0.1
+
+
+def test_bias_target_moves_towards_the_gradient():
+    """MoietyDragSession._bias_target must nudge, not just pass through,
+    when a density guide with a non-zero local gradient is present."""
+    connections = [(0, 1)]
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
+    peak = np.array([3.0, 3.0, 3.0])
+    grid = _gaussian_grid(60, 8.0, tuple(peak), sigma=0.4)
+    guide = DensityGuide(grid, np.eye(3) * 8.0)
+    session = build_drag_session(connections, positions, {0}, 1, density=guide)
+    assert session is not None
+
+    off_peak = peak + np.array([0.3, 0.0, 0.0])
+    biased = session._bias_target(off_peak)
+    assert not np.allclose(biased, off_peak)
+    # Biasing must move it closer to the peak, not farther away or sideways.
+    assert float(np.linalg.norm(biased - peak)) < float(np.linalg.norm(off_peak - peak))
+
+
+def test_bias_target_is_identity_without_density():
+    connections = [(0, 1)]
+    positions = {0: np.zeros(3), 1: np.array([1.5, 0.0, 0.0])}
+    session = build_drag_session(connections, positions, {0}, 1, density=None)
+    assert session is not None
+    target = np.array([2.0, 3.0, 4.0])
+    assert session._bias_target(target) is target
+

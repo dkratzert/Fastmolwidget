@@ -83,22 +83,31 @@ __all__ = [
 #: flattening every atom to a small, plausible U removes that bias.
 DEFAULT_ISO_U: float = 0.045
 
-#: Finite-difference step (Å) used by :meth:`DensityGuide.gradient`.
-DENSITY_GRADIENT_STEP: float = 0.05
+#: Finite-difference step (Å) used by :meth:`DensityGuide.gradient`.  A wider
+#: step averages the slope over a bigger neighbourhood, so a nearby peak is
+#: sensed - and starts pulling the atom - from farther away, effectively
+#: enlarging the "capture radius" within which snapping can engage.  A small value as
+# ``0.05`` would be a near-pointwise derivative that only reacts
+#: once an atom is almost on top of a peak.
+DENSITY_GRADIENT_STEP: float = 0.1
 
 #: How far (Å) a moiety atom is nudged, per drag update, along the normalised
-#: local density gradient.  Small enough to feel like gentle guidance rather
-#: than a hard snap; the elastic/rigid solver re-applies afterwards so the
-#: fragment's own geometry is not destroyed by the nudge.
-DENSITY_NUDGE_STRENGTH: float = 0.09
+#: local density gradient.  Strong enough that the pull towards a peak is
+#: clearly felt rather than a gentle suggestion; the elastic/rigid solver
+#: re-applies afterward so the fragment's own geometry is not destroyed by
+#: the nudge.
+DENSITY_NUDGE_STRENGTH: float = 0.15
 
 #: Gradient magnitude (e/Å⁴, roughly) below which the moiety is considered to
-#: have settled into a local density maximum ("snapped").
-SNAP_GRADIENT_TOL: float = 0.1
+#: have settled into a local density maximum ("snapped").  Loosened together
+#: with :data:`DENSITY_GRADIENT_STEP`: a wider finite-difference step reads a
+#: larger ambient slope even fairly close to a peak, so the threshold that
+#: decides "close enough to lock in" has to scale up with it.
+SNAP_GRADIENT_TOL: float = 0.2
 
 #: Extra mouse-target displacement (Å) required to leave a snapped pose - the
 #: "more force" needed to drag the moiety further once it has snapped.
-BREAKAWAY_DISTANCE: float = 0.6
+BREAKAWAY_DISTANCE: float = 0.7
 
 #: Stiffness of the 1,3 (angle-stabilising) distance constraints relative to
 #: the real 1,2 bonds (stiffness ``1.0``).  Deliberately loose: these pairs
@@ -588,22 +597,24 @@ class MoietyDragSession:
 
         if self.mode == 'rigid':
             assert isinstance(self._solver, RigidPivotDrag)
-            biased_target = target
-            if self.density is not None:
-                # The rigid body has one controlling point (the grabbed
-                # atom), so guidance is expressed as a bias on its target
-                # instead of per-atom nudges - rotating towards it carries
-                # the whole fragment along.
-                grad = self.density.gradient(target)
-                norm = float(np.linalg.norm(grad))
-                if norm > 1e-9:
-                    biased_target = target + grad / norm * min(norm, 1.0) * DENSITY_NUDGE_STRENGTH
-            positions = self._solver.update(self.grabbed_index, biased_target)
+            # The rigid body has one controlling point (the grabbed atom),
+            # so guidance is expressed as a bias on its target instead of
+            # per-atom nudges - rotating towards it carries the whole
+            # fragment along.
+            positions = self._solver.update(self.grabbed_index, self._bias_target(target))
         else:
             assert isinstance(self._solver, ElasticDrag)
+            # The grabbed atom is normally pinned to the mouse exactly, so
+            # without this it would never itself feel the density pull -
+            # only the *other*, passive atoms of the moiety would (see
+            # _density_nudges).  That leaves single-atom moieties (a very
+            # common case - dragging one terminal atom) with no guidance at
+            # all, since there is no other atom to nudge.  Biasing the
+            # grabbed atom's own drive point fixes that for every moiety
+            # size.
             external_forces = self._density_nudges(self._solver.positions)
             positions = self._solver.update(
-                self.grabbed_index, target, external_forces=external_forces,
+                self.grabbed_index, self._bias_target(target), external_forces=external_forces,
             )
 
         if self.density is not None:
@@ -618,13 +629,34 @@ class MoietyDragSession:
         self._last_positions = positions
         return positions
 
+    def _bias_target(self, target: np.ndarray) -> np.ndarray:
+        """Nudge the grabbed atom's own drive point towards a nearby peak.
+
+        Applied in both modes so the atom the user is actively controlling
+        is itself pulled towards density, not just whatever the elastic
+        solver's other, passive moiety atoms happen to be (see
+        :meth:`_density_nudges`) - the only guidance a single-atom moiety
+        ever gets, since it has no other atom to nudge.  Returns *target*
+        unchanged when there is no density guide or the local gradient is
+        (numerically) zero.
+        """
+        if self.density is None:
+            return target
+        grad = self.density.gradient(target)
+        norm = float(np.linalg.norm(grad))
+        if norm <= 1e-9:
+            return target
+        return target + grad / norm * min(norm, 1.0) * DENSITY_NUDGE_STRENGTH
+
     def _density_nudges(
         self, positions: dict[int, np.ndarray],
     ) -> dict[int, np.ndarray] | None:
         """Small per-atom step along the local density gradient.
 
-        Only used by the elastic (multi-anchor) solver: the rigid solver
-        biases its *target* instead, see :func:`build_drag_session`'s caller.
+        Only used by the elastic solver's *other*, passive moiety atoms -
+        the grabbed atom's own drive point is biased separately by
+        :meth:`_bias_target`, and the rigid solver has no other atoms at all
+        (dragging any of its atoms rotates the whole rigid body).
         """
         if self.density is None:
             return None
