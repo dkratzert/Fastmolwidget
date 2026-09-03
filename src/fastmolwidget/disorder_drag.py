@@ -50,6 +50,26 @@ detect when it has settled onto one ("snapped").
 
 :class:`MoietyDragSession` ties everything together and is the only object
 :mod:`molecule3D` needs to construct and drive.
+
+Deliberately **not** implemented: automatically testing whether an inverted/
+mirrored copy of the dragged fragment fits the density better at each step.
+A version of this was built and reverted - it seeded a second, independent
+:class:`ElasticDrag` from a mirror-image starting layout (through the single
+anchor, or through the grabbed atom itself with none) and picked whichever
+of the two parallel solves scored better against the density map every
+update.  It was numerically correct for the simple cases it was tested
+against (bond lengths, angles and riding offsets all stayed exact in either
+orientation), but in practice did not work out nicely enough to keep: with
+no anchor at all, or with an anchor several bonds away from the grabbed
+atom, the "genuine" mirror solution for the atoms in between is the
+reflection across the anchor-to-grabbed *line*, not simply a physically
+intuitive flip, so the alternate orientation a user actually expects and
+the one this approach converges to often disagreed.  Combined with running
+a whole second relaxation every mouse-move and the possibility of the two
+candidates flip-flopping between drag steps, it made the interaction feel
+unpredictable rather than helpful, so it was removed again.  If this is
+revisited, a live preview of both candidates (rather than silently swapping
+which one is shown) is probably a precondition for it to be usable.
 """
 
 from __future__ import annotations
