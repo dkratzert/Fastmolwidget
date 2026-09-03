@@ -58,8 +58,10 @@ __all__ = [
     'embedded_shelx_res',
     'find_reflection_file',
     'has_reflections',
+    'read_block_raw_reflections',
     'read_block_reflections',
     'read_cif_document',
+    'read_cif_raw_reflections',
     'read_cif_reflections',
     'read_reflections',
     'read_shelx_hkl',
@@ -686,6 +688,89 @@ def _num(value: str) -> float:
         return 0.0
 
 
+def _num_column(values) -> np.ndarray:
+    """Convert a whole CIF loop column to ``float``.
+
+    Tries NumPy's own C-level conversion first, which handles the plain
+    numbers that make up virtually every reflection loop, and only falls back
+    to :func:`_num` per value when the column contains something NumPy will
+    not take - an esd in braces, or a CIF null.  Reflection loops run to
+    10\\ :sup:`5` rows, so the difference is worth the two-line detour.
+    """
+    try:
+        return np.array(values, dtype=float)
+    except (TypeError, ValueError):
+        return np.array([_num(v) for v in values], dtype=float)
+
+
+def read_block_raw_reflections(block) -> ReflectionData | None:
+    """Read the raw ``_diffrn_refln_*`` diffraction loop of a CIF block.
+
+    This is the *unmerged* measured data, written into the final CIF by
+    programs such as FinalCif and Olex2 so that checkCIF can see it.  It is
+    the same content as a SHELX ``HKLF 4`` file - indices, net intensity,
+    its standard uncertainty and the batch number - so it is read into the
+    same :class:`ReflectionData` and merged downstream exactly like a
+    ``.hkl``::
+
+        _diffrn_refln_index_h
+        _diffrn_refln_index_k
+        _diffrn_refln_index_l
+        _diffrn_refln_intensity_net
+        _diffrn_refln_intensity_u
+        _diffrn_refln_scale_group_code
+
+    The uncertainty is also accepted under its older dictionary name
+    ``_diffrn_refln_intensity_sigma``.  A missing scale-group column defaults
+    to batch 1, as for a ``.hkl`` record without one.
+
+    :param block: A :class:`gemmi.cif.Block`.
+    :returns: The reflections, or ``None`` when the block has no usable
+        ``_diffrn_refln_*`` loop.
+    """
+    h_col = block.find_values('_diffrn_refln_index_h')
+    if not h_col:
+        return None
+    k_col = block.find_values('_diffrn_refln_index_k')
+    l_col = block.find_values('_diffrn_refln_index_l')
+    intensity = block.find_values('_diffrn_refln_intensity_net')
+    if not k_col or not l_col or not intensity:
+        return None
+
+    sigma_col = (block.find_values('_diffrn_refln_intensity_u')
+                 or block.find_values('_diffrn_refln_intensity_sigma'))
+    if sigma_col:
+        sigma = _num_column(sigma_col)
+        sigma_known = True
+    else:
+        sigma = np.ones(len(intensity))
+        sigma_known = False
+
+    hkl = np.stack(
+        [_num_column(c).astype(np.int32) for c in (h_col, k_col, l_col)],
+        axis=1,
+    )
+    batch_col = block.find_values('_diffrn_refln_scale_group_code')
+    batch = (_num_column(batch_col).astype(np.int32) if batch_col
+             else np.ones(len(hkl), dtype=np.int32))
+
+    return ReflectionData(hkl=hkl, f_sq_meas=_num_column(intensity),
+                          sigma=sigma, batch=batch, sigma_known=sigma_known)
+
+
+def read_cif_raw_reflections(source: CifSource) -> ReflectionData | None:
+    """Read the raw ``_diffrn_refln_*`` loop of the first block that has one.
+
+    :param source: A path to a CIF file, a parsed document, or a single block.
+    :returns: The reflections, or ``None`` when there is no such loop.
+    """
+    for block in _cif_blocks(source):
+        data = read_block_raw_reflections(block)
+        if data is not None:
+            return data
+    return None
+
+
 def embedded_shelx_hkl(source: CifSource) -> str | None:
     """Return the SHELX ``.hkl`` text embedded in a CIF, if there is one.
 
@@ -749,18 +834,31 @@ def read_reflections(source: ReflectionSource) -> ReflectionData:
     if text is not None:
         return parse_shelx_hkl(text, source=f'{path} (_shelx_hkl_file)')
 
+    try:
+        data = read_cif_raw_reflections(path)
+    except Exception:  # noqa: BLE001 - not a CIF after all
+        data = None
+    if data is not None:
+        return data
+
     return read_shelx_hkl(path)
 
 
 def _cif_object_reflections(source: CifSource) -> ReflectionData | None:
-    """Reflections of an in-memory document or block, or ``None``."""
+    """Reflections of an in-memory document or block, or ``None``.
+
+    Searched in the order they are worth having: the processed ``_refln_*``
+    loop first, then the ``.hkl`` the refinement actually used, and only then
+    the raw ``_diffrn_refln_*`` measurements - those are unmerged and unscaled,
+    so they are the last resort rather than the first choice.
+    """
     data = read_cif_reflections(source)
     if data is not None:
         return data
     text = embedded_shelx_hkl(source)
     if text is not None:
         return parse_shelx_hkl(text, source='<cif> (_shelx_hkl_file)')
-    return None
+    return read_cif_raw_reflections(source)
 
 
 #: Sibling extensions searched for reflection data, in order of preference.
@@ -771,7 +869,8 @@ def has_reflections(source: ReflectionSource) -> bool:
     """Cheaply test whether *source* holds usable reflection data.
 
     Avoids parsing the whole file: a ``.hkl`` only has to exist, and a CIF is
-    scanned for an fcf-style loop or an embedded ``_shelx_hkl_file``.
+    scanned for a ``_refln_*`` loop, an embedded ``_shelx_hkl_file`` or a raw
+    ``_diffrn_refln_*`` loop.
 
     :param source: A path, an in-memory document or block, or already read
         :class:`ReflectionData`.
@@ -790,10 +889,16 @@ def has_reflections(source: ReflectionSource) -> bool:
 
 
 def block_has_reflections(block) -> bool:
-    """True when a CIF block carries an fcf loop or an embedded ``.hkl``."""
+    """True when a CIF block carries reflection data of any supported kind.
+
+    That is a processed ``_refln_*`` loop, an embedded SHELX ``.hkl``, or the
+    raw ``_diffrn_refln_*`` measurements.
+    """
     if block.find_values('_refln_index_h'):
         return True
-    return bool(block.find_value('_shelx_hkl_file'))
+    if block.find_value('_shelx_hkl_file'):
+        return True
+    return bool(block.find_values('_diffrn_refln_index_h'))
 
 
 def find_reflection_file(model_path: str | Path) -> Path | None:
