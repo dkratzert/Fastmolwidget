@@ -12,6 +12,7 @@ from fastmolwidget.disorder_drag import (
     ANGLE_CONSTRAINT_STIFFNESS,
     BREAKAWAY_DISTANCE,
     DensityGuide,
+    DisorderSplit,
     ElasticDrag,
     RigidPivotDrag,
     TorsionDrag,
@@ -21,6 +22,9 @@ from fastmolwidget.disorder_drag import (
     find_moiety,
     moiety_angle_pairs,
     moiety_edges,
+    next_disorder_label,
+    plan_disorder_duplicate,
+    riding_atoms,
 )
 
 # ---------------------------------------------------------------------------
@@ -960,3 +964,110 @@ def test_build_drag_session_without_bond_is_still_elastic():
     session = build_drag_session(connections, positions, {0}, 2)
     assert session is not None
     assert session.mode == 'elastic'
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers extracted from molecule3D (renderer-independent)
+# ---------------------------------------------------------------------------
+
+def test_next_disorder_label_uses_letter_suffixes():
+    assert next_disorder_label('O1', set()) == 'O1B'
+    assert next_disorder_label('O1', {'O1B'}) == 'O1C'
+
+
+def test_next_disorder_label_falls_back_to_numeric_suffix():
+    used = {f'C1{letter}' for letter in 'BCDEFGHIJKLMNOPQRSTUVWXYZ'}
+    assert next_disorder_label('C1', used) == 'C1_dup2'
+
+
+def test_riding_atoms_maps_every_bonded_hydrogen():
+    types = ['C', 'H', 'C']
+    positions = [np.zeros(3), np.array([0.0, 1.0, 0.0]), np.array([1.5, 0.0, 0.0])]
+    assert riding_atoms(types, positions, [(0, 1), (0, 2)]) == {1: 0}
+
+
+def test_riding_atoms_prefers_the_closest_heavy_partner():
+    """A hydrogen the bond table gave two partners rides on the nearer one."""
+    types = ['O', 'H', 'O']
+    positions = [np.zeros(3), np.array([0.0, 0.98, 0.0]), np.array([0.0, 2.1, 0.0])]
+    assert riding_atoms(types, positions, [(0, 1), (1, 2)]) == {1: 0}
+
+
+def test_riding_atoms_ignores_unbonded_hydrogens():
+    types = ['C', 'H']
+    positions = [np.zeros(3), np.array([0.0, 1.0, 0.0])]
+    assert riding_atoms(types, positions, []) == {}
+
+
+def test_riding_atoms_falls_back_to_a_hydrogen_partner():
+    """H2 has only hydrogen neighbours, so the closest one is the parent."""
+    types = ['H', 'H']
+    positions = [np.zeros(3), np.array([0.0, 0.74, 0.0])]
+    assert riding_atoms(types, positions, [(0, 1)]) == {0: 1, 1: 0}
+
+
+def test_disorder_split_resolves_atoms_onto_the_matching_part():
+    split = DisorderSplit()
+    split.register({1: 5, 2: 6})
+    assert split.is_duplicate == {5, 6}
+    # side_of is a duplicate -> map originals onto their copies
+    assert split.matching_split_atom(1, 5) == 5
+    # side_of is an original -> map copies back onto their originals
+    assert split.matching_split_atom(6, 1) == 2
+    # an atom that was never duplicated (an anchor) is returned unchanged
+    assert split.matching_split_atom(9, 5) == 9
+    assert split.matching_split_atom(9, 1) == 9
+
+
+def test_disorder_split_clear_forgets_everything():
+    split = DisorderSplit()
+    split.register({1: 5})
+    split.clear()
+    assert not split.duplicate_of and not split.is_duplicate
+
+
+def test_plan_disorder_duplicate_names_and_bonds_the_copies():
+    #   anchor(0) - 1 - 2
+    connections = [(0, 1), (1, 2)]
+    plan, new_edges = plan_disorder_duplicate(
+        connections, {1, 2}, {0}, {'C0', 'C1', 'C2'}, ['C0', 'C1', 'C2'], 3,
+    )
+    assert plan == [(1, 'C1B', 3), (2, 'C2B', 4)]
+    # The copies bond to each other and to the shared anchor, exactly as the
+    # originals did; the anchor itself is never duplicated.
+    assert set(new_edges) == {(0, 3), (3, 4)}
+
+
+def test_plan_disorder_duplicate_empty_moiety():
+    assert plan_disorder_duplicate([(0, 1)], set(), set(), set(), ['A', 'B'], 2) == ([], ())
+
+
+def test_part_fade_and_fading_are_qt_free_and_monotonic():
+    from fastmolwidget.atoms import PART_FADE_MAX, fade_towards_white, part_fade
+
+    assert part_fade(0) == 0.0
+    assert part_fade(1) == 0.0
+    assert 0.0 < part_fade(2) < part_fade(3)
+    assert part_fade(99) == pytest.approx(PART_FADE_MAX)
+    # Fading keeps the hue but moves every channel towards white.
+    assert fade_towards_white((0.0, 0.0, 0.0), 0.5) == pytest.approx((0.5, 0.5, 0.5))
+    assert fade_towards_white((0.2, 0.4, 0.6), 0.0) == pytest.approx((0.2, 0.4, 0.6))
+    assert fade_towards_white((0.2, 0.4, 0.6), 1.0) == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_disorder_controller_imports_no_qt():
+    """The controller is shared by every renderer (including a future non-Qt
+    host), so importing it must not pull Qt in."""
+    import subprocess
+    import sys
+
+    code = (
+        'import sys, fastmolwidget.disorder_controller\n'
+        'bad = [m for m in sys.modules if m.split(".")[0] in '
+        '("PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy")]\n'
+        'print(",".join(sorted(bad)))\n'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', code], capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.strip() == ''

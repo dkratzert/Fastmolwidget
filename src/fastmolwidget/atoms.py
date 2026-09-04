@@ -763,6 +763,57 @@ def get_element_color(element: str) -> str:
     return element2color.get(element.capitalize())
 
 
+# ---------------------------------------------------------------------------
+# Disorder part colouring
+# ---------------------------------------------------------------------------
+
+#: How far towards white a disorder part is washed out so the parts can be
+#: told apart at a glance (see :func:`part_fade`).  Part 2 uses the base
+#: amount; each further part adds a step, capped so even part 5+ stays
+#: visible against a white background.
+PART_FADE_BASE: float = 0.55
+PART_FADE_STEP: float = 0.12
+PART_FADE_MAX: float = 0.8
+
+
+def hex_to_rgb_float(hex_color: str) -> tuple[float, float, float]:
+    """Convert a ``#RRGGBB`` hex string to an ``(r, g, b)`` tuple in [0, 1]."""
+    h = hex_color.lstrip('#')
+    return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
+
+
+def fade_towards_white(rgb, amount: float) -> tuple[float, float, float]:
+    """Blend *rgb* towards white by *amount* (0 = unchanged, 1 = pure white).
+
+    Used to tell disorder parts apart: keeping the element's own hue but
+    washing it out reads as "the same atom type, other part" at a glance,
+    whereas recolouring by part would fight the element colours the eye is
+    already using to identify atoms.
+
+    :param rgb: Any 3-sequence of floats in ``[0, 1]``.
+    :param amount: Blend fraction, clamped to ``[0, 1]``.
+    """
+    amount = min(max(float(amount), 0.0), 1.0)
+    r, g, b = (float(c) for c in rgb)
+    return (
+        r + (1.0 - r) * amount,
+        g + (1.0 - g) * amount,
+        b + (1.0 - b) * amount,
+    )
+
+
+def part_fade(part: int) -> float:
+    """How much an atom of disorder *part* is washed out when drawn.
+
+    Part 0 (not disordered) and part 1 keep their normal element colours;
+    every further part is progressively paler, so a two-part disorder - by
+    far the common case - shows as one solid and one pastel copy.
+    """
+    if part < 2:
+        return 0.0
+    return min(PART_FADE_BASE + PART_FADE_STEP * (part - 2), PART_FADE_MAX)
+
+
 def get_radius(atomic_number: int) -> float:
     """
     Get the covalent radius in pm for the element.

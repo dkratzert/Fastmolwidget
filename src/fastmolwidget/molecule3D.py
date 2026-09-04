@@ -53,8 +53,11 @@ Mouse controls
   **bond** selected instead of atoms, that bond is the split point: its far
   end is the anchor and the fragment rotates about the bond, with elastic
   give and with the near end free to drift off the axis so a tumble rather
-  than only a clean torsion can be modelled.  See
-  :mod:`fastmolwidget.disorder_drag`.
+  than only a clean torsion can be modelled.  The geometry lives in
+  :mod:`fastmolwidget.disorder_drag` and the gesture handling in
+  :mod:`fastmolwidget.disorder_controller` - both renderer-independent, so
+  this widget only supplies the hooks that need OpenGL (picking, the
+  screen→world projection, atom cloning and the geometry rebuild).
 * **Ctrl + Shift + left drag** (starting on an atom) – freely reposition just
   that one atom.  No moiety, no anchors, no duplication - only the picked
   atom's position changes, everything else stays exactly as it was.
@@ -71,7 +74,15 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
-from fastmolwidget.atoms import element2color, get_radius_from_element
+from fastmolwidget import atoms as _atoms
+from fastmolwidget.atoms import (
+    element2color,
+    fade_towards_white as _fade_towards_white,
+    get_radius_from_element,
+    hex_to_rgb_float as _hex_to_rgb_float,
+    part_fade as _part_fade,
+)
+from fastmolwidget.disorder_controller import DisorderDragMixin
 from fastmolwidget.molecule2D import calc_volume
 from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
@@ -81,6 +92,12 @@ from fastmolwidget.molecule_base import (
 )
 from fastmolwidget.sdm import Atomtuple
 from fastmolwidget import shaders as _shaders
+
+# Backwards-compatible aliases: the disorder-part colouring now lives in the
+# Qt-free atoms module so every renderer can share it.
+_PART_FADE_BASE = _atoms.PART_FADE_BASE
+_PART_FADE_STEP = _atoms.PART_FADE_STEP
+_PART_FADE_MAX = _atoms.PART_FADE_MAX
 
 # ---------------------------------------------------------------------------
 # Optional dependencies
@@ -120,38 +137,6 @@ __all__ = ["MoleculeWidget3D"]
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _hex_to_rgb_float(hex_color: str) -> tuple[float, float, float]:
-    """Convert ``#RRGGBB`` hex string to ``(r, g, b)`` float tuple in [0, 1]."""
-    h = hex_color.lstrip("#")
-    return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
-
-
-def _fade_towards_white(
-    rgb: tuple[float, float, float] | np.ndarray, amount: float,
-) -> tuple[float, float, float]:
-    """Blend *rgb* towards white by *amount* (0 = unchanged, 1 = pure white).
-
-    Used to tell disorder parts apart: keeping the element's own hue but
-    washing it out reads as "the same atom type, other part" at a glance,
-    whereas recolouring by part would fight the element colours the eye is
-    already using to identify atoms.
-    """
-    amount = min(max(float(amount), 0.0), 1.0)
-    return tuple(float(c) + (1.0 - float(c)) * amount for c in rgb)  # type: ignore[return-value]
-
-
-def _part_fade(part: int) -> float:
-    """How much an atom of disorder *part* is washed out when drawn.
-
-    Part 0 (not disordered) and part 1 keep their normal element colours;
-    every further part is progressively paler, so a two-part disorder - by
-    far the common case - shows as one solid and one pastel copy.
-    """
-    if part < 2:
-        return 0.0
-    return min(_PART_FADE_BASE + _PART_FADE_STEP * (part - 2), _PART_FADE_MAX)
-
 
 def _normalize_rgb_color(color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int]
                          ) -> tuple[float, float, float]:
@@ -329,14 +314,6 @@ DENSITY_MARGIN: float = 1.5
 # Selection highlight colour (cyan)
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
 
-# How far towards white a disorder part is washed out so the parts can be
-# told apart at a glance (see _part_fade).  Part 2 uses the base amount;
-# each further part adds a step, capped so even part 5+ stays visible
-# against a white background.
-_PART_FADE_BASE: float = 0.55
-_PART_FADE_STEP: float = 0.12
-_PART_FADE_MAX: float = 0.8
-
 # Default bond colour (grey-brown)
 _DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#d1812a")
 
@@ -361,28 +338,19 @@ def _npd_bound_radius(atom: _Atom3D) -> float:
 
 
 def _next_disorder_label(base_label: str, used: set[str]) -> str:
-    """Return a free label for a part-2 duplicate of *base_label*.
+    """Deprecated alias of
+    :func:`fastmolwidget.disorder_drag.next_disorder_label`, kept so existing
+    callers and tests importing it from here keep working."""
+    from fastmolwidget.disorder_drag import next_disorder_label
 
-    Tries a single letter suffix first (``O1`` → ``O1B``), which is the
-    conventional way crystallographers name a split atom's alternate
-    position; falls back to a numeric suffix in the unlikely case every
-    letter is already taken.
-    """
-    for letter in "BCDEFGHIJKLMNOPQRSTUVWXYZ":
-        candidate = f"{base_label}{letter}"
-        if candidate not in used:
-            return candidate
-    n = 2
-    while f"{base_label}_dup{n}" in used:
-        n += 1
-    return f"{base_label}_dup{n}"
+    return next_disorder_label(base_label, used)
 
 
 # ---------------------------------------------------------------------------
 # Main widget
 # ---------------------------------------------------------------------------
 
-class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-type,misc]
+class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # type: ignore[valid-type,misc]
     """Real 3-D OpenGL crystal-structure display widget.
 
     Drop-in replacement for :class:`~fastmolwidget.molecule2D.MoleculeWidget`
@@ -538,34 +506,17 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.setMouseTracking(True)
 
         # ---- Interactive disorder-moiety dragging (Ctrl+drag) --------------
-        #: The active drag session, or ``None`` between drags.
-        self._disorder_drag_session = None
+        # State and orchestration live in the renderer-independent
+        # DisorderDragMixin; only the projection below is 3-D specific.
+        self._init_disorder_drag()
         #: Fixed eye-space depth plane the grabbed atom is dragged within.
         self._disorder_drag_eye_z: float = 0.0
         #: Inverse model-view matrix cached for the duration of one drag.
         self._disorder_drag_mv_inv: np.ndarray | None = None
-        #: Cached dedicated density map (flattened isotropic ADPs) used only
-        #: for snapping a dragged moiety - separate from the displayed map.
-        self._disorder_density_guide = None
-        #: Maps an original atom index to the permanent "part 2" duplicate
-        #: created the first time that atom's moiety was split off, so a
-        #: later drag of the same original atom moves the existing split
-        #: copy instead of creating another one.
-        self._disorder_duplicate_of: dict[int, int] = {}
-        #: Indices of atoms that *are* such a duplicate (part 2), so grabbing
-        #: one directly is recognised without creating yet another copy.
-        self._disorder_is_duplicate: set[int] = set()
 
         # ---- Single free-atom dragging (Ctrl+Shift+drag) -------------------
-        #: Index of the atom being freely repositioned, or ``None`` between
-        #: drags.  No moiety, no anchors, no duplication - just that one
-        #: atom's position changes, everything else (bonds, parts, labels)
-        #: stays exactly as it was.
-        self._single_atom_drag_index: int | None = None
-        #: Fixed eye-space depth plane the dragged atom stays on.
-        self._single_atom_drag_eye_z: float = 0.0
-        #: Inverse model-view matrix cached for the duration of one drag.
-        self._single_atom_drag_mv_inv: np.ndarray | None = None
+        # ``_single_atom_drag_index`` is owned by DisorderDragMixin; the
+        # projection state below is shared with the moiety drag.
 
         # ---- Widget appearance --------------------------------------------
         # NB: do NOT enable autoFillBackground on a QOpenGLWidget.  The Qt
@@ -1791,8 +1742,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
 
         # A freshly loaded/reloaded atom list invalidates every atom index,
         # so any moiety-drag split state from before must be discarded too.
-        self._disorder_duplicate_of = {}
-        self._disorder_is_duplicate = set()
+        self._reset_disorder_split()
 
         for at in atoms:
             base_name = at.label
@@ -2382,9 +2332,11 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             # confirmed, for the same reason as the moiety drag below - a
             # plain Ctrl+Shift+click must not do anything by itself.
             if self._single_atom_drag_index is None and self._pressPos is not None:
-                self._try_start_single_atom_drag(self._pressPos)
+                self.try_start_single_atom_drag(
+                    float(self._pressPos.x()), float(self._pressPos.y()),
+                )
             if self._single_atom_drag_index is not None:
-                self._update_single_atom_drag(pos)
+                self.update_single_atom_drag(float(pos.x()), float(pos.y()))
                 self._lastPos = pos
                 return
 
@@ -2395,9 +2347,16 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             # uses the press position, so the user grabs whatever was under
             # the cursor when the gesture started.
             if self._disorder_drag_session is None and self._pressPos is not None:
-                self._try_start_disorder_drag(self._pressPos)
+                selected_bond = (
+                    next(iter(self.selected_bonds))
+                    if len(self.selected_bonds) == 1 else None
+                )
+                self.try_start_moiety_drag(
+                    float(self._pressPos.x()), float(self._pressPos.y()),
+                    set(self.selected_atoms), selected_bond,
+                )
             if self._disorder_drag_session is not None:
-                self._update_disorder_drag(pos)
+                self.update_moiety_drag(float(pos.x()), float(pos.y()))
                 self._lastPos = pos
                 return
 
@@ -2468,13 +2427,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         ):
             self._handle_middle_click(event)
         if event.button() == Qt.MouseButton.LeftButton:
-            # End of a moiety drag, if one was in progress. Positions already
-            # applied to self.atoms in _update_disorder_drag() are kept.
-            self._disorder_drag_session = None
-            self._disorder_drag_mv_inv = None
-            # Likewise for a single free-atom drag.
-            self._single_atom_drag_index = None
-            self._single_atom_drag_mv_inv = None
+            # End of a moiety or single-atom drag, if one was in progress.
+            # Positions already applied to self.atoms are kept.
+            self.end_drag()
         super().mouseReleaseEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # type: ignore[override]
@@ -2775,398 +2730,135 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.update()
 
     # ------------------------------------------------------------------
-    # Interactive disorder-moiety dragging (Ctrl+drag)
+    # Interactive dragging - hooks for DisorderDragMixin
     # ------------------------------------------------------------------
 
-    def _try_start_disorder_drag(self, pos: QtCore.QPointF) -> None:
-        """Begin a moiety drag for the atom under *pos*, if there is one.
+    def _drag_atom_count(self) -> int:
+        return len(self.atoms)
 
-        Called from :meth:`mouseMoveEvent` only once real Ctrl+left-button
-        movement is confirmed (not from ``mousePressEvent``), so a plain
-        Ctrl+click that never moves keeps behaving as ordinary add/remove
-        from selection instead of side-effecting a split into existence.
-        *pos* is normally the press position, so the user grabs whatever was
-        under the cursor when the gesture started.
+    def _drag_atom_label(self, index: int) -> str:
+        return self.atoms[index].label
 
-        The currently Ctrl-selected atoms (``self.selected_atoms``) are the
-        fixed anchors; the picked atom must belong to the fragment reachable
-        from them (see :func:`~fastmolwidget.disorder_drag.find_moiety`).
-        With **no** atoms selected, there are no anchors at all: the whole
-        connected fragment under the cursor is then dragged as a free body,
-        which is how a whole-molecule disorder (e.g. a disordered solvent
-        molecule with no fixed attachment point) is modelled.  Does nothing
-        (leaves ``_disorder_drag_session`` as ``None``) when there is no atom
-        under the cursor.
+    def _drag_atom_type(self, index: int) -> str:
+        return self.atoms[index].type_
 
-        Alternatively a single **bond** may be selected instead of atoms
-        (the two selections are mutually exclusive, see :meth:`_handle_click`).
-        The split point is then that bond: its far end becomes the anchor and
-        the fragment rotates about the bond, with elastic give and with the
-        near end free to drift off the axis so a tumble can be modelled - see
-        :class:`~fastmolwidget.disorder_drag.TorsionDrag`.
+    def _drag_atom_position(self, index: int) -> np.ndarray:
+        return self.atoms[index].center.astype(np.float64)
 
-        The *original* atoms never move: the very first time a given moiety
-        is dragged, it is duplicated into a permanent "part 2" (see
-        :meth:`_create_disorder_duplicate`) and the duplicate is dragged
-        instead, so the split stays available afterwards.  Dragging the same
-        moiety again - either by grabbing an original atom that already has
-        a split, or by grabbing the split copy directly - moves the existing
-        duplicate rather than creating another one.
-        """
-        from fastmolwidget.disorder_drag import (
-            atomic_mass,
-            bond_split_ends,
-            build_drag_session,
-            find_moiety,
-        )
+    def _drag_connections(self) -> tuple[tuple[int, int], ...]:
+        return tuple(self.connections)
 
-        if not self.atoms:
-            return
-
-        mv = self._compute_mv_matrix()
-        atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()), mv=mv)
+    def _pick_atom_index(self, x: float, y: float) -> int | None:
+        atom, _ = self._pick_atom_at(x, y, mv=self._compute_mv_matrix())
         if atom is None:
-            return
+            return None
+        for index, candidate in enumerate(self.atoms):
+            if candidate is atom:
+                return index
+        return None
 
-        label_to_index = {a.label: i for i, a in enumerate(self.atoms)}
-        anchor_indices = {
-            label_to_index[label] for label in self.selected_atoms
-            if label in label_to_index
-        }
-        grabbed_index = label_to_index.get(atom.label)
-        if grabbed_index is None or grabbed_index in anchor_indices:
-            return
+    def _begin_drag_projection(self, index: int, x: float, y: float) -> bool:
+        """Pin the drag to the grabbed atom's eye-space depth plane.
 
-        # A single selected bond defines the split point instead of anchor
-        # atoms: its far end becomes the anchor and the fragment rotates
-        # about the bond.  Atom and bond selection are mutually exclusive in
-        # _handle_click, so there is never both to reconcile.
-        split_bond: tuple[int, int] | None = None
-        ends: tuple[int, int] | None = None
-        if len(self.selected_bonds) == 1 and not anchor_indices:
-            label_a, label_b = next(iter(self.selected_bonds))
-            index_a = label_to_index.get(label_a)
-            index_b = label_to_index.get(label_b)
-            if index_a is None or index_b is None:
-                return
-            # Once a split exists the bond's atoms exist twice, and the
-            # selection still names whichever copy was clicked.  Resolve both
-            # ends onto the side actually being grabbed first, or the search
-            # below would walk out through the *other* part and anchor the
-            # wrong atom.
-            index_a = self._matching_split_atom(index_a, grabbed_index)
-            index_b = self._matching_split_atom(index_b, grabbed_index)
-            ends = bond_split_ends(self.connections, (index_a, index_b), grabbed_index)
-            if ends is None:
-                return  # the bond has nothing to do with the grabbed fragment
-            split_bond = (index_a, index_b)
-            anchor_indices = {ends[0]}
-            if grabbed_index in anchor_indices:
-                return
-
-        if grabbed_index in self._disorder_is_duplicate:
-            # Grabbed the split copy (part 2) directly: drag it as it is.
-            drag_grabbed_index = grabbed_index
-        elif grabbed_index in self._disorder_duplicate_of:
-            # Grabbed an original (part 1) that has already been split off.
-            # Drag that original, so the residual part can be positioned
-            # independently of its part-2 counterpart and both halves of the
-            # disorder can be adjusted.  Nothing is duplicated a second time.
-            drag_grabbed_index = grabbed_index
-        else:
-            moiety = find_moiety(self.connections, anchor_indices, grabbed_index)
-            if grabbed_index not in moiety:
-                return
-            duplicate_map = self._create_disorder_duplicate(moiety, anchor_indices)
-            if not duplicate_map:
-                return
-            self._disorder_duplicate_of.update(duplicate_map)
-            self._disorder_is_duplicate.update(duplicate_map.values())
-            drag_grabbed_index = duplicate_map[grabbed_index]
-
-        if split_bond is not None:
-            # The bond's near end travels with the fragment and therefore
-            # exists twice once a split has been made.  The torsion axis has
-            # to point at whichever copy is actually being dragged - part 1
-            # or part 2 - while the far end anchors and is never duplicated.
-            far, near = ends
-            split_bond = (far, self._matching_split_atom(near, drag_grabbed_index))
-
-        positions = {i: a.center.astype(np.float64) for i, a in enumerate(self.atoms)}
-        masses = {i: atomic_mass(a.type_) for i, a in enumerate(self.atoms)}
-        riding_atoms = self._compute_riding_atoms()
-        density_guide = self._get_disorder_density_guide()
-        session = build_drag_session(
-            self.connections, positions, anchor_indices, drag_grabbed_index,
-            density=density_guide, masses=masses, riding_atoms=riding_atoms,
-            bond=split_bond,
-        )
-        if session is None:
-            return
-
-        self._disorder_drag_session = session
+        The mouse ray is later intersected with that screen-parallel plane, so
+        the target stays at a constant depth for the whole gesture instead of
+        the atom rushing towards or away from the viewer.
+        """
+        mv = self._compute_mv_matrix().astype(np.float64)
         try:
-            self._disorder_drag_mv_inv = np.linalg.inv(mv.astype(np.float64))
+            self._disorder_drag_mv_inv = np.linalg.inv(mv)
         except np.linalg.LinAlgError:
-            self._disorder_drag_session = None
-            return
-        grabbed_center = self.atoms[drag_grabbed_index].center
-        c4 = np.array([*grabbed_center, 1.0], dtype=np.float64)
-        self._disorder_drag_eye_z = float((mv.astype(np.float64) @ c4)[2])
+            self._disorder_drag_mv_inv = None
+            return False
+        c4 = np.array([*self.atoms[index].center, 1.0], dtype=np.float64)
+        self._disorder_drag_eye_z = float((mv @ c4)[2])
+        return True
 
-    def _matching_split_atom(self, index: int, side_of: int) -> int:
-        """Return *index* mapped onto the same split part as *side_of*.
-
-        After a moiety has been split, most of its atoms exist twice - the
-        part-1 original and its part-2 duplicate.  Anything that has to line
-        up with the fragment currently being dragged (the torsion axis' near
-        end, in practice) must therefore be resolved to the copy on that same
-        side.  Atoms that were never duplicated - an anchor, for instance -
-        have only one version and are returned unchanged.
-
-        :param index: The atom to resolve.
-        :param side_of: An atom on the side that *index* should match.
-        :returns: The part-1 or part-2 counterpart of *index*, whichever sits
-            on the same side as *side_of*.
-        """
-        want_duplicate = side_of in self._disorder_is_duplicate
-        is_duplicate = index in self._disorder_is_duplicate
-        if want_duplicate == is_duplicate:
-            return index
-        if want_duplicate:
-            return self._disorder_duplicate_of.get(index, index)
-        for original, duplicate in self._disorder_duplicate_of.items():
-            if duplicate == index:
-                return original
-        return index
-
-    def _create_disorder_duplicate(
-        self, moiety: set[int], anchors: set[int],
-    ) -> dict[int, int]:
-        """Duplicate *moiety* into a new, permanent disorder "part 2".
-
-        The originals are forced to part 1 and are never touched again; the
-        copies get unique labels (see :func:`_next_disorder_label`) and part
-        2, bonded exactly like the originals were - both amongst themselves
-        and to the shared *anchors* - so the result renders as an ordinary
-        two-part disorder split. ``available_parts``/``partsChanged`` are
-        updated so the viewer's Parts filter picks up the new part.
-
-        :returns: Mapping from each original atom index in *moiety* to its
-            new duplicate's index, or ``{}`` when *moiety* is empty.
-        """
-        if not moiety:
-            return {}
-
-        from fastmolwidget.disorder_drag import moiety_edges
-
-        used_labels = {a.label for a in self.atoms}
-        duplicate_map: dict[int, int] = {}
-
-        for index in sorted(moiety):
-            original = self.atoms[index]
-            original.part = 1
-            new_label = _next_disorder_label(original.label, used_labels)
-            used_labels.add(new_label)
-
-            duplicate = _Atom3D(
-                float(original.center[0]), float(original.center[1]),
-                float(original.center[2]), new_label, original.type_, 2,
-            )
-            # Same look as the original (ADP ellipsoid/cube, radius) until it
-            # is refined separately by whatever created this widget's data.
-            duplicate.u_cart = original.u_cart
-            duplicate.u_iso = original.u_iso
-            duplicate.adp_valid = original.adp_valid
-            duplicate.u_eigvals = original.u_eigvals
-            duplicate.u_eigvecs = original.u_eigvecs
-            duplicate.adp_billboard_r = original.adp_billboard_r
-            duplicate.adp_A_matrix = original.adp_A_matrix
-            duplicate.npd_half_edge = original.npd_half_edge
-            duplicate.symmgen = original.symmgen
-
-            self.atoms.append(duplicate)
-            duplicate_map[index] = len(self.atoms) - 1
-
-        edges = moiety_edges(self.connections, moiety, anchors)
-        new_edges = tuple(
-            (duplicate_map.get(a, a), duplicate_map.get(b, b)) for a, b in edges
+    def _drag_target(self, x: float, y: float) -> np.ndarray | None:
+        if self._disorder_drag_mv_inv is None:
+            return None
+        return self._screen_to_world_at_depth(
+            x, y, self._disorder_drag_eye_z, self._disorder_drag_mv_inv,
         )
-        self.connections = tuple(self.connections) + new_edges
 
+    def _end_drag_projection(self) -> None:
+        self._disorder_drag_mv_inv = None
+
+    def _set_atom_part(self, index: int, part: int) -> None:
+        self.atoms[index].part = part
+
+    def _clone_atom_for_split(self, index: int, label: str, part: int) -> int:
+        """Append a copy of atom *index*, looking identical to the original.
+
+        The ADP caches are copied verbatim so the duplicate renders with the
+        same ellipsoid / cube / radius until it is refined separately by
+        whatever created this widget's data.
+        """
+        original = self.atoms[index]
+        duplicate = _Atom3D(
+            float(original.center[0]), float(original.center[1]),
+            float(original.center[2]), label, original.type_, part,
+        )
+        duplicate.u_cart = original.u_cart
+        duplicate.u_iso = original.u_iso
+        duplicate.adp_valid = original.adp_valid
+        duplicate.u_eigvals = original.u_eigvals
+        duplicate.u_eigvecs = original.u_eigvecs
+        duplicate.adp_billboard_r = original.adp_billboard_r
+        duplicate.adp_A_matrix = original.adp_A_matrix
+        duplicate.npd_half_edge = original.npd_half_edge
+        duplicate.symmgen = original.symmgen
+
+        self.atoms.append(duplicate)
+        return len(self.atoms) - 1
+
+    def _add_connections(self, edges: tuple[tuple[int, int], ...]) -> None:
+        self.connections = tuple(self.connections) + tuple(edges)
+
+    def _apply_drag_positions(self, positions: dict[int, np.ndarray]) -> None:
+        for index, position in positions.items():
+            self.atoms[index].center = np.asarray(position, dtype=np.float32)
+
+        self._build_geometry()
+        if self._density_map is not None:
+            self._build_density_geometry()
+        self.update()
+
+    def _on_split_parts_changed(self) -> None:
         self.available_parts = frozenset(a.part for a in self.atoms)
         self.partsChanged.emit(self.available_parts)
-        return duplicate_map
 
     def _compute_riding_atoms(self) -> dict[int, int]:
-        """Map every hydrogen to the atom it rides on.
+        """Map every bonded hydrogen to the atom it rides on.
 
-        A "riding" atom is a hydrogen/deuterium with at least one bond in
-        :attr:`connections` - the very same bond table the viewer draws its
-        bonds from, so the drag can never ride on a bond that is not on
-        screen, nor miss one that is.  No separate distance criterion is
-        applied to hydrogens here.  When an H has more than one bond (the
-        distance-based table occasionally produces that), the closest bonded
-        heavy atom is taken as the parent, falling back to the closest bonded
-        atom of any element if it has only hydrogen neighbours.
-
-        The mapping is passed to
-        :func:`~fastmolwidget.disorder_drag.build_drag_session` so the drag
-        solver keeps the hydrogen at its exact original offset from that
-        parent *in the parent's local frame* instead of letting it take part
-        in the spring solve - which is what "riding" means physically:
-        identical bond length and identical orientation relative to the
-        parent's other bonds, however far the fragment is rotated.
-
-        :returns: ``{hydrogen_index: parent_index}`` for every such atom.
+        Thin wrapper over :func:`fastmolwidget.disorder_drag.riding_atoms`
+        for this widget's atom list; see there for the rule.
         """
-        adjacency: dict[int, list[int]] = {}
-        for a, b in self.connections:
-            adjacency.setdefault(a, []).append(b)
-            adjacency.setdefault(b, []).append(a)
+        from fastmolwidget.disorder_drag import riding_atoms
 
-        riding: dict[int, int] = {}
-        for index, atom in enumerate(self.atoms):
-            if atom.type_ not in ('H', 'D'):
-                continue
-            neighbours = adjacency.get(index)
-            if not neighbours:
-                continue
-            heavy = [i for i in neighbours if self.atoms[i].type_ not in ('H', 'D')]
-            candidates = heavy or neighbours
-            riding[index] = min(
-                candidates,
-                key=lambda i: float(np.linalg.norm(
-                    self.atoms[i].center.astype(np.float64)
-                    - atom.center.astype(np.float64),
-                )),
-            )
-        return riding
+        return riding_atoms(
+            [a.type_ for a in self.atoms],
+            [a.center.astype(np.float64) for a in self.atoms],
+            self.connections,
+        )
 
     def _screen_to_world_at_depth(
-        self, pos: QtCore.QPointF, eye_z: float, mv_inv: np.ndarray,
+        self, x: float, y: float, eye_z: float, mv_inv: np.ndarray,
     ) -> np.ndarray:
-        """World-space point under cursor *pos* at a fixed eye-space depth.
+        """World-space point under cursor *(x, y)* at a fixed eye-space depth.
 
-        Shared by the moiety drag and the single free-atom drag: the mouse
-        ray is intersected with the screen-parallel plane at *eye_z* (the
-        grabbed atom's view-space depth when the drag started), so the
-        target stays at a constant depth for the whole gesture.
+        The mouse ray is intersected with the screen-parallel plane at
+        *eye_z* (the grabbed atom's view-space depth when the drag started),
+        so the target stays at a constant depth for the whole gesture.
         """
         w = max(1, self.width())
         h = max(1, self.height())
         half_w, half_h = self._ortho_half_extents()
-        nx = 2.0 * pos.x() / w - 1.0
-        ny = 1.0 - 2.0 * pos.y() / h
+        nx = 2.0 * x / w - 1.0
+        ny = 1.0 - 2.0 * y / h
         eye_point = np.array([nx * half_w, ny * half_h, eye_z, 1.0], dtype=np.float64)
         world = mv_inv @ eye_point
         return world[:3]
-
-    def _disorder_drag_target(self, pos: QtCore.QPointF) -> np.ndarray:
-        """World-space point the grabbed atom should follow for cursor *pos*."""
-        return self._screen_to_world_at_depth(
-            pos, self._disorder_drag_eye_z, self._disorder_drag_mv_inv,
-        )
-
-    def _update_disorder_drag(self, pos: QtCore.QPointF) -> None:
-        """Advance the active moiety drag towards the cursor and repaint."""
-        session = self._disorder_drag_session
-        if session is None or self._disorder_drag_mv_inv is None:
-            return
-
-        target = self._disorder_drag_target(pos)
-        new_positions = session.update(target)
-        for index, position in new_positions.items():
-            self.atoms[index].center = position.astype(np.float32)
-
-        self._build_geometry()
-        if self._density_map is not None:
-            self._build_density_geometry()
-        self.update()
-
-    def _get_disorder_density_guide(self):
-        """Lazily compute and cache the flattened-ADP density map for snapping.
-
-        Uses the same model/reflection sources as the displayed residual
-        density (:meth:`_density_sources`), but with every ADP forced
-        isotropic (see :func:`~fastmolwidget.density.force_isotropic_adps`)
-        so a refined ADP does not bias the shape of the alternate-site peak.
-        Returns ``None`` (drag still works, just without density guidance)
-        when no model/reflections are available or the map cannot be
-        computed.
-        """
-        if self._disorder_density_guide is not None:
-            return self._disorder_density_guide
-
-        from fastmolwidget.density import calculate_residual_density
-        from fastmolwidget.disorder_drag import DEFAULT_ISO_U, DensityGuide
-
-        try:
-            model, reflections = self._density_sources(None, None)
-            density_map = calculate_residual_density(
-                model, reflections, iso_u_override=DEFAULT_ISO_U,
-            )
-        except Exception:  # noqa: BLE001 - guidance is optional, dragging still works
-            return None
-
-        self._disorder_density_guide = DensityGuide.from_map(density_map)
-        return self._disorder_density_guide
-
-    # ------------------------------------------------------------------
-    # Single free-atom dragging (Ctrl+Shift+drag)
-    # ------------------------------------------------------------------
-
-    def _try_start_single_atom_drag(self, pos: QtCore.QPointF) -> None:
-        """Begin freely repositioning the single atom under *pos*, if any.
-
-        Unlike Ctrl+drag, this never looks at ``selected_atoms``, never
-        duplicates anything and never touches any other atom: it simply lets
-        the one picked atom follow the mouse.  Called from
-        :meth:`mouseMoveEvent` only once real Ctrl+Shift+left-button movement
-        is confirmed, so a plain Ctrl+Shift+click does nothing.
-        """
-        if not self.atoms:
-            return
-
-        mv = self._compute_mv_matrix()
-        atom, _ = self._pick_atom_at(float(pos.x()), float(pos.y()), mv=mv)
-        if atom is None:
-            return
-
-        label_to_index = {a.label: i for i, a in enumerate(self.atoms)}
-        index = label_to_index.get(atom.label)
-        if index is None:
-            return
-
-        try:
-            mv_inv = np.linalg.inv(mv.astype(np.float64))
-        except np.linalg.LinAlgError:
-            return
-
-        self._single_atom_drag_index = index
-        self._single_atom_drag_mv_inv = mv_inv
-        c4 = np.array([*atom.center, 1.0], dtype=np.float64)
-        self._single_atom_drag_eye_z = float((mv.astype(np.float64) @ c4)[2])
-
-    def _update_single_atom_drag(self, pos: QtCore.QPointF) -> None:
-        """Move the grabbed atom to follow the cursor and repaint.
-
-        Only ``center`` of that one atom changes - no bonds, parts, labels
-        or any other atom are touched.
-        """
-        index = self._single_atom_drag_index
-        if index is None or self._single_atom_drag_mv_inv is None:
-            return
-
-        target = self._screen_to_world_at_depth(
-            pos, self._single_atom_drag_eye_z, self._single_atom_drag_mv_inv,
-        )
-        self.atoms[index].center = target.astype(np.float32)
-
-        self._build_geometry()
-        if self._density_map is not None:
-            self._build_density_geometry()
-        self.update()
 
     def _is_click_drag(self, pos: QtCore.QPointF) -> bool:
         """Return ``True`` when the cursor moved more than 5 px from the

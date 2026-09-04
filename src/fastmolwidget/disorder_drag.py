@@ -106,6 +106,7 @@ __all__ = [
     'SNAP_GRADIENT_TOL',
     'TORSION_FLEXIBILITY',
     'DensityGuide',
+    'DisorderSplit',
     'ElasticDrag',
     'MoietyDragSession',
     'RigidPivotDrag',
@@ -116,6 +117,9 @@ __all__ = [
     'find_moiety',
     'moiety_angle_pairs',
     'moiety_edges',
+    'next_disorder_label',
+    'plan_disorder_duplicate',
+    'riding_atoms',
 ]
 
 #: Isotropic U (Å²) used for the dedicated density map computed for fitting a
@@ -167,6 +171,10 @@ ANGLE_CONSTRAINT_STIFFNESS: float = 0.3
 TORSION_FLEXIBILITY: float = 0.5
 
 
+#: Element symbols treated as riding hydrogens by :func:`riding_atoms`.
+HYDROGEN_TYPES: frozenset[str] = frozenset({'H', 'D'})
+
+
 def atomic_mass(element: str) -> float:
     """Return the standard atomic weight of *element* in u (g/mol).
 
@@ -181,6 +189,66 @@ def atomic_mass(element: str) -> float:
     import gemmi
 
     return float(gemmi.Element(element).weight)
+
+
+def adjacency_map(
+    connections: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+) -> dict[int, list[int]]:
+    """Return ``{atom: [neighbour, ...]}`` for every bond in *connections*.
+
+    A full adjacency list, not a "last neighbour wins" mapping: several
+    callers here need *every* partner of an atom, not just one.
+    """
+    adjacency: dict[int, list[int]] = {}
+    for a, b in connections:
+        adjacency.setdefault(a, []).append(b)
+        adjacency.setdefault(b, []).append(a)
+    return adjacency
+
+
+def riding_atoms(
+    types: list[str] | tuple[str, ...],
+    positions: np.ndarray | list[np.ndarray],
+    connections: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+) -> dict[int, int]:
+    """Map every bonded hydrogen to the atom it rides on.
+
+    A "riding" atom is a hydrogen/deuterium with at least one bond in
+    *connections* - which is expected to be the very bond table the host
+    renderer draws its bonds from, so a drag can never ride on a bond that is
+    not on screen, nor miss one that is.  No separate distance criterion is
+    applied to hydrogens here.  When an H has more than one bond (a
+    distance-based bond table occasionally produces that), the closest bonded
+    heavy atom is taken as the parent, falling back to the closest bonded atom
+    of any element if it has only hydrogen neighbours.
+
+    The result is meant for :func:`build_drag_session`'s ``riding_atoms``
+    argument, which keeps such an atom at its exact original offset from the
+    parent *in the parent's local frame* rather than letting it take part in
+    the spring solve - see :class:`ElasticDrag`.
+
+    :param types: Element symbol per atom index.
+    :param positions: Cartesian position per atom index.
+    :param connections: Every bond as an ``(i, j)`` index pair.
+    :returns: ``{hydrogen_index: parent_index}`` for every such atom.
+    """
+    adjacency = adjacency_map(connections)
+    coords = [np.asarray(p, dtype=float) for p in positions]
+
+    riding: dict[int, int] = {}
+    for index, element in enumerate(types):
+        if element not in HYDROGEN_TYPES:
+            continue
+        neighbours = adjacency.get(index)
+        if not neighbours:
+            continue
+        heavy = [i for i in neighbours if types[i] not in HYDROGEN_TYPES]
+        candidates = heavy or neighbours
+        riding[index] = min(
+            candidates,
+            key=lambda i: float(np.linalg.norm(coords[i] - coords[index])),
+        )
+    return riding
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +435,129 @@ def moiety_angle_pairs(
                 pairs.add(pair)
 
     return [tuple(sorted(pair)) for pair in pairs]
+
+
+# ---------------------------------------------------------------------------
+# Disorder split bookkeeping
+# ---------------------------------------------------------------------------
+
+def next_disorder_label(base_label: str, used: set[str] | frozenset[str]) -> str:
+    """Return a free label for a part-2 duplicate of *base_label*.
+
+    Tries a single letter suffix first (``O1`` → ``O1B``), which is the
+    conventional way crystallographers name a split atom's alternate
+    position; falls back to a numeric suffix in the unlikely case every
+    letter is already taken.
+    """
+    for letter in 'BCDEFGHIJKLMNOPQRSTUVWXYZ':
+        candidate = f'{base_label}{letter}'
+        if candidate not in used:
+            return candidate
+    n = 2
+    while f'{base_label}_dup{n}' in used:
+        n += 1
+    return f'{base_label}_dup{n}'
+
+
+@dataclass
+class DisorderSplit:
+    """Which atoms have been split into a second disorder part, and how.
+
+    A renderer duplicates a moiety once, the first time it is dragged, and
+    from then on the two halves coexist: the untouched part-1 originals and
+    the part-2 copies that are actually moved.  This object is the entire
+    bookkeeping for that relationship, kept separate from any renderer so
+    every viewer can share it.
+
+    :ivar duplicate_of: ``{original_index: duplicate_index}``.
+    :ivar is_duplicate: Every index that *is* a part-2 copy.
+    """
+
+    duplicate_of: dict[int, int] = field(default_factory=dict)
+    is_duplicate: set[int] = field(default_factory=set)
+
+    def clear(self) -> None:
+        """Forget every split - used when a new structure is loaded."""
+        self.duplicate_of.clear()
+        self.is_duplicate.clear()
+
+    def register(self, duplicate_map: dict[int, int]) -> None:
+        """Record a freshly created ``{original: duplicate}`` mapping."""
+        self.duplicate_of.update(duplicate_map)
+        self.is_duplicate.update(duplicate_map.values())
+
+    def matching_split_atom(self, index: int, side_of: int) -> int:
+        """Return *index* mapped onto the same split part as *side_of*.
+
+        After a moiety has been split, most of its atoms exist twice - the
+        part-1 original and its part-2 duplicate.  Anything that has to line
+        up with the fragment currently being dragged (the torsion axis' near
+        end, in practice) must therefore be resolved to the copy on that same
+        side.  Atoms that were never duplicated - an anchor, for instance -
+        have only one version and are returned unchanged.
+
+        :param index: The atom to resolve.
+        :param side_of: An atom on the side that *index* should match.
+        :returns: The part-1 or part-2 counterpart of *index*, whichever sits
+            on the same side as *side_of*.
+        """
+        want_duplicate = side_of in self.is_duplicate
+        if want_duplicate == (index in self.is_duplicate):
+            return index
+        if want_duplicate:
+            return self.duplicate_of.get(index, index)
+        for original, duplicate in self.duplicate_of.items():
+            if duplicate == index:
+                return original
+        return index
+
+
+def plan_disorder_duplicate(
+    connections: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    moiety: set[int],
+    anchors: set[int],
+    used_labels: set[str] | frozenset[str],
+    labels: list[str] | tuple[str, ...],
+    first_new_index: int,
+) -> tuple[list[tuple[int, str, int]], tuple[tuple[int, int], ...]]:
+    """Work out everything about duplicating *moiety* except building atoms.
+
+    The renderer still has to create its own atom objects (they carry
+    renderer-specific ADP caches, brushes and so on), but *which* atoms get
+    copied, what they are called and how the copies are bonded is pure graph
+    and string work and lives here.
+
+    :param connections: Every bond in the molecule as ``(i, j)`` index pairs.
+    :param moiety: The atom indices to duplicate.
+    :param anchors: Border atoms shared with the original - never duplicated,
+        but the copies bond to them exactly as the originals did.
+    :param used_labels: Labels already taken anywhere in the structure.
+    :param labels: Label per atom index, used as the base for the new names.
+    :param first_new_index: The index the first duplicate will get, i.e. the
+        current atom count.
+    :returns: ``(plan, new_edges)`` where *plan* is a list of
+        ``(original_index, new_label, duplicate_index)`` in the order the
+        copies must be appended, and *new_edges* are the bonds to add.
+        Both are empty when *moiety* is.
+    """
+    if not moiety:
+        return [], ()
+
+    taken = set(used_labels)
+    plan: list[tuple[int, str, int]] = []
+    duplicate_map: dict[int, int] = {}
+    for offset, index in enumerate(sorted(moiety)):
+        label = next_disorder_label(labels[index], taken)
+        taken.add(label)
+        duplicate_index = first_new_index + offset
+        plan.append((index, label, duplicate_index))
+        duplicate_map[index] = duplicate_index
+
+    edges = moiety_edges(connections, moiety, anchors)
+    new_edges = tuple(
+        (duplicate_map.get(a, a), duplicate_map.get(b, b)) for a, b in edges
+    )
+    return plan, new_edges
 
 
 # ---------------------------------------------------------------------------
