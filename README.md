@@ -533,8 +533,15 @@ viewer.show_residual_density()      # reflections come from the CIF itself
 ```
 
 The reflection data is used **without asking only when it lives inside the
-model file** — self-contained SHELXL CIFs carry the whole `.hkl` in
-`_shelx_hkl_file`, and fcf-style files carry a `_refln_*` loop.
+model file**. Three kinds are recognised, and preferred in this order:
+
+| Source | Written by | Notes |
+|---|---|---|
+| `_refln_*` loop (`_refln_index_h`, `_refln_F_squared_meas`/`_refln_F_meas`, …) | SHELXL `.fcf`, and CIFs that embed one | `F_calc` and `phase_calc` are reused when present |
+| `_shelx_hkl_file` | SHELXL self-contained CIFs | the complete `.hkl` the refinement used |
+| `_diffrn_refln_*` loop (`_diffrn_refln_index_h`, `_diffrn_refln_intensity_net`, `_diffrn_refln_intensity_u`) | FinalCif, Olex2 — the raw data checkCIF wants | *unmerged and unscaled*, so it is the last resort; `_diffrn_refln_intensity_sigma` and `_diffrn_refln_scale_group_code` are understood too |
+
+Any of the three makes a CIF sufficient on its own — no separate `.hkl` needed.
 
 When the reflections are in a **separate file** (the usual `.res` + `.hkl`
 pair) the button opens a file dialog, with a matching `.hkl` next to the model
@@ -635,8 +642,9 @@ grid can represent are dropped rather than aliased. Pass `grid_spacing=` to
 ### How it is calculated
 
 1. Reflections are read from a SHELX `.hkl` (`HKLF 4`) file, from an
-   fcf-style CIF reflection loop, or from a `_shelx_hkl_file` block embedded
-   in the CIF, and merged into the reciprocal asymmetric unit with 1/σ²
+   fcf-style CIF reflection loop, from a `_shelx_hkl_file` block embedded
+   in the CIF, or from a raw `_diffrn_refln_*` loop, and merged into the
+   reciprocal asymmetric unit with 1/σ²
    weights. **Systematically absent** reflections are discarded — their `Fc`
    is zero by symmetry, so their measured noise would enter the map amplified
    by `1/scale`.
@@ -740,6 +748,10 @@ from fastmolwidget import calculate_residual_density
 m = calculate_residual_density("structure.res")   # reflections found automatically
 print(m.array.shape, m.rms)          # raw numpy grid, one unit cell
 vertices, edges = m.isosurface(0.3)   # Cartesian wireframe
+
+# Both lobes at once: the cut-out of the grid the two contours share is then
+# only made once, which is what the widgets use to re-contour.
+(pos, neg) = m.isosurfaces((0.3, -0.3), atoms=coordinates, margin=1.5)
 ```
 
 ## Running the Examples

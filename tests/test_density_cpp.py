@@ -45,6 +45,90 @@ def test_marching_cubes_sphere_smoke():
 
 
 # ---------------------------------------------------------------------------
+# The coarse occupancy mask
+# ---------------------------------------------------------------------------
+
+def _full_mask(grid: np.ndarray, block: int) -> np.ndarray:
+    shape = tuple((n - 1 + block - 1) // block for n in grid.shape)
+    return np.ones(shape, dtype=bool)
+
+
+def test_mask_of_all_blocks_changes_nothing():
+    """A mask that keeps every block must reproduce the unmasked result."""
+    grid = _sphere_grid()
+    block = 8
+
+    plain = density_cpp.marching_cubes(grid, 0.0)
+    masked = density_cpp.marching_cubes(grid, 0.0, mask=_full_mask(grid, block),
+                                        block=block)
+
+    assert np.array_equal(plain[0], masked[0])
+    assert np.array_equal(plain[1], masked[1])
+
+
+def test_mask_skips_the_blocks_it_excludes():
+    """Cubes in an unset block contribute nothing.
+
+    Half the sphere is masked off, so every surviving vertex has to come from
+    the half that was kept - and the vertices there must be exactly the ones
+    the unmasked run found, since the mask only decides *which* cubes are
+    visited, not how.
+    """
+    grid = _sphere_grid()
+    block = 8
+    mask = _full_mask(grid, block)
+    mask[mask.shape[0] // 2:] = False
+    kept_cubes = mask.shape[0] // 2 * block
+
+    plain_vertices, _ = density_cpp.marching_cubes(grid, 0.0)
+    vertices, edges = density_cpp.marching_cubes(grid, 0.0, mask=mask,
+                                                 block=block)
+
+    assert 0 < len(vertices) < len(plain_vertices)
+    assert vertices[:, 0].max() <= kept_cubes
+    # Every kept vertex is one the unmasked run produced as well.
+    plain = {tuple(v) for v in plain_vertices}
+    assert all(tuple(v) in plain for v in vertices)
+    assert np.all(edges >= 0)
+    assert np.all(edges < len(vertices))
+
+
+def test_mask_of_no_blocks_gives_an_empty_surface():
+    grid = _sphere_grid()
+    block = 8
+    mask = np.zeros_like(_full_mask(grid, block))
+
+    vertices, edges = density_cpp.marching_cubes(grid, 0.0, mask=mask,
+                                                 block=block)
+
+    assert len(vertices) == 0
+    assert len(edges) == 0
+
+
+def test_mask_shape_is_validated():
+    grid = _sphere_grid()
+
+    with pytest.raises(ValueError, match='mask shape'):
+        density_cpp.marching_cubes(grid, 0.0, mask=np.ones((2, 2, 2), dtype=bool),
+                                   block=8)
+
+
+def test_mask_block_must_be_positive():
+    grid = _sphere_grid()
+
+    with pytest.raises(ValueError, match='block'):
+        density_cpp.marching_cubes(grid, 0.0, mask=_full_mask(grid, 8), block=0)
+
+
+def test_mask_must_be_three_dimensional():
+    grid = _sphere_grid()
+
+    with pytest.raises(ValueError, match='mask'):
+        density_cpp.marching_cubes(grid, 0.0, mask=np.ones(4, dtype=bool),
+                                   block=8)
+
+
+# ---------------------------------------------------------------------------
 # structure_factors
 # ---------------------------------------------------------------------------
 

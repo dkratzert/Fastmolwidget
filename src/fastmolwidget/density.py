@@ -37,6 +37,7 @@ This module is Qt-free.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from math import cos, radians, sin, sqrt
 from pathlib import Path
@@ -102,6 +103,13 @@ DEFAULT_WEAK_WEIGHT: float = 1.0
 #: The higher it is, the more abruptly a reflection is cut once its σ becomes
 #: comparable with its calculated amplitude.
 WEAK_DATA_EXPONENT: float = 3.0
+
+#: Number of marching-cubes cubes per entry of the coarse occupancy mask that
+#: confines contouring to the neighbourhood of the atoms (see
+#: :meth:`ResidualDensityMap._cube_mask`).  8 keeps the mask small - a few tens
+#: of thousands of entries - while still following the shape of a molecule
+#: closely enough that most of its bounding box is skipped.
+CUBE_MASK_BLOCK: int = 8
 
 __all__ = [
     'DEFAULT_GRID_SPACING',
@@ -212,6 +220,33 @@ class ResidualDensityMap:
             deduplicated line segments, ready for ``GL_LINES``.
         :raises RuntimeError: If the :mod:`density_cpp` extension is missing.
         """
+        return self.isosurfaces((level,), atoms=atoms, margin=margin)[0]
+
+    def isosurfaces(
+        self,
+        levels: Sequence[float],
+        *,
+        atoms: np.ndarray | None = None,
+        margin: float = DEFAULT_MARGIN,
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Extract several isosurfaces that share one cut-out of the grid.
+
+        The positive and negative lobe of a residual map are contoured from
+        exactly the same region, and cutting that region out is a gather over
+        every voxel of it - for a molecule spanning more than one cell that is
+        tens of megabytes, and it was being done once per lobe.  Asking for
+        both levels in one call does it once.
+
+        :param levels: The contour levels in e/Å³, in the order the results
+            are wanted.
+        :param atoms: Optional ``(N, 3)`` array of Cartesian atom positions
+            used to restrict the contoured region.  ``None`` contours exactly
+            one unit cell.
+        :param margin: Radius around each atom to keep, in Å.
+        :returns: One ``(vertices, edges)`` pair per level, as returned by
+            :meth:`isosurface`.
+        :raises RuntimeError: If the :mod:`density_cpp` extension is missing.
+        """
         if not HAS_DENSITY_CPP:
             raise RuntimeError(
                 'Residual-density isosurfaces need the compiled "density_cpp" '
@@ -220,16 +255,72 @@ class ResidualDensityMap:
             )
 
         sub, origin_frac, step_frac = self._region(atoms, margin)
-        verts, edges = density_cpp.marching_cubes(
-            sub, float(level),
-            tuple(float(v) for v in origin_frac),
-            tuple(float(v) for v in step_frac),
-        )
-        if len(verts):
-            verts = verts @ self.orth_matrix.T
-            if atoms is not None and len(atoms):
-                verts, edges = _clip_to_atoms(verts, edges, atoms, margin)
-        return np.ascontiguousarray(verts, dtype=np.float32), edges
+        origin = tuple(float(v) for v in origin_frac)
+        step = tuple(float(v) for v in step_frac)
+        mask = self._cube_mask(sub.shape, origin_frac, step_frac, atoms, margin)
+
+        surfaces: list[tuple[np.ndarray, np.ndarray]] = []
+        for level in levels:
+            verts, edges = density_cpp.marching_cubes(
+                sub, float(level), origin, step,
+                mask=mask, block=CUBE_MASK_BLOCK,
+            )
+            if len(verts):
+                verts = verts @ self.orth_matrix.T
+                if atoms is not None and len(atoms):
+                    verts, edges = _clip_to_atoms(verts, edges, atoms, margin)
+            surfaces.append(
+                (np.ascontiguousarray(verts, dtype=np.float32), edges))
+        return surfaces
+
+    def _cube_mask(
+        self,
+        shape: tuple[int, ...],
+        origin_frac: np.ndarray,
+        step_frac: np.ndarray,
+        atoms: np.ndarray | None,
+        margin: float,
+    ) -> np.ndarray | None:
+        """Mark the blocks of the cut-out grid that lie near *atoms*.
+
+        The cut-out is the atoms' bounding box, which for anything but a
+        compact blob is several times the volume actually wanted - for a
+        molecule spanning two cells it is easily 85 % empty.  Marching cubes
+        would read every one of those voxels and produce vertices that
+        :func:`_clip_to_atoms` throws away again, so the region is instead
+        described to it as a coarse occupancy mask over blocks of
+        :data:`CUBE_MASK_BLOCK` cubes and the empty blocks are never touched.
+
+        Each atom marks the axis-aligned block box covering its *margin*
+        sphere, so the mask is a conservative over-estimate: no cube that
+        could carry a wanted vertex is ever skipped, and the few extra ones it
+        keeps are removed by the exact distance test afterwards.
+
+        :returns: The boolean mask, or ``None`` when the whole grid is wanted.
+        """
+        if atoms is None or len(atoms) == 0:
+            return None
+
+        cubes = np.array([max(int(n) - 1, 0) for n in shape])
+        blocks = (cubes + CUBE_MASK_BLOCK - 1) // CUBE_MASK_BLOCK
+        if np.any(blocks <= 0):
+            return None
+
+        # Atom positions and the margin, both in grid steps of the cut-out.
+        inverse = np.linalg.inv(self.orth_matrix)
+        frac = np.asarray(atoms, dtype=float) @ inverse.T
+        position = (frac - origin_frac) / step_frac
+        pad = (margin * np.linalg.norm(inverse, axis=1)) / step_frac
+
+        low = np.floor((position - pad) / CUBE_MASK_BLOCK).astype(int)
+        high = np.floor((position + pad) / CUBE_MASK_BLOCK).astype(int)
+        np.clip(low, 0, blocks - 1, out=low)
+        np.clip(high, 0, blocks - 1, out=high)
+
+        mask = np.zeros(tuple(int(n) for n in blocks), dtype=bool)
+        for (x0, y0, z0), (x1, y1, z1) in zip(low, high):
+            mask[x0:x1 + 1, y0:y1 + 1, z0:z1 + 1] = True
+        return mask
 
     def _region(
         self,
@@ -272,6 +363,73 @@ class ResidualDensityMap:
         return sub, lo * step, step
 
 
+def _neighbour_offsets() -> np.ndarray:
+    """The 27 cell offsets of a spatial-hash neighbourhood, nearest first.
+
+    Ordering them by distance from the centre lets :func:`_clip_to_atoms`
+    accept most vertices in the first few passes and skip the rest.
+    """
+    offsets = np.array([(x, y, z)
+                        for x in (-1, 0, 1)
+                        for y in (-1, 0, 1)
+                        for z in (-1, 0, 1)], dtype=np.int64)
+    return offsets[np.argsort((offsets ** 2).sum(axis=1), kind='stable')]
+
+
+_NEIGHBOUR_OFFSETS: np.ndarray = _neighbour_offsets()
+
+
+def _dilated(mask: np.ndarray) -> np.ndarray:
+    """Grow a boolean 3-D mask by one cell in every direction.
+
+    Done as three separable passes rather than 27 shifted ORs, which is the
+    same result for a Chebyshev-distance-1 neighbourhood at a ninth of the
+    work.
+    """
+    grown = mask.copy()
+    for axis in range(3):
+        source = grown.copy()
+        front = [slice(None)] * 3
+        back = [slice(None)] * 3
+        front[axis] = slice(None, -1)
+        back[axis] = slice(1, None)
+        grown[tuple(front)] |= source[tuple(back)]
+        grown[tuple(back)] |= source[tuple(front)]
+    return grown
+
+
+def _clip_candidates(
+    vertex_cells: np.ndarray, atom_cells: np.ndarray, shape: np.ndarray,
+) -> np.ndarray:
+    """Vertices whose bucket neighbourhood contains at least one atom.
+
+    A cheap, exact pre-filter for :func:`_clip_to_atoms`: a vertex more than
+    one bucket away from every occupied bucket is more than one bucket edge -
+    that is, more than ``margin`` - from every atom, so it can be rejected
+    without any distance being computed.  The bucket grid is tiny (the
+    molecule's extent divided by ``margin``), so building and growing it costs
+    almost nothing next to the per-vertex work it saves.
+
+    :param vertex_cells: ``(M, 3)`` bucket index of every vertex.
+    :param atom_cells: ``(N, 3)`` bucket index of every atom.
+    :param shape: Bucket-grid dimensions the atoms span.
+    :returns: Indices of the vertices worth testing, as a sorted array.
+    """
+    # One cell of padding on each side: a vertex may sit one bucket outside
+    # the atoms' own extent and still be within margin of one of them.
+    padded = np.zeros(shape + 2, dtype=bool)
+    padded[atom_cells[:, 0] + 1, atom_cells[:, 1] + 1, atom_cells[:, 2] + 1] = True
+    near_atoms = _dilated(padded)
+
+    cells = vertex_cells + 1
+    inside = np.flatnonzero(
+        np.all((cells >= 0) & (cells < np.asarray(near_atoms.shape)), axis=1))
+    if inside.size == 0:
+        return inside
+    lookup = cells[inside]
+    return inside[near_atoms[lookup[:, 0], lookup[:, 1], lookup[:, 2]]]
+
+
 def _clip_to_atoms(
     vertices: np.ndarray,
     edges: np.ndarray,
@@ -294,6 +452,16 @@ def _clip_to_atoms(
     neighbour offset — because this runs on the interactive path: every change
     of the contour level, of the hydrogen filter or of the visible disorder
     parts re-clips both lobes.
+
+    Most vertices are nowhere near an atom: the box handed to marching cubes
+    has to cover the molecule's bounding box, which for anything but a compact
+    blob is several times its volume.  So the buckets holding atoms are first
+    marked in a small boolean grid, grown by one cell (:func:`_dilated`), and
+    every vertex is looked up in it in a single gather.  A vertex whose own
+    bucket is not in that dilated set cannot have an atom within *margin* by
+    construction, and only what survives is worth the 27-offset search.  The
+    offsets are then walked nearest first over a set that shrinks as vertices
+    are accepted.
 
     :returns: ``(vertices, edges)`` renumbered to the surviving vertices.
     """
@@ -321,35 +489,35 @@ def _clip_to_atoms(
     limit = margin * margin
     keep = np.zeros(len(vertices), dtype=bool)
 
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dz in (-1, 0, 1):
-                query = vertex_cells + (dx, dy, dz)
-                # Only vertices not yet accepted, whose neighbour cell exists.
-                todo = np.flatnonzero(
-                    ~keep & np.all((query >= 0) & (query < shape), axis=1))
-                if todo.size == 0:
-                    continue
-                cells = query[todo]
-                keys = (cells[:, 0] * shape[1] + cells[:, 1]) * shape[2] \
-                    + cells[:, 2]
-                start = np.searchsorted(atom_keys, keys, side='left')
-                stop = np.searchsorted(atom_keys, keys, side='right')
-                counts = stop - start
-                nonempty = counts > 0
-                if not nonempty.any():
-                    continue
-                todo, start, counts = (todo[nonempty], start[nonempty],
-                                       counts[nonempty])
-                # Flatten the ragged (vertex -> its bucket's atoms) pairs.
-                total = int(counts.sum())
-                offsets = np.repeat(np.cumsum(counts) - counts, counts)
-                atom_index = np.repeat(start, counts) + \
-                    (np.arange(total) - offsets)
-                vertex_index = np.repeat(todo, counts)
-                delta = sorted_atoms[atom_index] - vertices[vertex_index]
-                close = np.einsum('ij,ij->i', delta, delta) <= limit
-                keep[vertex_index[close]] = True
+    pending = _clip_candidates(vertex_cells, atom_cells, shape)
+    for offset in _NEIGHBOUR_OFFSETS:
+        if pending.size == 0:
+            break
+        cells = vertex_cells[pending] + offset
+        inside = np.all((cells >= 0) & (cells < shape), axis=1)
+        if not inside.any():
+            continue
+        todo, cells = pending[inside], cells[inside]
+        keys = (cells[:, 0] * shape[1] + cells[:, 1]) * shape[2] \
+            + cells[:, 2]
+        start = np.searchsorted(atom_keys, keys, side='left')
+        stop = np.searchsorted(atom_keys, keys, side='right')
+        counts = stop - start
+        nonempty = counts > 0
+        if not nonempty.any():
+            continue
+        todo, start, counts = (todo[nonempty], start[nonempty],
+                               counts[nonempty])
+        # Flatten the ragged (vertex -> its bucket's atoms) pairs.
+        total = int(counts.sum())
+        offsets = np.repeat(np.cumsum(counts) - counts, counts)
+        atom_index = np.repeat(start, counts) + \
+            (np.arange(total) - offsets)
+        vertex_index = np.repeat(todo, counts)
+        delta = sorted_atoms[atom_index] - vertices[vertex_index]
+        close = np.einsum('ij,ij->i', delta, delta) <= limit
+        keep[vertex_index[close]] = True
+        pending = pending[~keep[pending]]
 
     if keep.all():
         return vertices, edges
@@ -1399,22 +1567,24 @@ def _apply_extinction(
 
     where *x* is the refined ``EXTI`` parameter.  Returns *f_calc* unchanged
     when no extinction was refined.
+
+    Evaluated over the whole reflection array at once - the per-reflection
+    Python loop this replaces spent most of its time in one
+    :meth:`gemmi.UnitCell.calculate_d` call per Miller index, which
+    :meth:`~gemmi.UnitCell.calculate_d_array` does for the entire set in a
+    single call.  The result is identical to machine precision.
     """
     if not params.exti:
         return f_calc
 
     lambda_ = params.wavelength
-    corrected = np.empty_like(f_calc)
-    for i, index in enumerate(hkl):
-        d = cell.calculate_d(list(index))
-        sin_theta = min(lambda_ / (2.0 * d), 1.0)
-        sin_2theta = max(2.0 * sin_theta * sqrt(max(1.0 - sin_theta ** 2, 0.0)),
-                         1e-6)
-        amplitude_sq = abs(f_calc[i]) ** 2
-        factor = (1.0 + 0.001 * params.exti * amplitude_sq
-                  * lambda_ ** 3 / sin_2theta) ** -0.25
-        corrected[i] = f_calc[i] * factor
-    return corrected
+    d = cell.calculate_d_array(hkl)
+    sin_theta = np.minimum(lambda_ / (2.0 * d), 1.0)
+    sin_2theta = np.maximum(
+        2.0 * sin_theta * np.sqrt(np.maximum(1.0 - sin_theta ** 2, 0.0)), 1e-6)
+    factor = (1.0 + 0.001 * params.exti * np.abs(f_calc) ** 2
+              * lambda_ ** 3 / sin_2theta) ** -0.25
+    return f_calc * factor
 
 
 def _scale_factor(

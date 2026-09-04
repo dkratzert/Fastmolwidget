@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from fastmolwidget.density import (
+    CUBE_MASK_BLOCK,
     DEFAULT_GRID_SPACING,
     DEFAULT_SIGMA,
     DEFAULT_WEAK_WEIGHT,
@@ -172,6 +173,106 @@ def test_r1_against_published_value(shelx_structure):
 # ---------------------------------------------------------------------------
 # The map
 # ---------------------------------------------------------------------------
+
+def test_extinction_matches_the_per_reflection_formula():
+    """The vectorised correction reproduces SHELXL's formula exactly.
+
+    ``_apply_extinction`` evaluates the whole reflection array at once; this
+    pins it against a literal, one-reflection-at-a-time transcription of
+
+        Fc* = Fc (1 + 0.001 x Fc² λ³ / sin 2θ)^(-1/4)
+    """
+    from math import sqrt
+
+    from fastmolwidget.density import _apply_extinction
+    from fastmolwidget.hkl_io import ShelxParameters
+
+    cell = gemmi.UnitCell(10.1, 12.3, 14.7, 90.0, 101.2, 90.0)
+    hkl = np.asarray(
+        gemmi.make_miller_array(cell, gemmi.SpaceGroup('P 21/c'), 0.9),
+        dtype=np.int32)
+    rng = np.random.default_rng(0)
+    f_calc = (rng.normal(size=len(hkl)) + 1j * rng.normal(size=len(hkl))) * 50.0
+    params = ShelxParameters(exti=0.0038, wavelength=0.71073)
+
+    expected = np.empty_like(f_calc)
+    for i, index in enumerate(hkl):
+        d = cell.calculate_d(list(index))
+        sin_theta = min(params.wavelength / (2.0 * d), 1.0)
+        sin_2theta = max(
+            2.0 * sin_theta * sqrt(max(1.0 - sin_theta ** 2, 0.0)), 1e-6)
+        expected[i] = f_calc[i] * (
+            1.0 + 0.001 * params.exti * abs(f_calc[i]) ** 2
+            * params.wavelength ** 3 / sin_2theta) ** -0.25
+
+    assert np.allclose(_apply_extinction(f_calc, hkl, cell, params), expected,
+                       rtol=1e-12, atol=1e-12)
+
+
+def test_extinction_is_skipped_without_a_refined_exti():
+    """No EXTI card means the amplitudes are handed back untouched."""
+    from fastmolwidget.density import _apply_extinction
+    from fastmolwidget.hkl_io import ShelxParameters
+
+    cell = gemmi.UnitCell(10.0, 10.0, 10.0, 90.0, 90.0, 90.0)
+    hkl = np.array([[1, 0, 0], [0, 2, 1]], dtype=np.int32)
+    f_calc = np.array([3.0 + 1.0j, -2.0 + 0.5j])
+
+    result = _apply_extinction(f_calc, hkl, cell, ShelxParameters())
+
+    assert result is f_calc
+
+
+@needs_cpp
+def test_cube_mask_does_not_change_the_surface(density_map, shelx_structure):
+    """Confining marching cubes to the occupied blocks is exactly lossless.
+
+    The mask only decides which cubes are visited; every cube that could carry
+    a vertex within ``margin`` of an atom must still be visited, so the
+    clipped surface has to come out exactly as it does without a mask.
+    """
+    from fastmolwidget import density_cpp
+    from fastmolwidget.density import _clip_to_atoms
+
+    atoms = np.array([
+        [p.x, p.y, p.z] for p in
+        (shelx_structure.cell.orthogonalize(s.fract)
+         for s in shelx_structure.sites)
+    ])
+    margin = 1.5
+    level = density_map.sigma_level()
+    sub, origin, step = density_map._region(atoms, margin)
+    mask = density_map._cube_mask(sub.shape, origin, step, atoms, margin)
+    assert mask is not None
+    assert not mask.all()  # otherwise the test proves nothing
+
+    arguments = (sub, float(level), tuple(map(float, origin)),
+                 tuple(map(float, step)))
+    plain = density_cpp.marching_cubes(*arguments)
+    masked = density_cpp.marching_cubes(*arguments, mask=mask,
+                                        block=CUBE_MASK_BLOCK)
+    assert len(masked[0]) < len(plain[0])  # empty space really is skipped
+
+    expected = _clip_to_atoms(plain[0] @ density_map.orth_matrix.T, plain[1],
+                              atoms, margin)
+    actual = _clip_to_atoms(masked[0] @ density_map.orth_matrix.T, masked[1],
+                            atoms, margin)
+    assert np.array_equal(expected[0], actual[0])
+    assert np.array_equal(expected[1], actual[1])
+
+
+@needs_cpp
+def test_isosurfaces_matches_separate_isosurface_calls(density_map):
+    """Asking for both lobes at once gives what two separate calls give."""
+    level = density_map.sigma_level()
+
+    both = density_map.isosurfaces((level, -level))
+    separate = [density_map.isosurface(level), density_map.isosurface(-level)]
+
+    for (verts, edges), (ref_verts, ref_edges) in zip(both, separate):
+        assert np.array_equal(verts, ref_verts)
+        assert np.array_equal(edges, ref_edges)
+
 
 def test_map_uses_shelxl_scale_factor(density_map):
     """The refined OSF from FVAR is used, not a re-derived estimate."""

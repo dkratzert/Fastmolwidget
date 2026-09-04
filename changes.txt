@@ -1,6 +1,25 @@
 Fastmolwidget changes
 =====================
 
+v1.3.0
+------
+- New: raw _diffrn_refln_* reflection loops in CIF files are read
+  (_diffrn_refln_index_h/k/l, _diffrn_refln_intensity_net,
+  _diffrn_refln_intensity_u or _sigma, _diffrn_refln_scale_group_code), so a
+  CIF written by FinalCif or Olex2 is sufficient on its own. Sources inside a
+  CIF are preferred in this order: _refln_* loop, _shelx_hkl_file, raw data.
+  New readers read_cif_raw_reflections() and read_block_raw_reflections().
+- New: ResidualDensityMap.isosurfaces(levels, ...) contours several levels
+  from a single cut-out of the grid.
+- New: density_cpp.marching_cubes(..., mask=, block=) skips whole blocks of
+  cubes; density builds the mask from the displayed atoms
+  (density.CUBE_MASK_BLOCK). Needs the extension rebuilt.
+- Changed: the SADABS scaling report that follows the 0 0 0 terminator in a
+  .hkl file is ignored instead of slowing the reader down.
+- Changed: much faster residual density. For a 946-atom structure with 351 000
+  reflections the button takes 0.96 s instead of 1.79 s, and re-contouring
+  (Ctrl + wheel, hydrogen and disorder-part filters) 0.17 s instead of 0.93 s.
+
 v1.2.0
 ------
 - New: host applications that feed the widget their own atoms (via
