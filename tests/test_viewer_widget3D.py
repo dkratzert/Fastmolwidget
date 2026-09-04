@@ -1552,6 +1552,14 @@ def _ctrl_left_mouse_event(event_type, pos) -> QtGui.QMouseEvent:
     )
 
 
+def _bond_angle(a: np.ndarray, vertex: np.ndarray, b: np.ndarray) -> float:
+    """Angle a-vertex-b in radians, used to check riding geometry."""
+    u = np.asarray(a, dtype=np.float64) - np.asarray(vertex, dtype=np.float64)
+    v = np.asarray(b, dtype=np.float64) - np.asarray(vertex, dtype=np.float64)
+    cos = float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)))
+    return float(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+
 def test_ctrl_drag_no_selection_drags_whole_molecule_as_free_body():
     """No anchor selected: Ctrl+drag treats the whole connected molecule as
     a free body and still creates a permanent part-2 duplicate."""
@@ -1693,9 +1701,10 @@ def test_ctrl_drag_does_nothing_when_grabbed_atom_is_the_anchor():
     widget.mousePressEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseButtonPress, pos))
     widget.mouseMoveEvent(_ctrl_left_mouse_event(QtCore.QEvent.Type.MouseMove, pos))
     assert widget._disorder_drag_session is None
-def test_ctrl_drag_riding_hydrogen_keeps_exact_offset_from_its_carbon():
-    """A terminal hydrogen on the dragged moiety must ride its carbon
-    exactly: identical offset vector before and after the drag."""
+def test_ctrl_drag_riding_hydrogen_keeps_its_geometry_at_its_carbon():
+    """A hydrogen on the dragged moiety must ride its carbon: identical C-H
+    bond length and identical H-C-C angle before and after the drag, with the
+    offset itself rotating along with the carbon's frame."""
     widget = MoleculeWidget3D()
     widget.resize(800, 600)
     widget.open_molecule([
@@ -1707,6 +1716,10 @@ def test_ctrl_drag_riding_hydrogen_keeps_exact_offset_from_its_carbon():
 
     by_label_before = {a.label: a.center.copy() for a in widget.atoms}
     original_offset = by_label_before["H1"] - by_label_before["C2"]
+    original_length = float(np.linalg.norm(original_offset))
+    original_angle = _bond_angle(
+        by_label_before["C1"], by_label_before["C2"], by_label_before["H1"],
+    )
 
     c2 = next(a for a in widget.atoms if a.label == "C2")
     sx, sy = _project_to_screen(widget, c2.center)
@@ -1721,14 +1734,19 @@ def test_ctrl_drag_riding_hydrogen_keeps_exact_offset_from_its_carbon():
     by_label = {a.label: a for a in widget.atoms}
     assert "C2B" in by_label and "H1B" in by_label
     new_offset = by_label["H1B"].center - by_label["C2B"].center
-    assert new_offset == pytest.approx(original_offset, abs=1e-4)
-    assert np.linalg.norm(new_offset) == pytest.approx(np.linalg.norm(original_offset), abs=1e-4)
+    assert np.linalg.norm(new_offset) == pytest.approx(original_length, abs=1e-4)
+    assert _bond_angle(
+        by_label["C1"].center, by_label["C2B"].center, by_label["H1B"].center,
+    ) == pytest.approx(original_angle, abs=1e-4)
+    # The carbon's frame turned, so the offset must have turned with it -
+    # a translation-only riding rule would leave it unchanged.
+    assert np.linalg.norm(new_offset - original_offset) > 0.1
     # Originals are untouched, as with any moiety drag.
     assert by_label["C2"].center == pytest.approx(by_label_before["C2"])
     assert by_label["H1"].center == pytest.approx(by_label_before["H1"])
 
 
-def test_compute_riding_atoms_finds_only_terminal_hydrogens():
+def test_compute_riding_atoms_finds_every_bonded_hydrogen():
     widget = MoleculeWidget3D()
     widget.resize(800, 600)
     widget.open_molecule([
@@ -1739,6 +1757,27 @@ def test_compute_riding_atoms_finds_only_terminal_hydrogens():
     label_to_index = {a.label: i for i, a in enumerate(widget.atoms)}
     riding = widget._compute_riding_atoms()
     assert riding == {label_to_index["H1"]: label_to_index["C1"]}
+
+
+def test_compute_riding_atoms_uses_closest_of_several_bonds():
+    """A hydrogen the bond table gave two partners rides on the nearer one,
+    and only ever on an atom it is actually bonded to on screen."""
+    widget = MoleculeWidget3D()
+    widget.resize(800, 600)
+    widget.open_molecule([
+        Atomtuple("O1", "O", 0.0, 0.0, 0.0, 0),
+        Atomtuple("H1", "H", 0.0, 0.98, 0.0, 0),
+        Atomtuple("O2", "O", 0.0, 2.1, 0.0, 0),
+    ])
+    label_to_index = {a.label: i for i, a in enumerate(widget.atoms)}
+    h1 = label_to_index["H1"]
+    bonded = {
+        other for a, b in widget.connections for other in ((b,) if a == h1 else (a,) if b == h1 else ())
+    }
+    parent = widget._compute_riding_atoms()[h1]
+    assert len(bonded) == 2, "test needs a hydrogen with two drawn bonds"
+    assert parent in bonded
+    assert parent == label_to_index["O1"]
 
 
 # ------------------------------------------------------------------

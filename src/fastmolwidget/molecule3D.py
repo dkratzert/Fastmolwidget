@@ -2999,31 +2999,49 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         return duplicate_map
 
     def _compute_riding_atoms(self) -> dict[int, int]:
-        """Map every terminal hydrogen to the heavy atom it rides on.
+        """Map every hydrogen to the atom it rides on.
 
-        A "riding" atom is a hydrogen/deuterium with exactly one bond in
-        :attr:`connections` - it is passed to
+        A "riding" atom is a hydrogen/deuterium with at least one bond in
+        :attr:`connections` - the very same bond table the viewer draws its
+        bonds from, so the drag can never ride on a bond that is not on
+        screen, nor miss one that is.  No separate distance criterion is
+        applied to hydrogens here.  When an H has more than one bond (the
+        distance-based table occasionally produces that), the closest bonded
+        heavy atom is taken as the parent, falling back to the closest bonded
+        atom of any element if it has only hydrogen neighbours.
+
+        The mapping is passed to
         :func:`~fastmolwidget.disorder_drag.build_drag_session` so the drag
-        solver keeps it at its exact original offset from that one bonded
-        (parent) atom instead of letting it take part in the spring solve,
-        which is what "riding" means physically: identical bond length and
-        direction to the parent, always.
+        solver keeps the hydrogen at its exact original offset from that
+        parent *in the parent's local frame* instead of letting it take part
+        in the spring solve - which is what "riding" means physically:
+        identical bond length and identical orientation relative to the
+        parent's other bonds, however far the fragment is rotated.
 
         :returns: ``{hydrogen_index: parent_index}`` for every such atom.
         """
-        degree: dict[int, int] = {}
-        neighbour: dict[int, int] = {}
+        adjacency: dict[int, list[int]] = {}
         for a, b in self.connections:
-            degree[a] = degree.get(a, 0) + 1
-            degree[b] = degree.get(b, 0) + 1
-            neighbour[a] = b
-            neighbour[b] = a
+            adjacency.setdefault(a, []).append(b)
+            adjacency.setdefault(b, []).append(a)
 
-        return {
-            i: neighbour[i]
-            for i, atom in enumerate(self.atoms)
-            if atom.type_ in ('H', 'D') and degree.get(i, 0) == 1
-        }
+        riding: dict[int, int] = {}
+        for index, atom in enumerate(self.atoms):
+            if atom.type_ not in ('H', 'D'):
+                continue
+            neighbours = adjacency.get(index)
+            if not neighbours:
+                continue
+            heavy = [i for i in neighbours if self.atoms[i].type_ not in ('H', 'D')]
+            candidates = heavy or neighbours
+            riding[index] = min(
+                candidates,
+                key=lambda i: float(np.linalg.norm(
+                    self.atoms[i].center.astype(np.float64)
+                    - atom.center.astype(np.float64),
+                )),
+            )
+        return riding
 
     def _screen_to_world_at_depth(
         self, pos: QtCore.QPointF, eye_z: float, mv_inv: np.ndarray,

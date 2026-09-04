@@ -48,10 +48,18 @@ always picks the elastic one (see below) regardless of anchor count:
 
 Terminal hydrogens ride exactly rather than take part in the spring solve at
 all: :class:`ElasticDrag`'s ``riding`` mapping (atom → its parent) keeps such
-an atom at its *exact* original offset from the parent - identical bond
-length and direction, always - translated by however far the parent moved.
-This is a hard rule, not an approximation, which is what "a hydrogen keeps
-the same relative geometry to its carbon" means physically.
+an atom at its *exact* original offset from the parent, expressed in the
+**parent's own local frame**.  That frame is defined by the parent's real
+bonded neighbours and is re-oriented every update (:func:`_superposition_rotation`),
+so the offset rotates along with the parent instead of staying frozen in the
+lab frame.  Bond length, the angle to the parent's other bonds and the mutual
+geometry of a whole riding group (CH₂, CH₃, NH₂, water — they all share one
+rotation) are therefore preserved *exactly*, however far the fragment turns.
+This matters most in torsion mode, where the fragment routinely swings through
+large angles: a translation-only offset would leave every hydrogen pointing
+the way it did before the rotation.  This is a hard rule, not an
+approximation, which is what "a hydrogen keeps the same relative geometry to
+its carbon" means physically.
 
 :class:`DensityGuide` samples a residual-density grid (trilinear
 interpolation) and its numerical gradient, so the moiety can be nudged
@@ -386,6 +394,51 @@ def _rotation_between(u: np.ndarray, v: np.ndarray) -> np.ndarray:
     return np.eye(3) + skew + skew @ skew * ((1.0 - cos_a) / (sin_a * sin_a))
 
 
+def _superposition_rotation(base: np.ndarray, current: np.ndarray) -> np.ndarray:
+    """Rotation carrying the *base* vectors onto the *current* ones.
+
+    Both arrays are ``(n, 3)`` sets of vectors **already expressed relative to
+    the same origin** (the riding parent, see :meth:`ElasticDrag.update`), so
+    the result is the rotation of the local frame *about that atom* rather
+    than about the set's centroid.
+
+    Uses the Kabsch construction (SVD of the cross-covariance) with the
+    mandatory ``det = +1`` correction - without it a nearly planar reference
+    set can produce an improper rotation and silently invert a riding atom's
+    chirality about its parent.  Rank-deficient inputs (a single neighbour, or
+    several collinear ones) leave the twist about that one direction
+    undefined; the shortest-arc rotation is used there instead, which adds no
+    twist at all.
+
+    :param base: Reference vectors at drag start, shape ``(n, 3)``.
+    :param current: The same vectors now, shape ``(n, 3)``.
+    :returns: A proper ``3x3`` rotation matrix; the identity when either set
+        is degenerate (all vectors essentially zero-length).
+    """
+    if base.shape[0] == 0:
+        return np.eye(3)
+
+    covariance = current.T @ base
+    u, singular, vt = np.linalg.svd(covariance)
+
+    # Rank deficient: only one meaningful direction, so no twist is defined.
+    if singular[0] < 1e-12:
+        return np.eye(3)
+    if singular[1] < 1e-9 * singular[0]:
+        base_norms = np.linalg.norm(base, axis=1)
+        current_norms = np.linalg.norm(current, axis=1)
+        index = int(np.argmax(base_norms))
+        if base_norms[index] < 1e-9 or current_norms[index] < 1e-9:
+            return np.eye(3)
+        return _rotation_between(
+            base[index] / base_norms[index], current[index] / current_norms[index],
+        )
+
+    correction = np.eye(3)
+    correction[2, 2] = np.sign(np.linalg.det(u @ vt))
+    return u @ correction @ vt
+
+
 def _axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
     """Rotation matrix for *angle* radians about a unit-length *axis* (Rodrigues)."""
     x, y, z = axis
@@ -480,13 +533,18 @@ class ElasticDrag:
             gives every atom equal mass.
         :param riding: Maps a riding atom's index to its parent's index (e.g.
             a terminal hydrogen and the heavy atom it is bonded to).  Riding
-            atoms take no part in the spring solve at all - they simply keep
-            their exact original offset from the parent, translated by
-            however far the parent moved, so a hydrogen stays glued to its
-            carbon with identical bond length and direction (true riding,
-            not an approximation).  A riding atom that is also
-            *grabbed_index* is treated as a normal solved atom instead (it
-            must follow the mouse exactly).
+            atoms take no part in the spring solve at all - they keep their
+            exact original offset from the parent *in the parent's local
+            frame*, so the offset is carried along by both the parent's
+            translation and its rotation.  A hydrogen therefore stays glued
+            to its carbon with identical bond length *and* identical
+            orientation relative to that carbon's other bonds (true riding,
+            not an approximation); every riding atom on the same parent
+            shares one rotation, so a methyl or water group also keeps its
+            internal geometry.  The frame comes from the parent's neighbours
+            in *edges* only (see :meth:`_build_reference_sets`).  A riding
+            atom that is also *grabbed_index* is treated as a normal solved
+            atom instead (it must follow the mouse exactly).
         :param soft_edges: Optional additional pairs to keep at their
             original length, but only loosely: each correction is scaled by
             :data:`ANGLE_CONSTRAINT_STIFFNESS` instead of applied in full, so
@@ -510,6 +568,61 @@ class ElasticDrag:
                     continue
                 length = float(np.linalg.norm(self._base_positions[a] - self._base_positions[b]))
                 self._rest_length[(a, b)] = (length, stiffness)
+
+        self._reference_sets = self._build_reference_sets(edges)
+
+    def _build_reference_sets(self, edges: list[tuple[int, int]]) -> dict[int, list[int]]:
+        """Map every riding parent to the atoms defining its local frame.
+
+        A parent's frame is spanned by its own *real* bonded neighbours - the
+        1,2 pairs in *edges* only.  The loose 1,3 restraints (``soft_edges``)
+        are deliberately excluded: they are not bonds, so letting them orient
+        a riding atom would turn a hydrogen on evidence that is only a soft
+        shape restraint.  Riding atoms are excluded as well, since their own
+        positions are *derived* from the frame being computed here.
+
+        :param edges: The real bonded pairs handed to :meth:`__init__`.
+        :returns: ``{parent: [neighbour, ...]}`` for every riding parent that
+            has at least one such neighbour.  Parents with none are simply
+            absent, and fall back to pure translation in :meth:`update`.
+        """
+        parents = set(self.riding.values())
+        if not parents:
+            return {}
+
+        references: dict[int, list[int]] = {}
+        for a, b in edges:
+            for atom, neighbour in ((a, b), (b, a)):
+                if atom not in parents or neighbour in self.riding:
+                    continue
+                if neighbour not in self._base_positions:
+                    continue
+                references.setdefault(atom, []).append(neighbour)
+        return references
+
+    def _parent_rotation(self, parent: int, pos: dict[int, np.ndarray]) -> np.ndarray:
+        """How *parent*'s local frame has rotated since the drag started.
+
+        Returns the identity when the parent is an anchor (it does not move,
+        so nothing riding on it may either) or when it has no bonded,
+        non-riding neighbour to define a frame with - the fragment then
+        simply carries its riding atoms along by translation, which still
+        keeps a whole riding group's internal geometry intact because all of
+        its members move together.
+        """
+        neighbours = self._reference_sets.get(parent)
+        if not neighbours or parent in self.anchors:
+            # An anchored parent never moves, so neither may anything riding
+            # on it - its moving neighbours must not be allowed to swing it.
+            return np.eye(3)
+
+        parent_base = self._base_positions[parent]
+        parent_now = pos.get(parent, parent_base)
+        base = np.array([self._base_positions[i] - parent_base for i in neighbours])
+        current = np.array([
+            pos.get(i, self._base_positions[i]) - parent_now for i in neighbours
+        ])
+        return _superposition_rotation(base, current)
 
     def _mass(self, index: int) -> float:
         return self.masses.get(index, 1.0)
@@ -599,15 +712,21 @@ class ElasticDrag:
 
         result = {i: p.copy() for i, p in pos.items() if i not in self.anchors}
 
-        # Riding atoms never entered the spring solve: they simply keep
-        # their exact original offset from the parent, translated by
-        # however far the parent moved - identical bond length and
-        # direction to the parent, always, not just approximately.
+        # Riding atoms never entered the spring solve: their offset from the
+        # parent is kept in the parent's *local frame*, so it rotates with
+        # that frame instead of staying frozen in the lab frame.  Bond
+        # length, bond direction relative to the parent's other bonds, and
+        # the mutual geometry of a whole riding group are therefore all
+        # preserved exactly, however far the fragment turns.
+        rotations: dict[int, np.ndarray] = {}
         for riding_atom, parent in self.riding.items():
+            rotation = rotations.get(parent)
+            if rotation is None:
+                rotation = self._parent_rotation(parent, pos)
+                rotations[parent] = rotation
             parent_new = pos.get(parent, self._base_positions[parent])
-            parent_old = self._base_positions[parent]
-            offset = self._base_positions[riding_atom] - parent_old
-            result[riding_atom] = parent_new + offset
+            offset = self._base_positions[riding_atom] - self._base_positions[parent]
+            result[riding_atom] = parent_new + rotation @ offset
 
         return result
 
@@ -671,6 +790,8 @@ class TorsionDrag:
         :param iterations: Relaxation passes per :meth:`update`.
         :param masses: Optional per-atom mass, see :class:`ElasticDrag`.
         :param riding: Optional riding-atom mapping, see :class:`ElasticDrag`.
+            Riding atoms follow the parent's rotation about the bond, which is
+            exactly what makes a torsion keep its hydrogens' geometry.
         :param soft_edges: Optional loose 1,3 restraints, see
             :class:`ElasticDrag`.
         :param flexibility: How far the grabbed atom may leave the ideal
@@ -992,10 +1113,11 @@ def build_drag_session(
         :class:`ElasticDrag`).  ``None`` gives every solved atom equal
         weight.
     :param riding_atoms: Optional mapping of a riding atom's index to its
-        parent's index (typically a terminal hydrogen and the heavy atom it
-        is bonded to, see :class:`ElasticDrag`).  Riding atoms keep their
-        exact original offset from the parent - same bond length, same
-        direction - rather than taking part in the spring solve.
+        parent's index (typically a hydrogen and the heavy atom it is bonded
+        to, see :class:`ElasticDrag`).  Riding atoms keep their exact
+        original offset from the parent in the *parent's local frame* - same
+        bond length, same direction relative to the parent's other bonds -
+        rather than taking part in the spring solve.
     :param bond: Optional ``(i, j)`` bond to split at instead of using
         *anchors*.  Its far end (the one away from *grabbed_index*, see
         :func:`bond_split_ends`) becomes the sole anchor and the bond becomes

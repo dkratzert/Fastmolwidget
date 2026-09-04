@@ -359,9 +359,18 @@ def test_moiety_bond_lengths_converge_better_with_loose_angle_constraints():
 # Riding atoms (exact rigid attachment, e.g. terminal hydrogens)
 # ---------------------------------------------------------------------------
 
-def test_elastic_drag_riding_atom_keeps_exact_offset_from_parent():
-    """A riding atom must end up at *exactly* its original offset from the
-    parent, translated by however far the parent moved - not merely close."""
+def _angle(a: np.ndarray, vertex: np.ndarray, b: np.ndarray) -> float:
+    """Angle a-vertex-b in radians."""
+    u = a - vertex
+    v = b - vertex
+    cos = float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)))
+    return float(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+
+def test_elastic_drag_riding_atom_keeps_its_geometry_at_the_parent():
+    """A riding atom must keep its *internal* geometry exactly: the bond
+    length to its parent and the angle to the parent's other bond, both of
+    which requires the offset to rotate with the parent's frame."""
     # anchor(0) - C(1, grabbed) - H(2, riding)
     positions = {
         0: np.array([0.0, 0.0, 0.0]),
@@ -375,14 +384,36 @@ def test_elastic_drag_riding_atom_keeps_exact_offset_from_parent():
     target = np.array([1.5, 3.0, 0.0])
     new = drag.update(1, target)
 
-    original_offset = positions[2] - positions[1]
     assert new[1] == pytest.approx(target)
-    assert new[2] - new[1] == pytest.approx(original_offset, abs=1e-12)
-    assert np.linalg.norm(new[2] - new[1]) == pytest.approx(np.linalg.norm(original_offset), abs=1e-12)
+    assert np.linalg.norm(new[2] - new[1]) == pytest.approx(
+        np.linalg.norm(positions[2] - positions[1]), abs=1e-12,
+    )
+    assert _angle(positions[0], positions[1], positions[2]) == pytest.approx(
+        _angle(positions[0], new[1], new[2]), abs=1e-9,
+    )
+
+
+def test_elastic_drag_riding_offset_rotates_with_the_parent_frame():
+    """Guards against a regression to translation-only riding: once the
+    parent's frame has turned, the lab-frame offset *must* have turned too."""
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([1.5, 1.0, 0.0]),
+    }
+    edges = [(0, 1), (1, 2)]
+    combined = {i: positions[i] for i in (0, 1, 2)}
+    drag = ElasticDrag(combined, {0}, edges, riding={2: 1})
+
+    new = drag.update(1, np.array([1.5, 3.0, 0.0]))
+
+    base_offset = positions[2] - positions[1]
+    new_offset = new[2] - new[1]
+    assert np.linalg.norm(new_offset - base_offset) > 0.1
 
 
 def test_elastic_drag_riding_atom_follows_parent_through_relaxation():
-    """The offset stays exact even when the parent itself is only indirectly
+    """The geometry stays exact even when the parent itself is only indirectly
     moved by the spring solve (not the grabbed atom)."""
     # anchor(0) - C1(1) - C2(2, grabbed) with a riding H(3) on C1.
     positions = {
@@ -398,8 +429,71 @@ def test_elastic_drag_riding_atom_follows_parent_through_relaxation():
     target = np.array([3.0, 2.0, 0.0])
     new = drag.update(2, target)
 
-    original_offset = positions[3] - positions[1]
-    assert new[3] - new[1] == pytest.approx(original_offset, abs=1e-9)
+    assert np.linalg.norm(new[3] - new[1]) == pytest.approx(
+        np.linalg.norm(positions[3] - positions[1]), abs=1e-9,
+    )
+    # C1's frame is spanned by the anchor and C2, so both angles at C1 hold.
+    for neighbour, moved in ((0, new.get(0, positions[0])), (2, new[2])):
+        assert _angle(positions[neighbour], positions[1], positions[3]) == pytest.approx(
+            _angle(moved, new[1], new[3]), abs=1e-9,
+        )
+
+
+def test_elastic_drag_riding_group_keeps_internal_geometry():
+    """Every riding atom on one parent shares a single rotation, so a methyl
+    group's H...H distances survive the drag untouched."""
+    #   anchor(0) - C(1, grabbed) with three riding H(2, 3, 4)
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([1.9, 1.0, 0.0]),
+        3: np.array([1.9, -0.5, 0.87]),
+        4: np.array([1.9, -0.5, -0.87]),
+    }
+    edges = [(0, 1), (1, 2), (1, 3), (1, 4)]
+    combined = {i: positions[i] for i in range(5)}
+    drag = ElasticDrag(combined, {0}, edges, riding={2: 1, 3: 1, 4: 1})
+
+    new = drag.update(1, np.array([0.5, 1.4, 0.3]))
+
+    for a, b in ((2, 3), (2, 4), (3, 4)):
+        assert np.linalg.norm(new[a] - new[b]) == pytest.approx(
+            np.linalg.norm(positions[a] - positions[b]), abs=1e-9,
+        )
+    for h in (2, 3, 4):
+        assert np.linalg.norm(new[h] - new[1]) == pytest.approx(
+            np.linalg.norm(positions[h] - positions[1]), abs=1e-9,
+        )
+        assert _angle(positions[0], positions[1], positions[h]) == pytest.approx(
+            _angle(positions[0], new[1], new[h]), abs=1e-9,
+        )
+
+
+def test_torsion_drag_riding_hydrogen_keeps_its_geometry():
+    """The case that actually broke: a torsion rotates the fragment through a
+    large angle, and the hydrogen has to turn with it."""
+    #   far(0) - near(1) - C(2, grabbed) - H(3, riding on C)
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([2.2, 1.2, 0.0]),
+        3: np.array([2.2, 1.9, 0.9]),
+    }
+    edges = [(0, 1), (1, 2), (2, 3)]
+    combined = {i: positions[i] for i in range(4)}
+    drag = TorsionDrag(
+        combined, far=0, near=1, edges=edges, riding={3: 2}, flexibility=0.0,
+    )
+
+    # Pull the grabbed atom right round to the other side of the axis.
+    new = drag.update(2, np.array([2.2, -1.2, 0.0]))
+
+    assert np.linalg.norm(new[3] - new[2]) == pytest.approx(
+        np.linalg.norm(positions[3] - positions[2]), abs=1e-9,
+    )
+    assert _angle(positions[1], positions[2], positions[3]) == pytest.approx(
+        _angle(new[1], new[2], new[3]), abs=1e-9,
+    )
 
 
 def test_elastic_drag_riding_atom_grabbed_directly_is_solved_normally():
@@ -419,6 +513,38 @@ def test_elastic_drag_riding_atom_grabbed_directly_is_solved_normally():
     assert new[2] == pytest.approx(target)
 
 
+def test_elastic_drag_riding_atom_without_frame_translates():
+    """A parent with no bonded, non-riding neighbour has no frame to rotate
+    with, so its riding atoms are simply carried along."""
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([0.0, 0.96, 0.0]),
+    }
+    edges = [(0, 1)]
+    drag = ElasticDrag(dict(positions), set(), edges, riding={1: 0})
+
+    target = np.array([2.0, 0.5, -1.0])
+    new = drag.update(0, target)
+    assert new[1] - new[0] == pytest.approx(positions[1] - positions[0], abs=1e-12)
+
+
+def test_elastic_drag_riding_atom_on_an_anchor_does_not_move():
+    """A hydrogen riding on an *anchor* must stay put: the anchor never
+    moves, so its moving neighbours must not swing the hydrogen either."""
+    #   H(3, riding on the anchor) - anchor(0) - C(1) - C(2, grabbed)
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.5, 0.0, 0.0]),
+        2: np.array([3.0, 0.0, 0.0]),
+        3: np.array([-0.4, 0.9, 0.0]),
+    }
+    edges = [(0, 1), (1, 2), (0, 3)]
+    drag = ElasticDrag(dict(positions), {0}, edges, riding={3: 0})
+
+    new = drag.update(2, np.array([3.0, 2.0, 0.0]))
+    assert new[3] == pytest.approx(positions[3], abs=1e-12)
+
+
 def test_build_drag_session_riding_atoms_ride_exactly():
     """End-to-end through build_drag_session with a riding_atoms mapping."""
     connections = [(0, 1), (1, 2)]
@@ -433,8 +559,12 @@ def test_build_drag_session_riding_atoms_ride_exactly():
     assert session is not None
     target = np.array([1.5, 4.0, 0.0])
     new = session.update(target)
-    original_offset = positions[2] - positions[1]
-    assert new[2] - new[1] == pytest.approx(original_offset, abs=1e-9)
+    assert np.linalg.norm(new[2] - new[1]) == pytest.approx(
+        np.linalg.norm(positions[2] - positions[1]), abs=1e-9,
+    )
+    assert _angle(positions[0], positions[1], positions[2]) == pytest.approx(
+        _angle(positions[0], new[1], new[2]), abs=1e-9,
+    )
 
 
 def test_build_drag_session_riding_atoms_outside_moiety_are_ignored():
