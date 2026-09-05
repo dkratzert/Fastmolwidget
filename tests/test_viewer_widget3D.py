@@ -84,6 +84,17 @@ def test_open_molecule_clear():
     assert len(widget.atoms) == 0
 
 
+def test_hydrogen_uses_adp_like_default_size():
+    widget = MoleculeWidget3D()
+    widget.open_molecule([
+        Atomtuple("H1", "H", 0.0, 0.0, 0.0, 0),
+        Atomtuple("C1", "C", 1.0, 0.0, 0.0, 0),
+    ])
+    assert widget.atoms[0].u_iso == pytest.approx(0.01)
+    assert widget.atoms[0].u_iso is not None
+    assert widget.atoms[0].display_radius > 0.0
+
+
 def test_open_molecule_resets_view():
     widget = MoleculeWidget3D()
     widget._zoom = 3.0

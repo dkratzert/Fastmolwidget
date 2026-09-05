@@ -8,10 +8,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from fastmolwidget.disorder_controller import DisorderDragMixin
 from fastmolwidget.disorder_drag import (
     ANGLE_CONSTRAINT_STIFFNESS,
     BREAKAWAY_DISTANCE,
+    DEFAULT_ISO_U,
     DensityGuide,
+    HYDROGEN_ISO_U,
     DisorderSplit,
     ElasticDrag,
     PLANAR_CONSTRAINT_STIFFNESS,
@@ -178,6 +181,44 @@ def test_detect_planar_groups_excludes_hydrogens_from_search_and_group():
     groups = detect_planar_groups(connections, positions, set(positions), set(), exclude={5})
     assert groups
     assert all(5 not in group for group in groups)
+
+
+def test_dragged_atoms_are_flattened_to_isotropic_adps():
+    """Making a moiety split permanent also flattens its ADPs to isotropic."""
+
+    class DummyAtom:
+        def __init__(self, atom_type, u_cart, u_iso):
+            self.type_ = atom_type
+            self.u_cart = u_cart
+            self.u_iso = u_iso
+            self.adp_valid = True
+            self.u_eigvals = np.array([0.2, 0.3, 0.4])
+            self.u_eigvecs = np.eye(3)
+            self.adp_A_matrix = np.eye(3)
+            self.adp_billboard_r = 1.2
+            self.npd_half_edge = 0.3
+
+    class DummyRenderer(DisorderDragMixin):
+        def __init__(self):
+            self.atoms = [
+                DummyAtom('C', np.eye(3), 0.04),
+                DummyAtom('H', np.eye(3), 0.05),
+            ]
+
+    renderer = DummyRenderer()
+    for idx in (0, 1):
+        renderer._make_atom_isotropic(idx)
+
+    assert renderer.atoms[0].u_iso == pytest.approx(DEFAULT_ISO_U)
+    assert renderer.atoms[1].u_iso == pytest.approx(HYDROGEN_ISO_U)
+    for atom in renderer.atoms:
+        assert atom.u_cart is None
+        assert atom.adp_valid is True
+        assert atom.u_eigvals is None
+        assert atom.u_eigvecs is None
+        assert atom.adp_A_matrix is None
+        assert atom.adp_billboard_r == pytest.approx(0.0)
+        assert atom.npd_half_edge == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

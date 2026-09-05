@@ -90,6 +90,7 @@ from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_STEP,
     ModelSourceMixin,
 )
+from fastmolwidget.disorder_drag import isotropic_u_for_atom_type
 from fastmolwidget.sdm import Atomtuple
 from fastmolwidget import shaders as _shaders
 
@@ -131,7 +132,6 @@ _IS_GL_WIDGET: bool = _QOGLBase is not None
 # ---------------------------------------------------------------------------
 
 __all__ = ["MoleculeWidget3D"]
-
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +273,12 @@ class _Atom3D:
             self.display_radius: float = 0.5
 
         self.u_cart: np.ndarray | None = None
-        # Store the isotropic U value (Å²); radius = sqrt(u_iso) * _ADP_SCALE
-        self.u_iso: float | None = u_eq if type_ not in ('H', 'D') else None
+        # Match the 2-D renderer and JS path: hydrogen / deuterium atoms keep a
+        # tiny isotropic ADP radius so their visual size matches the ADP-enabled
+        # appearance rather than falling back to the small covalent-radius sphere.
+        from fastmolwidget.disorder_drag import HYDROGEN_ISO_U
+
+        self.u_iso: float | None = HYDROGEN_ISO_U if type_ in ('H', 'D') else u_eq
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
         self.u_eigvecs: np.ndarray | None = None
@@ -295,14 +299,14 @@ class _Atom3D:
 # ---------------------------------------------------------------------------
 
 # Platform-selected at import time: GLSL 1.20 on macOS, 1.40 elsewhere.
-_SPHERE_VERT          = _shaders.SPHERE_VERT
-_SPHERE_FRAG          = _shaders.SPHERE_FRAG
-_CYLINDER_VERT        = _shaders.CYLINDER_VERT
-_CYLINDER_FRAG        = _shaders.CYLINDER_FRAG
+_SPHERE_VERT = _shaders.SPHERE_VERT
+_SPHERE_FRAG = _shaders.SPHERE_FRAG
+_CYLINDER_VERT = _shaders.CYLINDER_VERT
+_CYLINDER_FRAG = _shaders.CYLINDER_FRAG
 _ELLIPSOID_BATCH_VERT = _shaders.ELLIPSOID_BATCH_VERT
 _ELLIPSOID_BATCH_FRAG = _shaders.ELLIPSOID_BATCH_FRAG
-_LINE_VERT            = _shaders.LINE_VERT
-_LINE_FRAG            = _shaders.LINE_FRAG
+_LINE_VERT = _shaders.LINE_VERT
+_LINE_FRAG = _shaders.LINE_FRAG
 
 # Residual-density isosurface colours: green = positive, red = negative.
 _DENSITY_POS_COLOR: tuple[float, float, float] = (0.0, 0.85, 0.0)
@@ -1095,29 +1099,29 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         # 6 face normals (outward).  Each face has 4 unique vertices so
         # that each face can carry its own normal (flat shading).
         face_normals = np.array([
-            ( 0.0,  0.0,  1.0),  # +Z (front)
-            ( 0.0,  0.0, -1.0),  # -Z (back)
-            ( 1.0,  0.0,  0.0),  # +X (right)
-            (-1.0,  0.0,  0.0),  # -X (left)
-            ( 0.0,  1.0,  0.0),  # +Y (top)
-            ( 0.0, -1.0,  0.0),  # -Y (bottom)
+            (0.0, 0.0, 1.0),  # +Z (front)
+            (0.0, 0.0, -1.0),  # -Z (back)
+            (1.0, 0.0, 0.0),  # +X (right)
+            (-1.0, 0.0, 0.0),  # -X (left)
+            (0.0, 1.0, 0.0),  # +Y (top)
+            (0.0, -1.0, 0.0),  # -Y (bottom)
         ], dtype=np.float32)
 
         # Local-space corner offsets (half-edge = 1) for each face, in
         # CCW order when viewed from outside.
         face_corners = np.array([
             # +Z
-            [(-1, -1, 1), ( 1, -1, 1), ( 1,  1, 1), (-1,  1, 1)],
+            [(-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1)],
             # -Z
-            [( 1, -1,-1), (-1, -1,-1), (-1,  1,-1), ( 1,  1,-1)],
+            [(1, -1, -1), (-1, -1, -1), (-1, 1, -1), (1, 1, -1)],
             # +X
-            [( 1, -1, 1), ( 1, -1,-1), ( 1,  1,-1), ( 1,  1, 1)],
+            [(1, -1, 1), (1, -1, -1), (1, 1, -1), (1, 1, 1)],
             # -X
-            [(-1, -1,-1), (-1, -1, 1), (-1,  1, 1), (-1,  1,-1)],
+            [(-1, -1, -1), (-1, -1, 1), (-1, 1, 1), (-1, 1, -1)],
             # +Y
-            [(-1,  1, 1), ( 1,  1, 1), ( 1,  1,-1), (-1,  1,-1)],
+            [(-1, 1, 1), (1, 1, 1), (1, 1, -1), (-1, 1, -1)],
             # -Y
-            [(-1, -1,-1), ( 1, -1,-1), ( 1, -1, 1), (-1, -1, 1)],
+            [(-1, -1, -1), (1, -1, -1), (1, -1, 1), (-1, -1, 1)],
         ], dtype=np.float32)
 
         # Per-face quad → 2 triangles (CCW)
@@ -2110,8 +2114,8 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         positions = [
             atom.center for atom in self.atoms
             if (self.show_hydrogens_flag or atom.type_ not in ("H", "D"))
-            and (self._visible_parts is None
-                 or atom.part in self._visible_parts)
+               and (self._visible_parts is None
+                    or atom.part in self._visible_parts)
         ]
         if not positions:
             return None
@@ -2359,7 +2363,6 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                 self.update_moiety_drag(float(pos.x()), float(pos.y()))
                 self._lastPos = pos
                 return
-
 
         # Any drag suppresses the hover label until the mouse stops moving.
         if self._hover_atom_label is not None:
@@ -2788,25 +2791,25 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         self.atoms[index].part = part
 
     def _clone_atom_for_split(self, index: int, label: str, part: int) -> int:
-        """Append a copy of atom *index*, looking identical to the original.
+        """Append a permanent isotropic copy of atom *index*.
 
-        The ADP caches are copied verbatim so the duplicate renders with the
-        same ellipsoid / cube / radius until it is refined separately by
-        whatever created this widget's data.
+        Starting the refinement from an isotropic model for the split moiety is
+        preferable to carrying along the original anisotropic ADP tensor, so the
+        part-2 copy is born already flattened to the correct isotropic U.
         """
         original = self.atoms[index]
         duplicate = _Atom3D(
             float(original.center[0]), float(original.center[1]),
             float(original.center[2]), label, original.type_, part,
         )
-        duplicate.u_cart = original.u_cart
-        duplicate.u_iso = original.u_iso
-        duplicate.adp_valid = original.adp_valid
-        duplicate.u_eigvals = original.u_eigvals
-        duplicate.u_eigvecs = original.u_eigvecs
-        duplicate.adp_billboard_r = original.adp_billboard_r
-        duplicate.adp_A_matrix = original.adp_A_matrix
-        duplicate.npd_half_edge = original.npd_half_edge
+        duplicate.u_cart = None
+        duplicate.u_iso = isotropic_u_for_atom_type(original.type_)
+        duplicate.adp_valid = True
+        duplicate.u_eigvals = None
+        duplicate.u_eigvecs = None
+        duplicate.adp_billboard_r = 0.0
+        duplicate.adp_A_matrix = None
+        duplicate.npd_half_edge = 0.0
         duplicate.symmgen = original.symmgen
 
         self.atoms.append(duplicate)

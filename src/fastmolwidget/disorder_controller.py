@@ -99,6 +99,28 @@ class DisorderDragMixin(_Base):
         """Forget every split - a reloaded atom list invalidates all indices."""
         self._disorder_split.clear()
 
+    def _make_atom_isotropic(self, index: int) -> None:
+        """Permanently flatten one atom's ADP to an isotropic equivalent.
+
+        This is used for disorder splits so the initial model starts from a clean,
+        isotropic representation of the moved moiety instead of carrying the
+        original anisotropic tensor into part 1 / part 2 refinement.
+        """
+        try:
+            atom = self.atoms[index]
+        except (AttributeError, IndexError, TypeError):
+            return
+        from fastmolwidget.disorder_drag import isotropic_u_for_atom_type
+
+        atom.u_cart = None
+        atom.u_iso = isotropic_u_for_atom_type(getattr(atom, 'type_', None))
+        atom.adp_valid = True
+        atom.u_eigvals = None
+        atom.u_eigvecs = None
+        atom.adp_A_matrix = None
+        atom.adp_billboard_r = 0.0
+        atom.npd_half_edge = 0.0
+
     def _matching_split_atom(self, index: int, side_of: int) -> int:
         """Resolve *index* onto the same split part as *side_of*.
 
@@ -237,6 +259,7 @@ class DisorderDragMixin(_Base):
             connections, positions, moiety, anchor_indices,
             exclude=hydrogen_indices,
         )
+
         session = build_drag_session(
             connections, positions, anchor_indices, drag_grabbed_index,
             density=self._get_disorder_density_guide(),
@@ -343,12 +366,14 @@ class DisorderDragMixin(_Base):
         duplicate_map: dict[int, int] = {}
         for original_index, label, duplicate_index in plan:
             self._set_atom_part(original_index, 1)
+            self._make_atom_isotropic(original_index)
             created = self._clone_atom_for_split(original_index, label, 2)
             if created != duplicate_index:  # pragma: no cover - host contract
                 raise RuntimeError(
                     'clone_atom_for_split must append the new atom: expected '
                     f'index {duplicate_index}, got {created}',
                 )
+            self._make_atom_isotropic(created)
             duplicate_map[original_index] = created
 
         self._add_connections(new_edges)

@@ -102,6 +102,8 @@ __all__ = [
     'BREAKAWAY_DISTANCE',
     'DEFAULT_ISO_U',
     'DENSITY_GRADIENT_STEP',
+    'HYDROGEN_ISO_U',
+    'HYDROGEN_ISO_U',
     'DENSITY_NUDGE_STRENGTH',
     'PLANAR_CONSTRAINT_STIFFNESS',
     'PLANAR_DEVIATION_THRESHOLD',
@@ -129,7 +131,20 @@ __all__ = [
 #: disorder moiety - see :func:`fastmolwidget.density.force_isotropic_adps`.
 #: A refined ADP "suctions" its own disorder partner's density into itself;
 #: flattening every atom to a small, plausible U removes that bias.
-DEFAULT_ISO_U: float = 0.045
+DEFAULT_ISO_U: float = 0.035
+
+#: Hydrogen / deuterium atoms keep the smaller isotropic ADP size used by the
+#: ADP-enabled drawing mode, so the dragged moiety does not suddenly look
+#: visually larger just because it was flattened for the split.
+HYDROGEN_ISO_U: float = 0.01
+
+
+def isotropic_u_for_atom_type(type_: str | None) -> float:
+    """Return the isotropic ADP size for an atom type after a split/drag."""
+    if type_ in {"H", "D"}:
+        return HYDROGEN_ISO_U
+    return DEFAULT_ISO_U
+
 
 #: Finite-difference step (Å) used by :meth:`DensityGuide.gradient`.  A wider
 #: step averages the slope over a bigger neighbourhood, so a nearby peak is
