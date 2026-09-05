@@ -103,6 +103,8 @@ __all__ = [
     'DEFAULT_ISO_U',
     'DENSITY_GRADIENT_STEP',
     'DENSITY_NUDGE_STRENGTH',
+    'PLANAR_CONSTRAINT_STIFFNESS',
+    'PLANAR_DEVIATION_THRESHOLD',
     'SNAP_GRADIENT_TOL',
     'TORSION_FLEXIBILITY',
     'DensityGuide',
@@ -114,6 +116,7 @@ __all__ = [
     'atomic_mass',
     'bond_split_ends',
     'build_drag_session',
+    'detect_planar_groups',
     'find_moiety',
     'moiety_angle_pairs',
     'moiety_edges',
@@ -160,6 +163,16 @@ BREAKAWAY_DISTANCE: float = 0.7
 #: angle while it is dragged, so they must not compete with - and degrade
 #: the convergence of - the actual bond-length constraints.
 ANGLE_CONSTRAINT_STIFFNESS: float = 0.3
+
+#: Stiffness of planar (flatness) constraints relative to real bonds
+#: (stiffness ``1.0``).  Kept very loose so rings can still deform while
+#: maintaining approximate planarity without fighting the 1,2 and 1,3
+#: distance constraints.
+PLANAR_CONSTRAINT_STIFFNESS: float = 0.15
+
+#: Tolerance (Å) for identifying rings and planar groups: atoms within this
+#: distance of the best-fit plane are treated as part of a planar set.
+PLANAR_DEVIATION_THRESHOLD: float = 0.1
 
 #: How far the grabbed atom is allowed to leave the ideal torsion path
 #: towards where the mouse actually is, as a fraction of that offset per
@@ -298,6 +311,69 @@ def find_moiety(
             frontier.append(neighbour)
 
     return moiety
+
+
+def _is_planar(coords: np.ndarray, tolerance: float = PLANAR_DEVIATION_THRESHOLD) -> bool:
+    """Return ``True`` when the points are approximately coplanar.
+
+    A very loose threshold is intentionally used: the primary purpose is to
+    identify aromatic/ring fragments that should keep a weak planar constraint,
+    not to enforce an exact fit.
+    """
+    if len(coords) < 3:
+        return True
+    centered = coords - coords.mean(axis=0)
+    if not np.isfinite(centered).all():
+        return False
+    covariance = centered.T @ centered
+    singular = np.linalg.svd(covariance, compute_uv=False)
+    if singular.size == 0 or singular[0] < 1e-12:
+        return True
+    flatness = float(singular[-1] / singular[0])
+    return flatness < tolerance * tolerance
+
+
+def detect_planar_groups(
+    connections: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+    positions: dict[int, np.ndarray],
+    moiety: set[int],
+    anchors: set[int],
+    min_ring_size: int = 5,
+) -> list[list[int]]:
+    """Return atom groups in *moiety* whose original positions are roughly planar.
+
+    The detector primarily finds small cycles (rings) but also catches other
+    approximately planar fragments such as aromatic systems.
+    """
+    adjacency = adjacency_map(connections)
+    groups: list[list[int]] = []
+    seen: set[frozenset[int]] = set()
+
+    for start_atom in sorted(moiety):
+        if start_atom not in adjacency:
+            continue
+
+        def find_cycles(current: int, parent: int | None, path: list[int]) -> None:
+            for neighbour in adjacency.get(current, ()):
+                if neighbour == parent:
+                    continue
+                if neighbour in path:
+                    cycle = path[path.index(neighbour):]
+                    if len(cycle) >= min_ring_size:
+                        cycle_set = frozenset(cycle)
+                        if cycle_set in seen:
+                            continue
+                        coords = np.array([positions[i] for i in cycle], dtype=float)
+                        if _is_planar(coords):
+                            groups.append(sorted(cycle))
+                            seen.add(cycle_set)
+                    continue
+                if neighbour in moiety or neighbour in anchors:
+                    find_cycles(neighbour, current, path + [neighbour])
+
+        find_cycles(start_atom, None, [start_atom])
+
+    return groups
 
 
 def bond_split_ends(
@@ -708,6 +784,7 @@ class ElasticDrag:
         masses: dict[int, float] | None = None,
         riding: dict[int, int] | None = None,
         soft_edges: list[tuple[int, int]] | None = None,
+        planar_groups: list[list[int]] | None = None,
     ):
         """
         :param positions: Starting positions of every atom involved (moiety,
@@ -742,6 +819,8 @@ class ElasticDrag:
             these constraints stabilise the shape (typically 1,3 pairs, see
             :func:`moiety_angle_pairs`) without fighting - and degrading the
             convergence of - the real bonds in *edges*.
+        :param planar_groups: Optional groups of atom indices that should be
+            kept approximately planar during dragging.
         """
         self.anchors = set(anchors)
         self.iterations = iterations
@@ -761,6 +840,16 @@ class ElasticDrag:
                 self._rest_length[(a, b)] = (length, stiffness)
 
         self._reference_sets = self._build_reference_sets(edges)
+        self._planar_groups = [list(group) for group in (planar_groups or [])]
+        self._planar_normals: dict[int, np.ndarray] = {}
+        self._planar_origins: dict[int, np.ndarray] = {}
+        for group_id, group in enumerate(self._planar_groups):
+            coords = np.array([self._base_positions[i] for i in group if i in self._base_positions], dtype=float)
+            if len(coords) < 3:
+                continue
+            normal, origin = self._fit_plane(coords)
+            self._planar_normals[group_id] = normal
+            self._planar_origins[group_id] = origin
 
     def _build_reference_sets(self, edges: list[tuple[int, int]]) -> dict[int, list[int]]:
         """Map every riding parent to the atoms defining its local frame.
@@ -790,6 +879,17 @@ class ElasticDrag:
                     continue
                 references.setdefault(atom, []).append(neighbour)
         return references
+
+    def _fit_plane(self, coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Best-fit plane for a group and the point used as the plane origin."""
+        centered = coords - coords.mean(axis=0)
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        normal = vh[-1]
+        norm = float(np.linalg.norm(normal))
+        if norm < 1e-12:
+            return np.array([0.0, 0.0, 1.0]), coords.mean(axis=0)
+        normal = normal / norm
+        return normal, coords.mean(axis=0)
 
     def _parent_rotation(self, parent: int, pos: dict[int, np.ndarray]) -> np.ndarray:
         """How *parent*'s local frame has rotated since the drag started.
@@ -898,6 +998,23 @@ class ElasticDrag:
                     pos[a] = pa + correction * delta
                 elif move_b:
                     pos[b] = pb - correction * delta
+
+            for group_id, group in enumerate(self._planar_groups):
+                normal = self._planar_normals.get(group_id)
+                origin = self._planar_origins.get(group_id)
+                if normal is None or origin is None:
+                    continue
+                for atom_idx in group:
+                    if atom_idx not in pos or atom_idx in self.anchors:
+                        continue
+                    if pin_grabbed and atom_idx == grabbed_index:
+                        continue
+                    offset = pos[atom_idx] - origin
+                    distance_to_plane = float(np.dot(offset, normal))
+                    if abs(distance_to_plane) < 1e-9:
+                        continue
+                    pos[atom_idx] = pos[atom_idx] - distance_to_plane * normal * PLANAR_CONSTRAINT_STIFFNESS
+
             if pin_grabbed:
                 pos[grabbed_index] = np.asarray(target, dtype=float)
 
@@ -969,6 +1086,7 @@ class TorsionDrag:
         riding: dict[int, int] | None = None,
         soft_edges: list[tuple[int, int]] | None = None,
         flexibility: float = TORSION_FLEXIBILITY,
+        planar_groups: list[list[int]] | None = None,
     ):
         """
         :param positions: Starting positions of every atom involved (moiety,
@@ -1003,7 +1121,7 @@ class TorsionDrag:
 
         self._solver = ElasticDrag(
             positions, {far}, edges, iterations=iterations, masses=masses,
-            riding=riding, soft_edges=soft_edges,
+            riding=riding, soft_edges=soft_edges, planar_groups=planar_groups,
         )
 
     @property
@@ -1280,6 +1398,7 @@ def build_drag_session(
     masses: dict[int, float] | None = None,
     riding_atoms: dict[int, int] | None = None,
     bond: tuple[int, int] | None = None,
+    planar_groups: list[list[int]] | None = None,
 ) -> MoietyDragSession | None:
     """Build a :class:`MoietyDragSession` for dragging from *grabbed_index*.
 
@@ -1315,6 +1434,9 @@ def build_drag_session(
         the axis the fragment rotates about; the near end travels with the
         fragment and may drift off that axis, so a tumble rather than only a
         clean torsion can be modelled.
+    :param planar_groups: Optional atom groups (rings, aromatics, or other
+        approximately planar fragments) to keep close to their original plane
+        during the drag.
     :returns: The session, or ``None`` when *grabbed_index* does not belong
         to a moiety reachable from *anchors*, or when *bond* is unrelated to
         the fragment being dragged (nothing to drag either way).
@@ -1341,10 +1463,13 @@ def build_drag_session(
         if i in combined and p in combined
     }
 
+    if planar_groups is None:
+        planar_groups = detect_planar_groups(connections, positions, moiety, anchors)
+
     if far is not None and near is not None:
         torsion = TorsionDrag(
             combined, far, near, bonds, masses=masses, riding=riding,
-            soft_edges=angle_pairs,
+            soft_edges=angle_pairs, planar_groups=planar_groups,
         )
         return MoietyDragSession(
             grabbed_index=grabbed_index, mode='torsion', _solver=torsion,
@@ -1353,7 +1478,7 @@ def build_drag_session(
 
     solver = ElasticDrag(
         combined, set(anchors), bonds, masses=masses, riding=riding,
-        soft_edges=angle_pairs,
+        soft_edges=angle_pairs, planar_groups=planar_groups,
     )
     return MoietyDragSession(
         grabbed_index=grabbed_index, mode='elastic', _solver=solver, density=density,

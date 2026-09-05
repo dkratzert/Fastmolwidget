@@ -149,6 +149,7 @@ class DisorderDragMixin(_Base):
             atomic_mass,
             bond_split_ends,
             build_drag_session,
+            detect_planar_groups,
             find_moiety,
             riding_atoms,
         )
@@ -230,6 +231,8 @@ class DisorderDragMixin(_Base):
         count = self._drag_atom_count()
         types = [self._drag_atom_type(i) for i in range(count)]
         positions = {i: self._drag_atom_position(i) for i in range(count)}
+        moiety = find_moiety(connections, anchor_indices, drag_grabbed_index)
+        planar_groups = detect_planar_groups(connections, positions, moiety, anchor_indices)
         session = build_drag_session(
             connections, positions, anchor_indices, drag_grabbed_index,
             density=self._get_disorder_density_guide(),
@@ -237,6 +240,7 @@ class DisorderDragMixin(_Base):
             riding_atoms=riding_atoms(types, [positions[i] for i in range(count)],
                                       connections),
             bond=split_bond,
+            planar_groups=planar_groups,
         )
         if session is None:
             return False

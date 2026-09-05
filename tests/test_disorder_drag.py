@@ -14,11 +14,13 @@ from fastmolwidget.disorder_drag import (
     DensityGuide,
     DisorderSplit,
     ElasticDrag,
+    PLANAR_CONSTRAINT_STIFFNESS,
     RigidPivotDrag,
     TorsionDrag,
     atomic_mass,
     bond_split_ends,
     build_drag_session,
+    detect_planar_groups,
     find_moiety,
     moiety_angle_pairs,
     moiety_edges,
@@ -104,6 +106,42 @@ def test_moiety_angle_pairs_branching():
     moiety = {1, 2, 3}
     pairs = moiety_angle_pairs(connections, moiety, {0})
     assert set(pairs) == {(0, 2), (0, 3), (2, 3)}
+
+
+def test_detect_planar_groups_finds_ring():
+    """A roughly planar five-membered ring is detected as one group."""
+    connections = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.0, 0.0, 0.0]),
+        2: np.array([1.7, 1.0, 0.0]),
+        3: np.array([0.7, 1.9, 0.0]),
+        4: np.array([-0.3, 1.0, 0.0]),
+    }
+    groups = detect_planar_groups(connections, positions, set(positions), set())
+    assert groups and set(frozenset(group) for group in groups) == {frozenset(positions)}
+
+
+def test_elastic_drag_keeps_planar_group_near_original_plane():
+    """Planar constraints are weak but still restore a ring toward its plane."""
+    connections = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.0, 0.0, 0.0]),
+        2: np.array([1.7, 1.0, 0.0]),
+        3: np.array([0.7, 1.9, 0.0]),
+        4: np.array([-0.3, 1.0, 0.0]),
+    }
+    anchors = {0}
+    edges = moiety_edges(connections, set(positions), anchors)
+    drag = ElasticDrag(
+        dict(positions), anchors, edges, iterations=30,
+        planar_groups=[[0, 1, 2, 3, 4]],
+    )
+    moved = drag.update(2, np.array([1.7, 1.0, 1.5]))
+    max_z = max(abs(moved[i][2]) for i in positions if i not in {0, 2})
+    assert max_z < 1.0
+    assert PLANAR_CONSTRAINT_STIFFNESS > 0.0
 
 
 # ---------------------------------------------------------------------------
