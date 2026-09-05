@@ -155,20 +155,21 @@ SNAP_GRADIENT_TOL: float = 0.2
 
 #: Extra mouse-target displacement (Å) required to leave a snapped pose - the
 #: "more force" needed to drag the moiety further once it has snapped.
-BREAKAWAY_DISTANCE: float = 0.7
+BREAKAWAY_DISTANCE: float = 0.5
 
 #: Stiffness of the 1,3 (angle-stabilising) distance constraints relative to
 #: the real 1,2 bonds (stiffness ``1.0``).  Deliberately loose: these pairs
 #: are not real bonds, only there to stop the moiety folding through an
 #: angle while it is dragged, so they must not compete with - and degrade
 #: the convergence of - the actual bond-length constraints.
-ANGLE_CONSTRAINT_STIFFNESS: float = 0.3
+ANGLE_CONSTRAINT_STIFFNESS: float = 0.25
 
 #: Stiffness of planar (flatness) constraints relative to real bonds
-#: (stiffness ``1.0``).  Kept very loose so rings can still deform while
-#: maintaining approximate planarity without fighting the 1,2 and 1,3
-#: distance constraints.
-PLANAR_CONSTRAINT_STIFFNESS: float = 0.15
+#: (stiffness ``1.0``).  Kept below the real 1,2 constraints but stronger than
+#: the 1,3 angle restraints so rings can still deform elastically without
+#: easily twisting out of their original plane.  The group is fitted once at
+#: drag start and then weakly re-imposed each solver pass.
+PLANAR_CONSTRAINT_STIFFNESS: float = 0.25
 
 #: Tolerance (Å) for identifying rings and planar groups: atoms within this
 #: distance of the best-fit plane are treated as part of a planar set.
