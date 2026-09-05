@@ -309,11 +309,11 @@ if __name__ == "__main__":
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1372_ESM.cif'))
     #w.load_file(Path('tests/test-data/IKmjs421_2_0m_sump.res'))
 
-    w.load_file(r"tests/test-data/BB_LJ45_a.res")
-    w.show_residual_density(r"tests/test-data/BB_LJ45_a.hkl")
+    #w.load_file(r"tests/test-data/BB_LJ45_a.res")
+    #w.show_residual_density(r"tests/test-data/BB_LJ45_a.hkl")
 
-    #w.load_file(r"tests/test-data/SW-7-Ti_a-finalcif.res")
-    #w.show_residual_density(r"tests/test-data/SW-7-Ti_a-finalcif.hkl")
+    w.load_file(r"tests/test-data/SW-7-Ti_a-finalcif.res")
+    w.show_residual_density(r"tests/test-data/SW-7-Ti_a-finalcif.hkl")
 
     if args.cif_file:
         w.load_file(args.cif_file)

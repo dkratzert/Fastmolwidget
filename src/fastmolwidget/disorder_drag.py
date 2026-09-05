@@ -342,31 +342,64 @@ def detect_planar_groups(
 ) -> list[list[int]]:
     """Return atom groups in *moiety* whose original positions are roughly planar.
 
-    The detector primarily finds small cycles (rings) but also catches other
-    approximately planar fragments such as aromatic systems.
+    The detector primarily finds ring cycles but also extends the group to any
+    atom directly attached to the ring that lies within the ring plane.  This
+    keeps true planar substituents with the aromatic core while excluding
+    tetrahedral sp³ groups such as a methyl carbon that sits out of plane.
+
+    The search is deliberately bounded: large fragments rarely contain useful
+    planar rings, and exploring arbitrarily long cycles on every drag start is
+    what makes the gesture feel sluggish.
     """
     adjacency = adjacency_map(connections)
     groups: list[list[int]] = []
     seen: set[frozenset[int]] = set()
 
-    for start_atom in sorted(moiety):
-        if start_atom not in adjacency:
-            continue
+    candidate_starts = sorted(
+        atom for atom in moiety if len(adjacency.get(atom, ())) >= 2
+    )
+    if not candidate_starts:
+        return groups
 
+    max_cycle_length = min(10, max(5, len(moiety)))
+
+    for start_atom in candidate_starts:
         def find_cycles(current: int, parent: int | None, path: list[int]) -> None:
+            if len(path) > max_cycle_length:
+                return
             for neighbour in adjacency.get(current, ()):
                 if neighbour == parent:
                     continue
                 if neighbour in path:
                     cycle = path[path.index(neighbour):]
-                    if len(cycle) >= min_ring_size:
-                        cycle_set = frozenset(cycle)
-                        if cycle_set in seen:
+                    if len(cycle) < min_ring_size:
+                        continue
+                    cycle_set = frozenset(cycle)
+                    if cycle_set in seen:
+                        continue
+                    coords = np.array([positions[i] for i in cycle], dtype=float)
+                    if not _is_planar(coords):
+                        continue
+                    centered = coords - coords.mean(axis=0)
+                    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+                    normal = vh[-1]
+                    norm = float(np.linalg.norm(normal))
+                    if norm < 1e-12:
+                        continue
+                    normal = normal / norm
+                    origin = coords.mean(axis=0)
+                    members = set(cycle)
+                    for atom in sorted(moiety):
+                        if atom in members or atom not in adjacency:
                             continue
-                        coords = np.array([positions[i] for i in cycle], dtype=float)
-                        if _is_planar(coords):
-                            groups.append(sorted(cycle))
-                            seen.add(cycle_set)
+                        if any(neighbour in members for neighbour in adjacency[atom]):
+                            offset = positions[atom] - origin
+                            if abs(float(np.dot(offset, normal))) <= PLANAR_DEVIATION_THRESHOLD:
+                                members.add(atom)
+                    groups.append(sorted(members))
+                    seen.add(cycle_set)
+                    continue
+                if len(path) >= max_cycle_length:
                     continue
                 if neighbour in moiety or neighbour in anchors:
                     find_cycles(neighbour, current, path + [neighbour])
