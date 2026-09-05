@@ -164,6 +164,22 @@ def test_detect_planar_groups_include_nearby_in_plane_substituent():
     assert not any({0, 1, 2, 3, 4, 5, 6} <= set(group) for group in tetra_groups)
 
 
+def test_detect_planar_groups_excludes_hydrogens_from_search_and_group():
+    """Hydrogen atoms are left out of the ring-search and ring-plane correction."""
+    connections = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 0), (1, 5)]
+    positions = {
+        0: np.array([0.0, 0.0, 0.0]),
+        1: np.array([1.0, 0.0, 0.0]),
+        2: np.array([1.7, 1.0, 0.0]),
+        3: np.array([0.7, 1.9, 0.0]),
+        4: np.array([-0.3, 1.0, 0.0]),
+        5: np.array([1.2, -0.8, 0.02]),
+    }
+    groups = detect_planar_groups(connections, positions, set(positions), set(), exclude={5})
+    assert groups
+    assert all(5 not in group for group in groups)
+
+
 # ---------------------------------------------------------------------------
 # RigidPivotDrag
 # ---------------------------------------------------------------------------

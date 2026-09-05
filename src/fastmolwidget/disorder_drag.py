@@ -339,6 +339,7 @@ def detect_planar_groups(
     moiety: set[int],
     anchors: set[int],
     min_ring_size: int = 5,
+    exclude: set[int] | frozenset[int] | None = None,
 ) -> list[list[int]]:
     """Return atom groups in *moiety* whose original positions are roughly planar.
 
@@ -354,9 +355,10 @@ def detect_planar_groups(
     adjacency = adjacency_map(connections)
     groups: list[list[int]] = []
     seen: set[frozenset[int]] = set()
+    excluded = set(exclude or ())
 
     candidate_starts = sorted(
-        atom for atom in moiety if len(adjacency.get(atom, ())) >= 2
+        atom for atom in moiety if atom not in excluded and len(adjacency.get(atom, ())) >= 2
     )
     if not candidate_starts:
         return groups
@@ -368,7 +370,7 @@ def detect_planar_groups(
             if len(path) > max_cycle_length:
                 return
             for neighbour in adjacency.get(current, ()):
-                if neighbour == parent:
+                if neighbour == parent or neighbour in excluded:
                     continue
                 if neighbour in path:
                     cycle = path[path.index(neighbour):]
@@ -390,7 +392,7 @@ def detect_planar_groups(
                     origin = coords.mean(axis=0)
                     members = set(cycle)
                     for atom in sorted(moiety):
-                        if atom in members or atom not in adjacency:
+                        if atom in members or atom in excluded or atom not in adjacency:
                             continue
                         if any(neighbour in members for neighbour in adjacency[atom]):
                             offset = positions[atom] - origin
@@ -818,6 +820,7 @@ class ElasticDrag:
         riding: dict[int, int] | None = None,
         soft_edges: list[tuple[int, int]] | None = None,
         planar_groups: list[list[int]] | None = None,
+        planar_excluded: set[int] | None = None,
     ):
         """
         :param positions: Starting positions of every atom involved (moiety,
@@ -874,6 +877,7 @@ class ElasticDrag:
 
         self._reference_sets = self._build_reference_sets(edges)
         self._planar_groups = [list(group) for group in (planar_groups or [])]
+        self._planar_excluded = set(planar_excluded or ())
         self._planar_normals: dict[int, np.ndarray] = {}
         self._planar_origins: dict[int, np.ndarray] = {}
         for group_id, group in enumerate(self._planar_groups):
@@ -1040,6 +1044,8 @@ class ElasticDrag:
                 for atom_idx in group:
                     if atom_idx not in pos or atom_idx in self.anchors:
                         continue
+                    if atom_idx in self._planar_excluded:
+                        continue
                     if pin_grabbed and atom_idx == grabbed_index:
                         continue
                     offset = pos[atom_idx] - origin
@@ -1120,6 +1126,7 @@ class TorsionDrag:
         soft_edges: list[tuple[int, int]] | None = None,
         flexibility: float = TORSION_FLEXIBILITY,
         planar_groups: list[list[int]] | None = None,
+        planar_excluded: set[int] | None = None,
     ):
         """
         :param positions: Starting positions of every atom involved (moiety,
@@ -1155,6 +1162,7 @@ class TorsionDrag:
         self._solver = ElasticDrag(
             positions, {far}, edges, iterations=iterations, masses=masses,
             riding=riding, soft_edges=soft_edges, planar_groups=planar_groups,
+            planar_excluded=planar_excluded,
         )
 
     @property
@@ -1432,6 +1440,7 @@ def build_drag_session(
     riding_atoms: dict[int, int] | None = None,
     bond: tuple[int, int] | None = None,
     planar_groups: list[list[int]] | None = None,
+    planar_excluded: set[int] | None = None,
 ) -> MoietyDragSession | None:
     """Build a :class:`MoietyDragSession` for dragging from *grabbed_index*.
 
@@ -1496,13 +1505,18 @@ def build_drag_session(
         if i in combined and p in combined
     }
 
+    if planar_excluded is None:
+        planar_excluded = {i for i in combined if i in riding}
     if planar_groups is None:
-        planar_groups = detect_planar_groups(connections, positions, moiety, anchors)
+        planar_groups = detect_planar_groups(
+            connections, positions, moiety, anchors, exclude=planar_excluded,
+        )
 
     if far is not None and near is not None:
         torsion = TorsionDrag(
             combined, far, near, bonds, masses=masses, riding=riding,
             soft_edges=angle_pairs, planar_groups=planar_groups,
+            planar_excluded=planar_excluded,
         )
         return MoietyDragSession(
             grabbed_index=grabbed_index, mode='torsion', _solver=torsion,
@@ -1512,6 +1526,7 @@ def build_drag_session(
     solver = ElasticDrag(
         combined, set(anchors), bonds, masses=masses, riding=riding,
         soft_edges=angle_pairs, planar_groups=planar_groups,
+        planar_excluded=planar_excluded,
     )
     return MoietyDragSession(
         grabbed_index=grabbed_index, mode='elastic', _solver=solver, density=density,
