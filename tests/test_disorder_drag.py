@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from fastmolwidget.disorder_controller import DisorderDragMixin
+from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.disorder_drag import (
     ANGLE_CONSTRAINT_STIFFNESS,
     BREAKAWAY_DISTANCE,
@@ -204,6 +205,7 @@ def test_dragged_atoms_are_flattened_to_isotropic_adps():
                 DummyAtom('C', np.eye(3), 0.04),
                 DummyAtom('H', np.eye(3), 0.05),
             ]
+            self._init_disorder_drag()
 
     renderer = DummyRenderer()
     for idx in (0, 1):
@@ -219,6 +221,38 @@ def test_dragged_atoms_are_flattened_to_isotropic_adps():
         assert atom.adp_A_matrix is None
         assert atom.adp_billboard_r == pytest.approx(0.0)
         assert atom.npd_half_edge == pytest.approx(0.0)
+
+
+def test_dragged_atoms_isotropic_toggle_can_disable_flattening():
+    """A split can keep the original anisotropic ADPs when isotropisation is off."""
+
+    class DummyAtom:
+        def __init__(self, atom_type, u_cart):
+            self.type_ = atom_type
+            self.center = np.array([0.0, 0.0, 0.0])
+            self.u_cart = u_cart
+            self.u_iso = 0.02
+            self.adp_valid = True
+            self.u_eigvals = np.array([0.2, 0.3, 0.4])
+            self.u_eigvecs = np.eye(3)
+            self.adp_A_matrix = np.eye(3)
+            self.adp_billboard_r = 1.2
+            self.npd_half_edge = 0.3
+            self.symmgen = False
+
+    widget = MoleculeWidget3D.__new__(MoleculeWidget3D)
+    widget.atoms = [DummyAtom('C', np.eye(3))]
+    widget._dragged_atoms_are_isotropic = False
+
+    new_index = MoleculeWidget3D._clone_atom_for_split(widget, 0, 'C2', 2)
+    duplicate = widget.atoms[new_index]
+
+    assert duplicate.u_cart is not None
+    assert duplicate.u_cart == pytest.approx(np.eye(3))
+    assert duplicate.u_iso == pytest.approx(0.02)
+    assert duplicate.adp_valid is True
+    assert duplicate.u_eigvals == pytest.approx(np.array([0.2, 0.3, 0.4]))
+    assert widget.dragged_atoms_are_isotropic is False
 
 
 # ---------------------------------------------------------------------------

@@ -2791,26 +2791,37 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         self.atoms[index].part = part
 
     def _clone_atom_for_split(self, index: int, label: str, part: int) -> int:
-        """Append a permanent isotropic copy of atom *index*.
+        """Append a copy of atom *index* for the split disorder part.
 
-        Starting the refinement from an isotropic model for the split moiety is
-        preferable to carrying along the original anisotropic ADP tensor, so the
-        part-2 copy is born already flattened to the correct isotropic U.
+        The split is created in the current ADP mode: either the copy inherits the
+        original anisotropic tensor, or it is flattened to a small isotropic U to
+        start from a simpler part-2 model.
         """
         original = self.atoms[index]
         duplicate = _Atom3D(
             float(original.center[0]), float(original.center[1]),
             float(original.center[2]), label, original.type_, part,
         )
-        duplicate.u_cart = None
-        duplicate.u_iso = isotropic_u_for_atom_type(original.type_)
-        duplicate.adp_valid = True
-        duplicate.u_eigvals = None
-        duplicate.u_eigvecs = None
-        duplicate.adp_billboard_r = 0.0
-        duplicate.adp_A_matrix = None
-        duplicate.npd_half_edge = 0.0
         duplicate.symmgen = original.symmgen
+
+        if self.dragged_atoms_are_isotropic:
+            duplicate.u_cart = None
+            duplicate.u_iso = isotropic_u_for_atom_type(original.type_)
+            duplicate.adp_valid = True
+            duplicate.u_eigvals = None
+            duplicate.u_eigvecs = None
+            duplicate.adp_billboard_r = 0.0
+            duplicate.adp_A_matrix = None
+            duplicate.npd_half_edge = 0.0
+        else:
+            duplicate.u_cart = None if original.u_cart is None else np.array(original.u_cart, copy=True)
+            duplicate.u_iso = None if original.u_iso is None else float(original.u_iso)
+            duplicate.adp_valid = bool(original.adp_valid)
+            duplicate.u_eigvals = None if original.u_eigvals is None else np.array(original.u_eigvals, copy=True)
+            duplicate.u_eigvecs = None if original.u_eigvecs is None else np.array(original.u_eigvecs, copy=True)
+            duplicate.adp_billboard_r = float(original.adp_billboard_r)
+            duplicate.adp_A_matrix = None if original.adp_A_matrix is None else np.array(original.adp_A_matrix, copy=True)
+            duplicate.npd_half_edge = float(original.npd_half_edge)
 
         self.atoms.append(duplicate)
         return len(self.atoms) - 1

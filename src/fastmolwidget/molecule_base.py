@@ -222,6 +222,15 @@ class MoleculeWidgetProtocol(Protocol):
         """
         ...
 
+    @property
+    def dragged_atoms_are_isotropic(self) -> bool:
+        """Whether dragged disorder atoms are flattened to isotropic ADPs."""
+        ...
+
+    def set_dragged_atoms_isotropic(self, value: bool) -> None:
+        """Toggle whether dragged disorder atoms are flattened to isotropic ADPs."""
+        ...
+
     def set_bond_width(self, width: int) -> None:
         """Set the bond width (screen pixels or world-space scaling factor)."""
         ...

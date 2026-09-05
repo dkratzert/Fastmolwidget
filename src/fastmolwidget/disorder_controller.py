@@ -67,6 +67,12 @@ class DisorderDragMixin(_Base):
         """Initialise all drag state; call once from the host's constructor."""
         from fastmolwidget.disorder_drag import DisorderSplit
 
+        #: Whether a freshly split moiety keeps its original anisotropic ADPs or
+        #: is flattened to an isotropic equivalent.  The dedicated dragging guide
+        #: map remains isotropic regardless of this toggle, so the snap behaviour
+        #: stays consistent while the edited model can preserve the original ADP
+        #: form when preferred.
+        self._dragged_atoms_are_isotropic = True
         #: The active moiety drag session, or ``None`` between drags.
         self._disorder_drag_session: MoietyDragSession | None = None
         #: Cached dedicated density map (flattened isotropic ADPs) used only
@@ -78,6 +84,15 @@ class DisorderDragMixin(_Base):
         #: ``None`` between drags.  No moiety, no anchors, no duplication -
         #: just that one atom's position changes.
         self._single_atom_drag_index: int | None = None
+
+    @property
+    def dragged_atoms_are_isotropic(self) -> bool:
+        """Whether a dragged disorder split is flattened to isotropic ADPs."""
+        return bool(getattr(self, '_dragged_atoms_are_isotropic', True))
+
+    def set_dragged_atoms_isotropic(self, value: bool) -> None:
+        """Toggle whether split/dragged atoms are flattened to isotropic ADPs."""
+        self._dragged_atoms_are_isotropic = bool(value)
 
     @property
     def _disorder_duplicate_of(self) -> dict[int, int]:
@@ -104,8 +119,13 @@ class DisorderDragMixin(_Base):
 
         This is used for disorder splits so the initial model starts from a clean,
         isotropic representation of the moved moiety instead of carrying the
-        original anisotropic tensor into part 1 / part 2 refinement.
+        original anisotropic tensor into part 1 / part 2 refinement.  The
+        conversion can be disabled globally via
+        :meth:`set_dragged_atoms_isotropic` when a split is meant to preserve the
+        original ADP form.
         """
+        if not self.dragged_atoms_are_isotropic:
+            return
         try:
             atom = self.atoms[index]
         except (AttributeError, IndexError, TypeError):
