@@ -414,20 +414,32 @@ def _sanitise_adps(structure: gemmi.SmallStructure) -> list[str]:
     isotropic.
     """
     replaced: list[str] = []
-    for site in structure.sites:
-        adp = site.aniso
-        if adp.u11 == 0.0 and adp.u22 == 0.0 and adp.u33 == 0.0:
-            continue  # isotropic already
-        matrix = np.array([
-            [adp.u11, adp.u12, adp.u13],
-            [adp.u12, adp.u22, adp.u23],
-            [adp.u13, adp.u23, adp.u33],
-        ])
-        if np.all(np.linalg.eigvalsh(matrix) > 0.0):
-            continue
+    sites = structure.sites
+    if not sites:
+        return replaced
+
+    tensors = np.array(
+        [[[s.aniso.u11, s.aniso.u12, s.aniso.u13],
+          [s.aniso.u12, s.aniso.u22, s.aniso.u23],
+          [s.aniso.u13, s.aniso.u23, s.aniso.u33]] for s in sites],
+        dtype=float)
+
+    diagonal = tensors[:, [0, 1, 2], [0, 1, 2]]
+    anisotropic = np.any(diagonal != 0.0, axis=1)
+    if not np.any(anisotropic):
+        return replaced
+
+    # One stacked decomposition instead of one call per atom; large models have
+    # thousands of sites and the per-atom route dominated model loading.
+    positive = np.zeros(len(sites), dtype=bool)
+    positive[anisotropic] = np.all(
+        np.linalg.eigvalsh(tensors[anisotropic]) > 0.0, axis=1)
+
+    for position in np.flatnonzero(anisotropic & ~positive):
+        site = sites[int(position)]
         fallback = site.u_iso
         if fallback <= 0.0:
-            trace = (adp.u11 + adp.u22 + adp.u33) / 3.0
+            trace = float(diagonal[position].sum()) / 3.0
             fallback = trace if trace > 0.0 else 0.05
         site.aniso = gemmi.SMat33d(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         site.u_iso = fallback
@@ -658,6 +670,63 @@ def _twin_domain_indices(
     return indices[:components]
 
 
+def _unique_index_map(indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Reduce an ``(..., 3)`` index array to its distinct Miller indices.
+
+    The three components are packed into a single ``int64`` key so that the
+    reduction is an ordinary 1-D :func:`numpy.unique` rather than the far
+    slower lexicographic ``axis=0`` variant.
+
+    :returns: ``(unique, inverse)`` where ``unique`` is ``(U, 3)`` int32 and
+        ``inverse`` has the shape of *indices* without its last axis.
+    """
+    flat = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    low = flat.min(axis=0)
+    span = (flat.max(axis=0) - low + 1)
+    shifted = flat - low
+    keys = (shifted[:, 0] * span[1] + shifted[:, 1]) * span[2] + shifted[:, 2]
+
+    _, first, inverse = np.unique(keys, return_index=True, return_inverse=True)
+    unique = np.ascontiguousarray(flat[first], dtype=np.int32)
+    return unique, inverse.reshape(np.shape(indices)[:-1])
+
+
+def _friedel_folded(flat: np.ndarray) -> np.ndarray:
+    """Map every Miller index onto a canonical member of its Friedel pair.
+
+    Only valid for users of ``|Fc|``: the addends are real, so
+    ``Fc(-h) = conj(Fc(h))`` and the magnitudes are exactly equal.  Phases are
+    *not* preserved, so the merged map coefficients must never fold this way.
+    """
+    h, k, l = flat[:, 0], flat[:, 1], flat[:, 2]
+    negative = (h < 0) | ((h == 0) & ((k < 0) | ((k == 0) & (l < 0))))
+    return np.where(negative[:, None], -flat, flat)
+
+
+def _domain_intensities(
+    structure: gemmi.SmallStructure,
+    calculator: gemmi.StructureFactorCalculatorX,
+    indices: np.ndarray,
+) -> np.ndarray:
+    """Return ``|Fc|²`` for every Miller index in an ``(..., 3)`` array.
+
+    Detwinning needs ``|Fc|²`` for every twin component of every observation,
+    which for a real data set is millions of lookups.  Asking gemmi for them
+    one index at a time dominated the whole map calculation, so the indices are
+    folded onto Friedel pairs, reduced to the distinct ones and handed to
+    :func:`_summed_structure_factors` in a single batched, OpenMP-parallel
+    call.  The values are identical to the per-index route; only the number of
+    summations changes.
+
+    :returns: A float array shaped like *indices* without its last axis.
+    """
+    flat = np.asarray(indices, dtype=np.int64).reshape(-1, 3)
+    unique, inverse = _unique_index_map(_friedel_folded(flat))
+    f_calc = _summed_structure_factors(structure, unique, calculator)
+    values = (np.abs(f_calc) ** 2)[inverse]
+    return values.reshape(np.shape(indices)[:-1])
+
+
 class _StructureFactorCache:
     """Memoised ``|Fc|²`` lookups keyed by Miller index."""
 
@@ -666,6 +735,15 @@ class _StructureFactorCache:
         self._structure = structure
         self._calculator = calculator
         self._cache: dict[tuple[int, int, int], float] = {}
+
+    def prime(self, indices: np.ndarray) -> None:
+        """Pre-compute ``|Fc|²`` for an ``(N, 3)`` block of indices at once."""
+        flat = np.asarray(indices, dtype=np.int32).reshape(-1, 3)
+        if len(flat) == 0:
+            return
+        unique, _ = _unique_index_map(flat)
+        values = _domain_intensities(self._structure, self._calculator, unique)
+        self._cache.update(zip(map(tuple, unique.tolist()), values.tolist()))
 
     def intensity(self, index: tuple[int, int, int]) -> float:
         """Return ``|Fc|²`` for one Miller index."""
@@ -701,13 +779,15 @@ def _detwin_observations(
     calculator = gemmi.StructureFactorCalculatorX(structure.cell)
     if params.wavelength:
         calculator.addends.add_cl_fprime(gemmi.hc / params.wavelength)
-    cache = _StructureFactorCache(structure, calculator)
     fractions = params.twin_fractions()
 
-    if params.hklf == 5:
-        groups = _hklf5_groups(reflections)
-    else:
-        groups = _hklf4_groups(reflections, params)
+    if params.hklf != 5:
+        return _detwin_hklf4(reflections, structure, params, calculator,
+                             fractions)
+
+    cache = _StructureFactorCache(structure, calculator)
+    cache.prime(reflections.hkl)
+    groups = _hklf5_groups(reflections)
 
     hkl_out: list[tuple[int, int, int]] = []
     f_sq_out: list[float] = []
@@ -736,23 +816,46 @@ def _detwin_observations(
     )
 
 
-def _hklf4_groups(reflections: ReflectionData, params: ShelxParameters):
-    """Yield ``(primary, members, F², σ)`` for ``HKLF 4`` twinned data."""
+def _detwin_hklf4(
+    reflections: ReflectionData,
+    structure: gemmi.SmallStructure,
+    params: ShelxParameters,
+    calculator: gemmi.StructureFactorCalculatorX,
+    fractions: list[float],
+) -> ReflectionData:
+    """Detwin ``HKLF 4`` data without a per-reflection Python loop.
+
+    Every record contributes exactly one observation whose twin components are
+    generated from the twin law, so the whole data set is a regular
+    ``(N, components, 3)`` index block.  All of it goes through
+    :func:`_domain_intensities` in one batched call, and the share is then a
+    plain array expression - the result is identical to evaluating the groups
+    one at a time.
+    """
     matrix = params.twin_matrix or _DEFAULT_TWIN_MATRIX
     domains = _twin_domain_indices(reflections.hkl, matrix,
                                    params.twin_components,
                                    racemic=params.twin_racemic)
-    rounded = [np.rint(block).astype(int) for block in domains]
+    # (N, components, 3)
+    indices = np.rint(np.stack(domains, axis=1)).astype(np.int32)
+    intensities = _domain_intensities(structure, calculator, indices)
 
-    for position in range(len(reflections)):
-        members = []
-        for component, block in enumerate(rounded):
-            index = (int(block[position, 0]), int(block[position, 1]),
-                     int(block[position, 2]))
-            members.append((component, index))
-        yield (members[0][1], members,
-               float(reflections.f_sq_meas[position]),
-               float(reflections.sigma[position]))
+    weights = np.zeros(indices.shape[1], dtype=float)
+    usable = min(len(fractions), len(weights))
+    weights[:usable] = fractions[:usable]
+
+    total = intensities @ weights
+    keep = total > 0.0
+    if not np.any(keep):
+        raise ValueError('Detwinning left no usable reflections')
+
+    share = intensities[keep, 0] / total[keep]
+    return ReflectionData(
+        hkl=np.ascontiguousarray(indices[keep, 0, :]),
+        f_sq_meas=reflections.f_sq_meas[keep] * share,
+        sigma=reflections.sigma[keep] * share,
+        sigma_known=reflections.sigma_known,
+    )
 
 
 def _hklf5_groups(reflections: ReflectionData):
