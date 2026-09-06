@@ -77,3 +77,38 @@ export function getElementColor(element) {
   const cap = element.charAt(0) + element.slice(1).toLowerCase();
   return ELEMENT2COLOR[cap] ?? '#000000';
 }
+
+/**
+ * Sphere radius (Å) used to draw a *carbon* atom whenever no ADP ellipsoid is
+ * shown. Every other element scales from this by its covalent radius, so
+ * ball-and-stick proportions follow the periodic table.
+ *
+ * Independently defined from the Python `ATOM_DISPLAY_RADIUS`
+ * (`fastmolwidget/atoms.py`) but kept at the same value. Equals
+ * `atomsSize / 2 / scale` = `(zoom * 70 / 2) / (zoom * 130)`.
+ */
+export const ATOM_DISPLAY_RADIUS = 35 / 130;
+
+/** Element `ATOM_DISPLAY_RADIUS` refers to. */
+export const DISPLAY_RADIUS_REFERENCE = 'C';
+
+/**
+ * Fixed sphere radius (Å) for hydrogen/deuterium. Unlike every other element,
+ * H/D never scales with the covalent-radius table, with its ADP tensor, or
+ * with the "Show ADP" toggle / adpScale slider — it is always this constant,
+ * so a hydrogen is the same size in every viewer and in both display modes.
+ * Mirrors the Python `HYDROGEN_DISPLAY_RADIUS`.
+ */
+export const HYDROGEN_DISPLAY_RADIUS = 0.123;
+
+/**
+ * Return the sphere radius (Å) used to draw `element` without an ADP.
+ * H/D always return `HYDROGEN_DISPLAY_RADIUS`; everything else is
+ * `ATOM_DISPLAY_RADIUS` scaled by its covalent radius relative to carbon.
+ */
+export function displayRadiusForElement(element) {
+  const cleaned = getAtomLabel(element);
+  const cap = cleaned.charAt(0) + cleaned.slice(1).toLowerCase();
+  if (cap === 'H' || cap === 'D') return HYDROGEN_DISPLAY_RADIUS;
+  return (ATOM_DISPLAY_RADIUS * getRadiusFromElement(cap)) / ELEMENT2COV[DISPLAY_RADIUS_REFERENCE];
+}

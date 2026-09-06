@@ -22,7 +22,7 @@
  * - F1/F2/F3:     align view to real-space axes a/b/c (needs a unit cell + focus)
  */
 
-import { getElementColor, getRadiusFromElement } from './elements.js';
+import { getElementColor, getRadiusFromElement, displayRadiusForElement } from './elements.js';
 import {
   cross, eigSym3, identity3, inv3, matMul, matVec, norm, normalize, orthonormalize3, transpose, vecAdd, vecScale, vecSub,
 } from './linalg.js';
@@ -132,6 +132,8 @@ class Atom {
     this.part = part;
     this.symmgen = false;
     this.radius = getRadiusFromElement(type_);
+    // Sphere radius (Å) used whenever no ADP ellipsoid is drawn.
+    this.displayRadius = displayRadiusForElement(type_);
     this.screenx = 0;
     this.screeny = 0;
     this.z = z;
@@ -380,7 +382,6 @@ export class MoleculeWidget2D extends EventTarget {
       this.objects.push({ isBond: true, zOrder: 0, atom1: this.atoms[n1], atom2: this.atoms[n2] });
     }
     for (const atom of this.atoms) {
-      if (atom.type === 'H' || atom.type === 'D') atom.uIso = 0.01;
       this.objects.push({ isBond: false, zOrder: 0, atom1: atom, atom2: null });
     }
 
@@ -818,18 +819,30 @@ export class MoleculeWidget2D extends EventTarget {
     this.resize(newW, newH);
   }
 
+  /**
+   * True when `atom` renders as an ADP ellipsoid rather than a sphere.
+   * Hydrogens use their fixed `HYDROGEN_DISPLAY_RADIUS` sphere unless they
+   * were refined anisotropically and ADPs are being shown, in which case
+   * they are drawn like any other element.
+   */
+  _drawsAdpEllipsoid(atom) {
+    return Boolean(this.showAdpsFlag && atom.uCart && atom.adpValid);
+  }
+
   getSphericalRadius(atom) {
     if (atom.uCart && !atom.adpValid) {
       return (this.atomsSize * NPD_CUBE_BOUND_FACTOR) / this.scale;
     }
+    if (HYDROGENS.has(atom.type) && !this._drawsAdpEllipsoid(atom)) return atom.displayRadius;
     if (this.showAdpsFlag && atom.uIso != null) return Math.sqrt(atom.uIso);
-    return 0.23;
+    return atom.displayRadius;
   }
 
   getDirectionalRadius(atom, v) {
     const d = norm(v);
-    if (d < 1e-8) return 0.23;
-    if (!atom.adpValid) return 0.23;
+    if (d < 1e-8) return atom.displayRadius;
+    if (!atom.adpValid) return atom.displayRadius;
+    if (HYDROGENS.has(atom.type) && !this._drawsAdpEllipsoid(atom)) return atom.displayRadius;
     if (this.showAdpsFlag && atom.uInv) {
       const u = vecScale(v, 1 / d);
       const t = matVec(atom.uInv, u);
@@ -837,7 +850,7 @@ export class MoleculeWidget2D extends EventTarget {
       if (val > 0) return this.adpScale / Math.sqrt(val);
     }
     if (this.showAdpsFlag && atom.uIso != null) return Math.sqrt(atom.uIso) * this.adpScale;
-    return 0.23;
+    return atom.displayRadius;
   }
 
   // ------------------------------------------------------------------
@@ -849,6 +862,10 @@ export class MoleculeWidget2D extends EventTarget {
     if (atom.uCart && !atom.adpValid) {
       const bound = this.atomsSize * NPD_CUBE_BOUND_FACTOR;
       return dx * dx + dy * dy <= bound * bound;
+    }
+    if (HYDROGENS.has(atom.type) && !this._drawsAdpEllipsoid(atom)) {
+      const radius = atom.displayRadius * this.scale;
+      return dx * dx + dy * dy <= radius * radius;
     }
     if (this.showAdpsFlag && atom.uCart) {
       const a = atom.uCart[0][0], b = atom.uCart[0][1], c = atom.uCart[1][1];
@@ -867,7 +884,7 @@ export class MoleculeWidget2D extends EventTarget {
         }
       }
     }
-    let circleSize = this.atomsSize;
+    let circleSize = atom.displayRadius * this.scale * 2;
     if (this.showAdpsFlag && atom.uIso != null) circleSize = Math.sqrt(atom.uIso) * this.scale * this.adpScale * 2;
     return dx * dx + dy * dy <= (circleSize / 2) ** 2;
   }
@@ -1340,13 +1357,30 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _drawAtom(ctx, atom) {
+    const cx = atom.screenx, cy = atom.screeny;
     if (atom.uCart && !atom.adpValid) {
       // Non-positive-definite tensor: show the cube placeholder in both ADP
       // and isotropic mode so the broken atom is never hidden.
       this._drawInvalidAdp(ctx, atom);
       return;
     }
-    const cx = atom.screenx, cy = atom.screeny;
+    if (HYDROGENS.has(atom.type) && !this._drawsAdpEllipsoid(atom)) {
+      // Hydrogen without an anisotropic tensor (or with ADPs switched off):
+      // fixed-size sphere, identical in both display modes.
+      const circleSize = atom.displayRadius * this.scale * 2;
+      const radius = circleSize / 2;
+      if (this.selectedAtoms.has(atom.name)) this._drawSelection(ctx, cx, cy, radius, radius, 0);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+      ctx.fillStyle = this._sphereFill(ctx, cx, cy, radius, atom.colorLight, atom.color, atom.colorDark);
+      ctx.strokeStyle = this.fallbackPenColor;
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
 
     if (this.showAdpsFlag && atom.uCart) {
       const a = atom.uCart[0][0], b = atom.uCart[0][1], c = atom.uCart[1][1];
@@ -1378,7 +1412,7 @@ export class MoleculeWidget2D extends EventTarget {
       }
     }
 
-    let circleSize = this.atomsSize;
+    let circleSize = atom.displayRadius * this.scale * 2;
     if (this.showAdpsFlag && atom.uIso != null) circleSize = Math.sqrt(atom.uIso) * this.scale * this.adpScale * 2;
     const radius = circleSize / 2;
     if (this.selectedAtoms.has(atom.name)) this._drawSelection(ctx, cx, cy, radius, radius, 0);

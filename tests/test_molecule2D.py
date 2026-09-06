@@ -1015,3 +1015,119 @@ def test_npd_cube_front_face_colour_changes_with_rotation():
     assert after_expected != before_expected
 
 
+
+
+# ------------------------------------------------------------------
+# Anisotropic hydrogen atoms
+# ------------------------------------------------------------------
+
+def _load(path: Path) -> MoleculeWidget:
+    """Load *path* into a sized, shown MoleculeWidget."""
+    from fastmolwidget.loader import MoleculeLoader
+
+    widget = MoleculeWidget()
+    widget.resize(800, 600)
+    MoleculeLoader(widget).load_file(path)
+    return widget
+
+
+def _hydrogens(widget: MoleculeWidget) -> list:
+    return [a for a in widget.atoms if a.type_ in ('H', 'D')]
+
+
+def test_anisotropic_hydrogen_keeps_its_tensor():
+    """nospera2.cif refines both its hydrogens anisotropically."""
+    widget = _load(data / 'nospera2.cif')
+    hydrogens = _hydrogens(widget)
+    assert len(hydrogens) == 2
+    for atom in hydrogens:
+        assert atom.u_cart is not None
+        assert atom.adp_valid
+        assert atom.u_inv is not None
+
+
+def test_anisotropic_hydrogen_draws_ellipsoid():
+    """With ADPs on, an anisotropic H is a real ellipsoid, not a fixed sphere."""
+    from fastmolwidget.atoms import HYDROGEN_DISPLAY_RADIUS
+
+    widget = _load(data / 'nospera2.cif')
+    widget.show_adps(True)
+    atom = _hydrogens(widget)[0]
+
+    assert widget._draws_adp_ellipsoid(atom)
+
+    rx = widget.get_directional_radius(atom, np.array([1.0, 0.0, 0.0]))
+    ry = widget.get_directional_radius(atom, np.array([0.0, 1.0, 0.0]))
+    rz = widget.get_directional_radius(atom, np.array([0.0, 0.0, 1.0]))
+
+    # Anisotropic: the radius depends on the direction ...
+    assert len({round(r, 6) for r in (rx, ry, rz)}) > 1
+    # ... and none of them is the fixed hydrogen radius.
+    for r in (rx, ry, rz):
+        assert r != pytest.approx(HYDROGEN_DISPLAY_RADIUS)
+
+
+def test_anisotropic_hydrogen_falls_back_to_fixed_radius():
+    """With ADPs off, the same H returns to the fixed hydrogen radius."""
+    from fastmolwidget.atoms import HYDROGEN_DISPLAY_RADIUS
+
+    widget = _load(data / 'nospera2.cif')
+    widget.show_adps(False)
+    atom = _hydrogens(widget)[0]
+
+    assert not widget._draws_adp_ellipsoid(atom)
+    assert widget.get_spherical_radius(atom) == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
+    for direction in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])):
+        assert widget.get_directional_radius(atom, direction) == pytest.approx(
+            HYDROGEN_DISPLAY_RADIUS
+        )
+
+
+def test_riding_hydrogen_keeps_fixed_radius_in_both_modes():
+    """A hydrogen without an anisotropic tensor never changes size."""
+    from fastmolwidget.atoms import HYDROGEN_DISPLAY_RADIUS
+
+    widget = _load(data / '1979688_small.cif')
+    atom = next(a for a in _hydrogens(widget) if a.u_cart is None)
+
+    for show in (True, False):
+        widget.show_adps(show)
+        assert not widget._draws_adp_ellipsoid(atom)
+        assert widget.get_spherical_radius(atom) == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
+        assert widget.get_directional_radius(
+            atom, np.array([1.0, 0.0, 0.0])
+        ) == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
+
+
+def test_anisotropic_hydrogen_paints():
+    """The new hydrogen-ellipsoid path must actually render."""
+    widget = _load(data / 'nospera2.cif')
+    widget.show()
+    for show in (True, False):
+        widget.show_adps(show)
+        assert not widget.grab().isNull()
+
+
+def test_npd_hydrogen_draws_cube(monkeypatch):
+    """A hydrogen with a broken tensor shows the NPD cube, like any element."""
+    from fastmolwidget.molecule_painter import NPD_CUBE_BOUND_FACTOR
+
+    widget = _load(data / 'nospera2.cif')
+    atom = _hydrogens(widget)[0]
+    atom.adp_valid = False
+
+    for show in (True, False):
+        widget.show_adps(show)
+        assert not widget._draws_adp_ellipsoid(atom)
+        # Sized as the cube's bounding circle, not the fixed hydrogen sphere.
+        expected = widget.atoms_size * NPD_CUBE_BOUND_FACTOR / widget.scale
+        assert widget.get_spherical_radius(atom) == pytest.approx(expected)
+
+        called: list = []
+        monkeypatch.setattr(
+            type(widget), '_draw_invalid_adp',
+            lambda self, at, _sink=called: _sink.append(at), raising=True,
+        )
+        widget.draw_atom(atom)
+        assert called == [atom]
+        monkeypatch.undo()

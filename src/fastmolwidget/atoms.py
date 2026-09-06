@@ -820,11 +820,55 @@ def get_atomlabel(input_atom: str) -> str:
         raise KeyError
 
 
-if __name__ == '__main__':
-    import doctest
+# ---------------------------------------------------------------------------
+# Display sizes
+# ---------------------------------------------------------------------------
 
-    failed, attempted = doctest.testmod()  # verbose=True)
-    if failed == 0:
-        print(f'passed all {attempted} tests!')
-    else:
-        print(f'{failed} of {attempted} tests failed')
+#: Sphere radius (Å) used to draw a *carbon* atom whenever no ADP ellipsoid is
+#: shown -- i.e. when the structure has no anisotropic data or "Show ADP" is
+#: off. Every other element is scaled from this by its covalent radius (see
+#: :func:`display_radius_for_element`), so ball-and-stick proportions follow
+#: the periodic table instead of every atom sharing one hard-coded size.
+#:
+#: The value keeps carbon at exactly the size the 2-D renderer has always
+#: drawn it: ``atoms_size / 2 / scale`` = ``(zoom * 70 / 2) / (zoom * 130)``.
+ATOM_DISPLAY_RADIUS: float = 35 / 130
+
+#: Element that :data:`ATOM_DISPLAY_RADIUS` refers to.
+DISPLAY_RADIUS_REFERENCE: str = 'C'
+
+#: Fixed sphere radius (Å) used for hydrogen/deuterium by every Python
+#: renderer (2-D, Qt Quick and 3-D). Unlike every other element, H/D never
+#: scales with the covalent radius table, with its ADP tensor, or with the
+#: "Show ADP" toggle / adp_scale slider -- it is always this one constant, so
+#: a hydrogen is the same size in all viewers and in both display modes.
+#:
+#: 20 % smaller than the size all renderers previously arrived at via a fake
+#: ``u_iso = 0.01`` (``sqrt(0.01) * adp_scale`` = 0.154 Å).
+HYDROGEN_DISPLAY_RADIUS: float = 0.123
+
+
+def display_radius_for_element(element: str) -> float:
+    """
+    Return the sphere radius in Angstrom used to draw *element* without an ADP.
+
+    Hydrogen and deuterium always return the fixed
+    :data:`HYDROGEN_DISPLAY_RADIUS`; every other element is
+    :data:`ATOM_DISPLAY_RADIUS` scaled by its covalent radius relative to
+    :data:`DISPLAY_RADIUS_REFERENCE`.
+
+    >>> round(display_radius_for_element('H'), 3)
+    0.123
+    >>> round(display_radius_for_element('C'), 3)
+    0.269
+    >>> display_radius_for_element('S') > display_radius_for_element('O')
+    True
+    """
+    try:
+        cleaned = get_atomlabel(element)
+    except KeyError:
+        cleaned = element
+    if cleaned.capitalize() in ('H', 'D'):
+        return HYDROGEN_DISPLAY_RADIUS
+    reference = element2cov[DISPLAY_RADIUS_REFERENCE]
+    return ATOM_DISPLAY_RADIUS * get_radius_from_element(cleaned) / reference

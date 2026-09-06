@@ -43,7 +43,7 @@ from qtpy.QtGui import (
     QWheelEvent, QRadialGradient, QLinearGradient, QTransform,
 )
 
-from fastmolwidget.atoms import get_radius_from_element, element2color
+from fastmolwidget.atoms import display_radius_for_element, get_radius_from_element, element2color
 from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
     DENSITY_LEVEL_MIN,
@@ -181,7 +181,7 @@ class Atom:
     """Internal representation of a single atom for 2-D rendering."""
 
     __slots__ = [
-        'coordinate', 'name', 'part', 'symmgen', 'radius',
+        'coordinate', 'name', 'part', 'symmgen', 'radius', 'display_radius',
         'screenx', 'screeny', 'type_', 'u_cart', 'color',
         'color_light', 'color_dark', 'u_iso', 'z',
         'u_eigvals', 'u_eigvecs', 'u_inv',
@@ -203,6 +203,8 @@ class Atom:
         self.screenx = 0.0
         self.screeny = 0.0
         self.radius = get_radius_from_element(type_)
+        # Sphere radius (Å) used whenever no ADP ellipsoid is drawn.
+        self.display_radius = display_radius_for_element(type_)
         self.u_cart = None
         self.color = QColor(element2color.get(self.type_, '#000000'))
         self.color_light = self.color.lighter(160)
@@ -665,8 +667,6 @@ class MoleculeRendererMixin(ModelSourceMixin):
             self.objects.append(RenderItem(is_bond=True, atom1=at1, atom2=at2))
 
         for atom in self.atoms:
-            if atom.type_ in ('H', 'D'):
-                atom.u_iso = 0.01
             self.objects.append(RenderItem(is_bond=False, atom1=atom))
 
         # Build numpy arrays for vectorised rotation
@@ -956,24 +956,37 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self.molecule_center = c
         self.molecule_radius = r or 10
 
+    def _draws_adp_ellipsoid(self, atom: Atom) -> bool:
+        """Return ``True`` when *atom* renders as an ADP ellipsoid, not a sphere.
+
+        Hydrogens use their fixed :data:`HYDROGEN_DISPLAY_RADIUS` sphere
+        *unless* they were refined anisotropically and ADPs are being shown,
+        in which case they are drawn like any other element.
+        """
+        return bool(self._show_adps and atom.u_cart is not None and atom.adp_valid)
+
     def get_spherical_radius(self, atom: Atom) -> float:
         """Return an approximate isotropic radius for label-offset calculations."""
         if atom.u_cart is not None and not atom.adp_valid:
             # NPD cube: bounding radius in Angstrom (atoms_size / scale is
             # zoom-invariant, so this is a constant).
             return self.atoms_size * NPD_CUBE_BOUND_FACTOR / self.scale
+        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+            return atom.display_radius
         if self._show_adps and atom.u_iso is not None:
             return sqrt(atom.u_iso)
-        return 0.23
+        return atom.display_radius
 
     def get_directional_radius(self, atom: Atom, v: np.ndarray) -> float:
         """Return the distance from the atom centre to its ellipsoid surface along *v*."""
         vx, vy, vz = float(v[0]), float(v[1]), float(v[2])
         d = sqrt(vx * vx + vy * vy + vz * vz)
         if d < 1e-8:
-            return 0.23
+            return atom.display_radius
         if not atom.adp_valid:
-            return 0.23
+            return atom.display_radius
+        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+            return atom.display_radius
         if self._show_adps and atom.u_inv is not None:
             inv_d = 1.0 / d
             ux, uy, uz = vx * inv_d, vy * inv_d, vz * inv_d
@@ -986,7 +999,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
                 return self.adp_scale / sqrt(val)
         if self._show_adps and atom.u_iso is not None:
             return sqrt(atom.u_iso) * self.adp_scale
-        return 0.23
+        return atom.display_radius
 
     def get_conntable_from_atoms(self, extra_param: float = 1.2) -> tuple:
         """Build a connectivity table from atomic coordinates and covalent radii."""
@@ -1051,6 +1064,9 @@ class MoleculeRendererMixin(ModelSourceMixin):
         if atom.u_cart is not None and not atom.adp_valid:
             bound = self.atoms_size * NPD_CUBE_BOUND_FACTOR
             return dx ** 2 + dy ** 2 <= bound ** 2
+        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+            radius = atom.display_radius * self.scale
+            return dx ** 2 + dy ** 2 <= radius ** 2
         if self._show_adps and atom.u_cart is not None:
             a = atom.u_cart[0, 0]
             b = atom.u_cart[0, 1]
@@ -1074,7 +1090,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
                     local_x = dx * cos_a + dy * sin_a
                     local_y = -dx * sin_a + dy * cos_a
                     return (local_x ** 2 / r1 ** 2) + (local_y ** 2 / r2 ** 2) <= 1.0
-        circle_size = self.atoms_size
+        circle_size = atom.display_radius * self.scale * 2
         if self._show_adps and atom.u_iso is not None:
             circle_size = sqrt(atom.u_iso) * self.scale * self.adp_scale * 2
         return dx ** 2 + dy ** 2 <= (circle_size / 2) ** 2
@@ -1514,13 +1530,27 @@ class MoleculeRendererMixin(ModelSourceMixin):
 
     def draw_atom(self, atom: Atom) -> None:
         """Draw a single atom as ADP ellipsoid, sphere, or fixed circle."""
+        cx = atom.screenx
+        cy = atom.screeny
         if atom.u_cart is not None and not atom.adp_valid:
             # Non-positive-definite tensor: show the cube placeholder in both
             # ADP and isotropic mode so the broken atom is never hidden.
             self._draw_invalid_adp(atom)
             return
-        cx = atom.screenx
-        cy = atom.screeny
+        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+            # Hydrogen without an anisotropic tensor (or with ADPs switched
+            # off): fixed-size sphere, identical in both display modes.
+            circle_size = atom.display_radius * self.scale * 2
+            radius = circle_size / 2
+            self._painter.save()  # type: ignore[union-attr]
+            self._painter.translate(cx, cy)  # type: ignore[union-attr]
+            if atom.name in self.selected_atoms:
+                self._draw_selection(radius, radius)
+            self._painter.setPen(QPen(self.fallback_pen_color, 1, Qt.PenStyle.SolidLine))  # type: ignore[union-attr]
+            self._painter.setBrush(atom.sphere_brush)  # type: ignore[union-attr]
+            self._painter.drawEllipse(QRectF(-radius, -radius, circle_size, circle_size))  # type: ignore[union-attr]
+            self._painter.restore()  # type: ignore[union-attr]
+            return
 
         if self._show_adps and atom.u_cart is not None:
             a = atom.u_cart[0, 0]
@@ -1565,7 +1595,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
                     self._painter.restore()  # type: ignore[union-attr]
                     return
 
-        circle_size = self.atoms_size
+        circle_size = atom.display_radius * self.scale * 2
         if self._show_adps and atom.u_iso is not None:
             circle_size = sqrt(atom.u_iso) * self.scale * self.adp_scale * 2
         radius = circle_size / 2

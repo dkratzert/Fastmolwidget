@@ -56,7 +56,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
-from fastmolwidget.atoms import element2color, get_radius_from_element
+from fastmolwidget.atoms import display_radius_for_element, element2color
 from fastmolwidget.molecule2D import calc_volume
 from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
@@ -229,7 +229,7 @@ class _Atom3D:
         label: str,
         type_: str,
         part: int,
-        u_eq: float = 0.04,
+        u_eq: float | None = None,
     ) -> None:
         self.center = np.array([x, y, z], dtype=np.float32)
         self.label = label
@@ -240,14 +240,15 @@ class _Atom3D:
         hex_color = element2color.get(type_, "#808080")
         self.color_f: tuple[float, float, float] = _hex_to_rgb_float(hex_color)
 
-        # World-space visual radius for sphere rendering (Å) – covalent radius
-        try:
-            self.display_radius: float = get_radius_from_element(type_)
-        except (KeyError, Exception):
-            self.display_radius: float = 0.5
+        # World-space visual radius (Å) for sphere rendering: the covalent
+        # radius scaled to display size, or the fixed hydrogen radius for H/D.
+        self.display_radius: float = display_radius_for_element(type_)
 
         self.u_cart: np.ndarray | None = None
-        # Store the isotropic U value (Å²); radius = sqrt(u_iso) * _ADP_SCALE
+        # Store the isotropic U value (Å²); radius = sqrt(u_iso) * _ADP_SCALE.
+        # Starts as None for H/D so a hydrogen without an anisotropic tensor
+        # uses the fixed display_radius; _load_molecule fills it in for a
+        # hydrogen that *was* refined anisotropically.
         self.u_iso: float | None = u_eq if type_ not in ('H', 'D') else None
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
@@ -851,7 +852,11 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             is_selected = atom.label in self.selected_atoms
             col = _SEL_COLOR if is_selected else atom.color_f
             sel_flag = 1.0 if is_selected else 0.0
-            r = (sqrt(atom.u_iso) * _ADP_SCALE) if atom.u_iso is not None else atom.display_radius
+            r = (
+                sqrt(atom.u_iso) * _ADP_SCALE
+                if self._show_adps and atom.u_iso is not None
+                else atom.display_radius
+            )
             for j in range(4):
                 vi = i * 4 + j
                 verts[vi, 0:3] = c
@@ -1496,7 +1501,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 # NPD cube placeholder: use its bounding-sphere radius.
                 # ``u_iso`` may be negative here, so sqrt() is not an option.
                 r = _npd_bound_radius(atom)
-            elif atom.u_iso is not None:
+            elif self._show_adps and atom.u_iso is not None:
                 r = sqrt(atom.u_iso)
             else:
                 r = atom.display_radius
@@ -1681,6 +1686,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             else:
                 a3d.symmgen = False
 
+            # Hydrogens keep their ADP tensor: an anisotropically refined H
+            # is drawn as a real ellipsoid while "Show ADP" is on, and falls
+            # back to the fixed HYDROGEN_DISPLAY_RADIUS sphere when it is off.
             adp_vals = getattr(at, "adp", None)
             if adp_vals is not None and self._cell:
                 try:
@@ -1710,9 +1718,6 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                     a3d.u_cart = None
                     a3d.u_iso = None
                     a3d.adp_valid = False
-
-            if at.type in ("H", "D"):
-                a3d.u_iso = a3d.u_iso if a3d.u_iso else 0.01
 
             self.atoms.append(a3d)
 
@@ -2669,7 +2674,11 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                     ray_origin, ray_dir, atom.center, radius, mv
                 )
             else:
-                radius = (sqrt(float(atom.u_iso)) * _ADP_SCALE) if atom.u_iso is not None else atom.display_radius
+                radius = (
+                    sqrt(float(atom.u_iso)) * _ADP_SCALE
+                    if self._show_adps and atom.u_iso is not None
+                    else atom.display_radius
+                )
                 t = self._ray_sphere_hit_viewspace(
                     ray_origin, ray_dir, atom.center, radius, mv
                 )
