@@ -1,25 +1,9 @@
 /**
- * High-level convenience wrapper combining the SDM grow/pack-unit-cell logic
- * (`sdm.js`) with the Canvas renderer (`molecule2d.js`).
+ * Convenience wrapper combining `sdm.js` grow/pack logic with the Canvas
+ * renderer in `molecule2d.js`.
  *
- * Python only needs to parse the structure file (CIF/SHELX) and send the
- * **asymmetric unit** as fractional coordinates plus the symmetry
- * operations — see `fastmolwidget.web_export` for a ready-made exporter.
- * Growing molecules to completion and packing whole unit cells both happen
- * here, in the browser.
- *
- * Expected JSON contract (see README.md for details):
- * ```json
- * {
- *   "cell": [a, b, c, alpha, beta, gamma],
- *   "centric": false,
- *   "symmops": ["X,Y,Z", "-X,1/2+Y,1/2-Z", ...],
- *   "atoms": [
- *     {"label": "C1", "type": "C", "x": 0.1, "y": 0.2, "z": 0.3, "part": 0,
- *      "adp": [U11, U22, U33, U23, U13, U12] }
- *   ]
- * }
- * ```
+ * Loads the fractional-coordinate JSON from `fastmolwidget.web_export`;
+ * growing and packing happen in the browser.
  */
 
 import { SDM } from './sdm.js';
@@ -39,7 +23,7 @@ export class MoleculeViewer2D {
     this._growEnabled = false;
     this._packEnabled = false;
     this._packSymmopIndices = null;
-    /** Resolves to the decoded map, or to `null` when the page carries none. */
+    /** Decoded density map, or `null` when absent. */
     this._densityPromise = Promise.resolve(null);
   }
 
@@ -48,15 +32,13 @@ export class MoleculeViewer2D {
     this._structure = data;
     this._adpByLabel = new Map(data.atoms.filter((a) => a.adp).map((a) => [a.label, a.adp]));
     this.widget.clearResidualDensity();
-    // Decoding needs DecompressionStream and is therefore asynchronous; start
-    // it now so that switching the density on later is instant.
+    // Decode early so toggling density later is immediate.
     this._densityPromise = data.density
       ? DensityMap.fromPayload(data.density)
       : Promise.resolve(null);
     this._densityPromise.catch(() => {});
     this._refresh(false);
-    // Lets a control bar built before the first load discover that this
-    // structure ships a density map (or that the next one does not).
+    // Lets pre-built controls resync density availability.
     this.widget.dispatchEvent(new CustomEvent('structureChanged', {
       detail: { hasDensity: this.hasDensity },
     }));
@@ -90,11 +72,7 @@ export class MoleculeViewer2D {
     this.widget.setResidualDensityLevel(level);
   }
 
-  /**
-   * The contour level the exporter suggests (3 sigma of the map), in e/A^3,
-   * or `null` when the page carries no map. Available before the map has
-   * finished decoding, since it comes straight from the payload.
-   */
+  /** Suggested contour level from the payload, in e/A^3, or `null`. */
   densitySuggestedLevel() {
     const payload = this._structure && this._structure.density;
     return payload ? payload.level : null;
@@ -107,8 +85,10 @@ export class MoleculeViewer2D {
     if (this._structure) this._refresh(true);
   }
 
-  /** Enable/disable packing every symmetry-equivalent position into one unit cell.
-   * @param {number[]|null} [symmopIndices] 0-based indices (identity is always 0); `null` = all. */
+  /**
+   * Enable/disable packing every symmetry-equivalent position into one unit cell.
+   * @param {number[]|null} [symmopIndices] 0-based indices; `null` = all.
+   */
   setPack(enabled, symmopIndices = null) {
     this._packEnabled = enabled;
     this._packSymmopIndices = symmopIndices;
@@ -138,9 +118,7 @@ export class MoleculeViewer2D {
     this.widget.isPacked = this._packEnabled;
     if (keepView) {
       this.widget.growMolecule({ atoms: withAdp, cell });
-      // Growing/packing changes the atom set, but `growMolecule` keeps the
-      // view and therefore the bounding sphere of the *previous* (smaller)
-      // atom set. Re-centre and re-fit — the rotation is preserved.
+      // `growMolecule` keeps the rotation; re-fit the new atom set.
       this.widget.fitToView();
     } else {
       this.widget.openMolecule({ atoms: withAdp, cell, keepView: false });

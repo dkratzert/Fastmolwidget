@@ -1,24 +1,4 @@
-"""Threaded demo web server for the JavaScript renderer shipped in
-``fastmolwidget/web/js``.
-
-Parses a CIF in Python (:mod:`fastmolwidget.web_export`) and serves the
-self-contained page produced by :func:`fastmolwidget.web.render_html`, using
-:class:`http.server.ThreadingHTTPServer`.  The raw ES modules are served as
-well, so they can still be loaded directly during JavaScript development.
-
-Run directly::
-
-    uv run python -m fastmolwidget.web_demo_server
-    uv run python -m fastmolwidget.web_demo_server --cif tests/test-data/p31c.cif --port 8080
-    uv run python -m fastmolwidget.web_demo_server --density
-
-``--density`` computes a residual (Fo−Fc) map and embeds it, which adds a
-"Density" checkbox and a contour-level box to the control bar.  It is off by
-default because the map is by far the largest thing on the page.
-
-Then open the printed URL (a browser tab is opened automatically unless
-``--no-browser`` is passed).
-"""
+"""Threaded demo server for the web renderer."""
 
 from __future__ import annotations
 
@@ -47,17 +27,9 @@ def _make_handler(
     cif_path: Path,
     density: dict[str, Any] | None = None,
 ) -> type[SimpleHTTPRequestHandler]:
-    """Build a request-handler class serving the viewer page for *cif_path*.
+    """Build a handler serving the viewer page for *cif_path*.
 
-    The page is rendered per request (with the bundle cache cleared) so editing
-    a JavaScript module and reloading the browser shows the change immediately.
-    Every other path falls back to the shipped ES modules.
-
-    :param density: An already-computed payload from
-        :func:`~fastmolwidget.web_export.export_density`, or ``None``.  It is
-        computed once by :func:`run_server` rather than per request, which
-        would otherwise re-run the whole structure-factor calculation on every
-        reload.
+    The page is rendered per request so JS edits show up on reload.
     """
     js_dir = str(js_directory())
 
@@ -85,8 +57,7 @@ def _make_handler(
             self.wfile.write(data)
 
         def end_headers(self) -> None:
-            # Disable all caching so a reload always fetches the current
-            # HTML/JS/JSON instead of a stale, browser-cached copy.
+            # Disable caching so reloads always fetch current assets.
             self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
             self.send_header('Pragma', 'no-cache')
             self.send_header('Expires', '0')
@@ -106,16 +77,7 @@ def run_server(
     density: bool = False,
     density_options: dict[str, Any] | None = None,
 ) -> ThreadingHTTPServer:
-    """Parse *cif_path* and start the threaded demo server in a background
-    thread. Returns the running :class:`~http.server.ThreadingHTTPServer` so
-    the caller can ``server.shutdown()`` it later (e.g. in tests).
-
-    :param density: also compute a residual (Fo−Fc) map and embed it, adding
-        the Density controls to the page.  Off by default, since the map
-        dominates the page size.
-    :param density_options: keyword arguments for
-        :func:`~fastmolwidget.web_export.export_density`.
-    """
+    """Start the threaded demo server and return it."""
     cif_path = Path(cif_path)
     if not cif_path.is_file():
         raise FileNotFoundError(f'No such structure file: {cif_path} (pass one with --cif)')

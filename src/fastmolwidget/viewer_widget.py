@@ -1,14 +1,4 @@
-"""
-A self-contained QWidget that embeds a :class:`~fastmolwidget.molecule2D.MoleculeWidget`
-together with its control bar.
-
-Usage::
-
-    viewer = MoleculeViewerWidget()
-    viewer.load_file("structure.cif")
-    viewer.show()
-
-"""
+"""Ready-to-use 2-D viewer widget."""
 
 from __future__ import annotations
 
@@ -23,32 +13,7 @@ from fastmolwidget.part_combo import PartFilterWidget
 
 
 class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
-    """A ready-to-use viewer widget that combines a :class:`MoleculeWidget`
-    with a control bar.
-
-    The control bar provides the following controls:
-
-    * **Grow** – expand the asymmetric unit to complete molecules.
-    * **Show ADP** – toggle ADP ellipsoid / sphere display.
-    * **Show Labels** – toggle atom-name labels.
-    * **Hide Hydrogens** – toggle hydrogen visibility.
-    * **Bond Width** – spinbox controlling bond width (second row).
-    * **Bond Color** – button opening a color picker for all non-selected bonds (second row).
-    * **Residual Density** – checkable button; when pressed (shown sunken and
-      tinted green) the Fo-Fc isosurfaces are projected into the view as a
-      wireframe cage, clicking again hides them.
-    * **Level** – spinbox changing the residual-density contour level; enabled
-      only while density is shown.
-    * **Parts** *(inline in Row 1, after Hide Hydrogens, shown only when disorder parts are present)* –
-      a checkable combo box listing every disorder-part number found in the
-      loaded structure.  All parts are selected by default; unticking a part
-      hides those atoms and their bonds.
-
-    The interface is intentionally minimal: call :meth:`load_file` to display a
-    structure.
-
-    :param parent: Optional parent widget.
-    """
+    """2-D :class:`MoleculeWidget` plus its control bar."""
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -75,12 +40,11 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
         self._init_density_controls()
 
-        # default state
-        # "Hide Hydrogens" unchecked → hydrogens are visible by default
+        # "Hide Hydrogens" unchecked -> visible by default.
         self._adp_checkbox.setChecked(True)
         self._hydrogens_checkbox.setChecked(False)
 
-        # wire controls to renderer
+        # Wire controls to the renderer.
         self._adp_checkbox.toggled.connect(self._render_widget.show_adps)
         self._label_checkbox.toggled.connect(self._render_widget.show_labels)
         self._hydrogens_checkbox.toggled.connect(
@@ -95,18 +59,18 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
-        # apply initial defaults to the renderer
+        # Apply initial defaults.
         self._render_widget.set_bond_width(3)
         self._render_widget.show_labels(False)
 
-        # ── Part filter (Row 3) ───────────────────────────────────────────────
+        # ── Part filter ───────────────────────────────────────────────────────
         self._part_widget = PartFilterWidget()
         self._part_widget.selectionChanged.connect(self._apply_part_filter)
 
         self._render_widget.partsChanged.connect(self._update_part_controls)
 
         # ── layout ───────────────────────────────────────────────────────────
-        # Row 1: structure toggles
+        # Row 1: structure toggles.
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._open_file_button)
         control_bar.addWidget(self._grow_checkbox)
@@ -116,7 +80,7 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
         control_bar.addWidget(self._hydrogens_checkbox)
         control_bar.addStretch()
 
-        # Row 2: bond controls
+        # Row 2: bond controls.
         control_bar2 = QtWidgets.QHBoxLayout()
         control_bar2.addWidget(self._bw_label)
         control_bar2.addWidget(self._bond_width_spinbox)
@@ -141,32 +105,18 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
 
     @property
     def render_widget(self) -> MoleculeWidget:
-        """The underlying :class:`MoleculeWidget` (read-only)."""
+        """Underlying :class:`MoleculeWidget`."""
         return self._render_widget
 
     def load_file(self, filename: str | Path) -> None:
-        """Load a structure file and display it.
-
-        The file format is determined from the extension (``.cif``, ``.res``,
-        ``.ins``, ``.xyz``).
-
-        :param filename: Path to the structure file.
-        :raises ValueError: If the file format is not supported.
-        :raises FileNotFoundError: If the file does not exist.
-        """
+        """Load and display a structure file."""
         self._loader.load_file(filename)
         self.setWindowTitle(str(Path(filename).resolve()))
-        # Loading a different structure drops its residual density; make the
-        # control bar follow whatever the renderer actually ended up with.
+        # Keep the controls in sync if a new model cleared density.
         self._sync_density_controls()
 
     def grow(self) -> None:
-        """Grow the current structure to complete molecules.
-
-        Expands the asymmetric unit using crystal symmetry (SDM algorithm).
-        Deactivates Pack Unit Cell if it is currently enabled.
-        No-op when no file has been loaded or the file has no symmetry (XYZ).
-        """
+        """Grow the current structure to full molecules."""
         if self._pack_checkbox.isChecked():
             self._pack_checkbox.blockSignals(True)
             self._pack_checkbox.setChecked(False)
@@ -181,7 +131,7 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
         self,
         color: QtGui.QColor | str | tuple[float, float, float] | tuple[int, int, int],
     ) -> None:
-        """Set the default colour used for non-selected bonds."""
+        """Set the default color for non-selected bonds."""
         self._render_widget.set_bond_color(color)
 
     def _on_grow_toggled(self, checked: bool) -> None:
@@ -206,13 +156,13 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
             self._render_widget._align_to_reciprocal_axis(1)
 
     def _update_part_controls(self, parts: frozenset[int]) -> None:
-        """Rebuild the Part combo whenever the renderer loads a new molecule."""
+        """Refresh the Part filter after a load."""
         self._part_widget.update_parts(parts)
         if len(parts) > 1:
             self._render_widget.set_visible_parts(None)
 
     def _apply_part_filter(self) -> None:
-        """Forward the current combo selection to the renderer."""
+        """Apply the current Part filter."""
         checked = set(self._part_widget.checked_values())
         if checked == self._render_widget.available_parts:
             self._render_widget.set_visible_parts(None)
@@ -220,14 +170,14 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
             self._render_widget.set_visible_parts(checked)
 
     def _choose_bond_color(self) -> None:
-        """Open a colour picker for the bond colour."""
+        """Open a color picker for bonds."""
         current = QtGui.QColor(self._render_widget.bond_color)
         color = QtWidgets.QColorDialog.getColor(current, self, "Choose Bond Color")
         if color.isValid():
             self._render_widget.set_bond_color(color)
 
     def _open_file_dialog(self) -> None:
-        """Open a file dialog to select and load a structure file."""
+        """Open a file dialog and load the chosen structure."""
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Open Structure File",
@@ -238,11 +188,7 @@ class MoleculeViewerWidget(DensityControlsMixin, QtWidgets.QWidget):
             self.load_file(path)
 
     def _save_image_dialog(self) -> None:
-        """Open a file dialog and save a screenshot via :meth:`save_image`.
-
-        The current label visibility state is preserved as-is; labels appear
-        in the screenshot only if they are active at the time of saving.
-        """
+        """Open a file dialog and save the current view."""
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Save Image",

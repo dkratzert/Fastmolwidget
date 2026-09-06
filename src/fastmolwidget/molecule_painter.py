@@ -1,32 +1,4 @@
-"""Shared renderer mixin and data types for 2-D perspective molecule drawing.
-
-:class:`MoleculeRendererMixin` holds **all** state and drawing logic without
-depending on any specific Qt base class.  Concrete widgets mix it with the
-appropriate Qt base:
-
-* :class:`~fastmolwidget.molecule2D.MoleculeWidget`  ← ``QWidget``
-* :class:`~fastmolwidget.molecule_quick.MoleculeQuickItem` ← ``QQuickPaintedItem``
-
-:class:`Atom` and :class:`RenderItem` are also defined here and re-exported by
-:mod:`fastmolwidget.molecule2D` for backwards compatibility.
-
-Minimal contract that the concrete class must satisfy
-------------------------------------------------------
-* Inherit ``MoleculeRendererMixin`` **before** the Qt base class so that
-  ``super()`` chains work correctly (cooperative multiple inheritance).
-* Call ``QWidget.__init__(self, parent)`` (or equivalent) **then**
-  ``self._init_renderer()`` from the concrete ``__init__``.
-* Declare the Qt signals as class-level attributes::
-
-      atomClicked         = Signal(str)
-      bondClicked         = Signal(str, str)
-      partsChanged        = Signal(object)
-      densityLevelChanged = Signal(float)
-
-* The concrete class is responsible for creating ``self._painter`` and calling
-  ``self.draw()`` at repaint time (e.g. inside ``paintEvent`` / ``paint``).
-* Implement :meth:`save_image` using the appropriate Qt image-capture API.
-"""
+"""Shared 2-D renderer mixin and helper types."""
 
 from __future__ import annotations
 
@@ -56,8 +28,7 @@ if TYPE_CHECKING:
     from fastmolwidget.density import ResidualDensityMap
 
 
-#: Residual density is only contoured within this distance (Å) of a visible
-#: atom, matching :data:`fastmolwidget.molecule3D.DENSITY_MARGIN`.
+#: Residual density is only contoured within this distance (Å) of a visible atom.
 DENSITY_MARGIN: float = 1.5
 
 #: Wireframe colour of the positive (Fo > Fc) residual-density lobe.
@@ -66,9 +37,7 @@ DENSITY_POS_COLOR = QColor(0, 200, 0)
 #: Wireframe colour of the negative (Fo < Fc) residual-density lobe.
 DENSITY_NEG_COLOR = QColor(230, 0, 0)
 
-#: Squared screen length below which a density segment is not drawn.  Once the
-#: view is zoomed out, sub-pixel segments only overdraw each other, so dropping
-#: them costs nothing visually and removes most of the work.
+#: Drop density segments shorter than this squared screen length.
 _DENSITY_MIN_PIXELS_SQUARED: float = 0.5
 
 
@@ -88,19 +57,14 @@ def calc_volume(
 #: Half-edge of the NPD placeholder cube, as a fraction of ``atoms_size``.
 NPD_CUBE_HALF_FACTOR = 0.4
 
-#: Bounding-circle radius of the NPD cube, as a fraction of ``atoms_size``
-#: (half-edge times sqrt(3), the cube's body diagonal half-length).
+#: Bounding radius of the NPD cube, as a fraction of ``atoms_size``.
 NPD_CUBE_BOUND_FACTOR = NPD_CUBE_HALF_FACTOR * 1.7320508075688772
 
-# Light direction in view space (x right, y down, z away from the viewer):
-# upper-left and in front of the molecule.
+# Light from upper-left, in front of the molecule.
 _NPD_LIGHT = np.array([-0.3, -0.5, -1.0])
 _NPD_LIGHT = _NPD_LIGHT / np.linalg.norm(_NPD_LIGHT)
 
-# The six faces of a unit cube as indices into the corner list built by
-# :func:`npd_cube_faces`, each wound so that the outward normal is
-# ``(p1 - p0) x (p2 - p1)``.  Corner index bits are (i, j, k) -> sign of
-# (u, v, w), see below.
+# Faces of a unit cube, wound for outward normals.
 _NPD_CUBE_FACES: tuple[tuple[int, int, int, int], ...] = (
     (4, 6, 7, 5),  # +u
     (0, 1, 3, 2),  # -u
@@ -114,24 +78,10 @@ _NPD_CUBE_FACES: tuple[tuple[int, int, int, int], ...] = (
 def npd_cube_faces(
     rotation: np.ndarray, half: float,
 ) -> list[tuple[np.ndarray, float, np.ndarray]]:
-    """Return the projected faces of the NPD placeholder cube.
-
-    The cube is axis-aligned in the *molecular* Cartesian frame and is
-    brought into view space with *rotation* (the renderer's accumulated view
-    rotation), so it turns together with the rest of the structure — the same
-    convention the OpenGL renderer uses.
-
-    :param rotation: 3x3 view rotation matrix (``cumulative_R``).
-    :param half: Half-edge length of the cube in screen pixels.
-    :returns: A list of ``(corners, mean_z, normal)`` tuples, one per face,
-        sorted **back-to-front** (descending depth, since smaller ``z`` is
-        nearer the viewer here).  ``corners`` is a ``(4, 2)`` array of
-        screen-space offsets relative to the atom centre and ``normal`` is the
-        outward unit normal in view space.
-    """
+    """Return projected NPD-cube faces sorted back-to-front."""
     R = np.asarray(rotation, dtype=np.float64)
     u, v, w = R[:, 0] * half, R[:, 1] * half, R[:, 2] * half
-    # Corner index is i*4 + j*2 + k with i/j/k selecting the sign of u/v/w.
+    # Corner index is i*4 + j*2 + k for the sign choices of u/v/w.
     corners = np.array([
         (si * u) + (sj * v) + (sk * w)
         for si in (-1.0, 1.0) for sj in (-1.0, 1.0) for sk in (-1.0, 1.0)
@@ -149,10 +99,7 @@ def npd_cube_faces(
 
 
 def npd_face_shade(normal: np.ndarray) -> float:
-    """Return the Lambert brightness factor for a cube face *normal*.
-
-    ``1.0`` leaves the base colour unchanged; larger values brighten it.
-    """
+    """Return the Lambert brightness factor for a cube face *normal*."""
     diffuse = max(0.0, float(np.dot(normal, _NPD_LIGHT)))
     return min(1.60, max(0.45, 0.60 + 0.85 * diffuse))
 
@@ -163,13 +110,7 @@ def npd_face_shade(normal: np.ndarray) -> float:
 
 @dataclass(slots=True)
 class RenderItem:
-    """A single renderable element (atom or bond) in the z-ordered draw list.
-
-    :param is_bond: ``True`` for a bond, ``False`` for an atom.
-    :param z_order: Depth value used to sort back-to-front (painter's algorithm).
-    :param atom1: First (or only) atom involved.
-    :param atom2: Second atom of a bond, ``None`` for an atom item.
-    """
+    """One z-sorted render item."""
 
     is_bond: bool
     z_order: float = 0.0
@@ -236,15 +177,10 @@ class Atom:
 # ---------------------------------------------------------------------------
 
 class MoleculeRendererMixin(ModelSourceMixin):
-    """Pure-Python mixin providing all 2-D molecule-rendering logic.
-
-    Contains no Qt base-class dependencies: every Qt call goes through
-    ``self.width()``, ``self.height()``, ``self.update()``, and
-    ``self._painter`` — all provided by the concrete subclass.
-    """
+    """Qt-base-class-agnostic 2-D molecule renderer."""
 
     _AUTO_ZOOM_PADDING = 1.1
-    # Bounding rect for a unit circle, shared by _draw_principal_arcs
+    # Unit circle, reused by _draw_principal_arcs.
     _UNIT_RECT = QRectF(-1.0, -1.0, 2.0, 2.0)
 
     # ------------------------------------------------------------------
@@ -252,12 +188,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
     # ------------------------------------------------------------------
 
     def _init_renderer(self) -> None:
-        """Initialise all renderer state.
-
-        Call this **once** from the concrete ``__init__``, **after** the
-        Qt base-class constructor has run (so that ``self.update()`` and
-        the signal infrastructure are already in place).
-        """
+        """Initialise renderer state after the Qt base class is ready."""
         self._astar: float | None = None
         self._bstar: float | None = None
         self._cstar: float | None = None
@@ -331,32 +262,21 @@ class MoleculeRendererMixin(ModelSourceMixin):
         # ---- Residual (Fo-Fc) density ---------------------------------
         #: The computed map, or ``None`` when no density is displayed.
         self._density_map: ResidualDensityMap | None = None
-        #: Path of the structure file last loaded, set by
-        #: :class:`~fastmolwidget.loader.MoleculeLoader`; the model the map's
-        #: calculated structure factors come from.  Hosts that feed atoms
-        #: themselves use
-        #: :meth:`~fastmolwidget.molecule_base.ModelSourceMixin.set_model_source`
-        #: instead.
+        #: Path of the last loaded structure file, when applicable.
         self._model_path: Path | None = None
         self._density_level: float = 0.30
-        #: Wireframe segments of both lobes as ``(K, 2, 3)`` arrays, in the
-        #: *unrotated* model frame.  They are projected in :meth:`draw`, so a
-        #: rotation never has to re-contour the map.
+        #: Wireframe segments in the unrotated model frame.
         self._density_pos_lines = np.empty((0, 2, 3))
         self._density_neg_lines = np.empty((0, 2, 3))
         self._density_pos_color = QColor(DENSITY_POS_COLOR)
         self._density_neg_color = QColor(DENSITY_NEG_COLOR)
 
-        #: Atom coordinates as they were loaded, before any rotation.  The
-        #: density map is defined in this frame, so the isosurface has to be
-        #: clipped against these rather than against the displayed positions.
+        #: Atom coordinates before any view rotation.
         self._model_coords_array = np.empty((0, 3))
-        #: Rigid model-to-view transform: ``view = model @ R.T + t``.  Kept in
-        #: step with the rotations applied in place to :attr:`_coords_array`.
+        #: Model-to-view transform: ``view = model @ R.T + t``.
         self._view_rotation = np.eye(3)
         self._view_offset = np.zeros(3)
-        #: Reused QLineF objects for the density wireframe, so a repaint does
-        #: not have to allocate thousands of Qt objects.
+        #: Reused QLineF objects for the density wireframe.
         self._density_line_buffer: list[QLineF] = []
 
         # Hover state
@@ -464,32 +384,9 @@ class MoleculeRendererMixin(ModelSourceMixin):
         *,
         model_path: object | None = None,
     ) -> None:
-        """Compute and display a residual (Fo−Fc) electron-density isosurface.
+        """Compute and display a residual (Fo−Fc) isosurface.
 
-        The map is calculated from the reflection data together with the
-        refined model (see :mod:`fastmolwidget.density`); nothing has to be
-        pre-computed by another program.  Two wireframe cages are projected
-        into the 2-D view exactly like the atoms: ``+level`` in green and
-        ``-level`` in red.
-
-        The result is cached, so :meth:`set_residual_density_level` can change
-        the contour afterwards without recomputing the map.
-
-        :param hkl_path: A SHELX ``.hkl`` file, a CIF/fcf with a reflection
-            loop, an in-memory document or block, or already read
-            ``ReflectionData``.  ``None`` (the default) uses the source given
-            to :meth:`set_model_source`, or finds the data automatically from
-            the model file itself or a file of the same basename.
-        :param level: Contour level in e/Å³.  ``None`` (the default) uses
-            :data:`~fastmolwidget.density.DEFAULT_SIGMA` times the map's RMS,
-            which adapts to the quality of the structure instead of imposing
-            one absolute value on every dataset.
-        :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
-            Defaults to the source given to :meth:`set_model_source`, or the
-            file this widget last loaded.
-        :raises RuntimeError: If no model is available, or the compiled
-            ``density_cpp`` extension is missing.
-        :raises FileNotFoundError: If no reflection data could be found.
+        The map is cached, so later level changes only re-contour it.
         """
         from fastmolwidget.density import calculate_residual_density
 
@@ -501,25 +398,14 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self.update()  # type: ignore[misc]
 
     def refresh_residual_density(self) -> None:
-        """Re-clip the cached map around the atoms that are visible now.
-
-        The map itself is kept, so this is cheap.  Only needed by hosts that
-        change what is displayed behind the widget's back; loading a molecule
-        and the hydrogen / disorder-part filters already do it themselves.
-        """
+        """Re-clip the cached map around the visible atoms."""
         if self._density_map is None:
             return
         self._build_density_geometry()
         self.update()  # type: ignore[misc]
 
     def set_residual_density_level(self, level: float) -> None:
-        """Re-contour the residual-density map at a new level.
-
-        Does nothing when no map has been computed yet.  The map itself is
-        reused, so this is much cheaper than :meth:`show_residual_density`.
-
-        :param level: Contour level in e/Å³.
-        """
+        """Re-contour the cached residual-density map."""
         level = abs(float(level))
         if level == self._density_level:
             return
@@ -530,14 +416,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
             self.update()  # type: ignore[misc]
 
     def step_residual_density_level(self, steps: int) -> bool:
-        """Raise or lower the contour level by *steps* wheel notches.
-
-        Used by Ctrl+wheel in the view.  The level is clamped to the same
-        range the Level spin box offers, so the two can never drift apart.
-
-        :param steps: Number of notches; positive raises the level.
-        :returns: ``True`` when a map was loaded and the level was adjusted.
-        """
+        """Adjust the contour level by *steps* wheel notches."""
         if self._density_map is None:
             return False
         level = self._density_level + steps * DENSITY_LEVEL_STEP
@@ -567,15 +446,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         return self._density_level
 
     def _visible_model_positions(self) -> np.ndarray | None:
-        """Unrotated positions of the atoms that are currently drawn.
-
-        Applies the same hydrogen and disorder-part filters as :meth:`draw`,
-        so the density follows exactly what is on screen.  The coordinates
-        come from :attr:`_model_coords_array` because the map is defined in
-        that frame, not in the rotated one the atoms are displayed in.
-
-        :returns: An ``(N, 3)`` array, or ``None`` when nothing is visible.
-        """
+        """Return unrotated positions of the atoms currently being drawn."""
         if len(self._model_coords_array) == 0:
             return None
         visible = [
@@ -588,14 +459,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         return self._model_coords_array[visible]
 
     def _build_density_geometry(self) -> None:
-        """Contour the cached map into wireframe segments for both lobes.
-
-        The isosurface is restricted to :data:`DENSITY_MARGIN` around the
-        *visible* atoms, so grown or packed structures get density around every
-        displayed atom while hidden hydrogens and filtered-out disorder parts
-        drag nothing in.  The segments are kept in the model frame; the
-        rotation is applied when they are drawn.
-        """
+        """Contour the cached map into model-frame wireframe segments."""
         if self._density_map is None:
             self._density_pos_lines = np.empty((0, 2, 3))
             self._density_neg_lines = np.empty((0, 2, 3))
@@ -669,11 +533,10 @@ class MoleculeRendererMixin(ModelSourceMixin):
         for atom in self.atoms:
             self.objects.append(RenderItem(is_bond=False, atom1=atom))
 
-        # Build numpy arrays for vectorised rotation
+        # Build arrays for vectorised rotation.
         self._coords_array = np.array(
             [at.coordinate for at in self.atoms], dtype=float).reshape(-1, 3)
-        # The density map is defined in this unrotated frame; remember it
-        # before the view rotation below is applied.
+        # Density clipping uses unrotated coordinates.
         self._model_coords_array = self._coords_array.copy()
         self._view_rotation = np.eye(3)
         self._view_offset = np.zeros(3)
@@ -720,9 +583,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         if not keep_view:
             self.zoom = self._auto_zoom()
 
-        # A cached map survives a reload of the same structure (grow and pack
-        # do exactly that), but the visible atoms have moved, so the surface
-        # has to be re-clipped around them.
+        # Same-model reloads keep the map but must re-clip it.
         if self._density_map is not None:
             self._build_density_geometry()
 
@@ -1212,18 +1073,13 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self._lastPos = event.position()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Scroll changes the label font size; Ctrl+scroll the density level.
-
-        Ctrl+wheel is swallowed whenever a residual-density map is loaded, so
-        it never silently resizes the labels instead.
-        """
+        """Scroll changes label size; Ctrl+scroll changes density level."""
         delta = event.angleDelta().y()
         if delta == 0:
             return
         steps = 1 if delta > 0 else -1
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            # Only claim the event when there is a map to re-contour; without
-            # one it is left to whatever the widget is embedded in.
+            # Only claim Ctrl+wheel when a map is loaded.
             if self.step_residual_density_level(steps):
                 event.accept()
             else:
@@ -1421,8 +1277,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         for atom in label_atoms:
             self.draw_label(atom, enlarged=(atom.name == self.hovered_atom))
 
-        # Drawn after the atoms and bonds so the cage stays readable on top of
-        # the solid geometry, matching the 3-D renderer.
+        # Draw last so the cage stays readable.
         self._draw_residual_density()
 
         if (
@@ -1533,13 +1388,11 @@ class MoleculeRendererMixin(ModelSourceMixin):
         cx = atom.screenx
         cy = atom.screeny
         if atom.u_cart is not None and not atom.adp_valid:
-            # Non-positive-definite tensor: show the cube placeholder in both
-            # ADP and isotropic mode so the broken atom is never hidden.
+            # Keep NPD atoms visible in both display modes.
             self._draw_invalid_adp(atom)
             return
         if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
-            # Hydrogen without an anisotropic tensor (or with ADPs switched
-            # off): fixed-size sphere, identical in both display modes.
+            # H/D without a drawn ellipsoid uses a fixed-size sphere.
             circle_size = atom.display_radius * self.scale * 2
             radius = circle_size / 2
             self._painter.save()  # type: ignore[union-attr]
@@ -1623,9 +1476,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
             bound = self.atoms_size * NPD_CUBE_BOUND_FACTOR
             self._draw_selection(bound, bound)
         pen = QPen(self.fallback_pen_color, 1)
-        # Bevelled joins keep a nearly edge-on face from growing a miter
-        # spike out of its acute corners.  This is already the QPen default;
-        # it is set explicitly so the JS port can be held to the same rule.
+        # Bevel joins avoid miter spikes and match the JS renderer.
         pen.setJoinStyle(Qt.PenJoinStyle.BevelJoin)
         pen.setMiterLimit(2.0)
         self._painter.setPen(pen)  # type: ignore[union-attr]
@@ -1715,14 +1566,8 @@ class MoleculeRendererMixin(ModelSourceMixin):
             By = s * rj_3d * (-vj0 * sin_a + vj1 * cos_a)
             arc_xform = QTransform(Ax, Ay, Bx, By, 0.0, 0.0)
             self._painter.setTransform(arc_xform * base_transform)  # type: ignore[union-attr]
-            # This cross-section lies ON the ellipsoid surface, so the
-            # visible half is the front-facing part (silhouette split),
-            # determined by the surface NORMAL, not by the depth of the
-            # curve point.  The outward normal at
-            # P(t) = ri*cos(t)*vi + rj*sin(t)*vj is proportional to
-            # (cos(t)/ri)*vi + (sin(t)/rj)*vj, so the z-amplitude divides by
-            # the radius rather than multiplying.  For a spherical ADP both
-            # agree; for elongated ellipsoids the depth-based split is wrong.
+            # Split by front-facing normal, not point depth.
+            # The normal amplitude scales with 1/radius along each axis.
             Az_n = vi2 / ri_3d
             Bz_n = vj2 / rj_3d
             z_amp = sqrt(Az_n * Az_n + Bz_n * Bz_n)
@@ -1771,23 +1616,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self._draw_density_lobe(self._density_neg_lines, self._density_neg_color)
 
     def _draw_density_lobe(self, segments: np.ndarray, color: QColor) -> None:
-        """Draw one lobe of the isosurface cage.
-
-        A contoured map easily holds several thousand segments and this runs on
-        every repaint, including while the molecule is being dragged, so the
-        work per segment is kept to a minimum:
-
-        * projection and culling are vectorised in NumPy;
-        * segments outside the viewport, and segments that would come out
-          shorter than a pixel (they only overdraw each other once the view is
-          zoomed out), are dropped;
-        * the :class:`QLineF` objects are reused between frames — rewriting
-          them with ``setLine`` is several times cheaper than allocating a new
-          list each time.
-
-        :param segments: ``(K, 2, 3)`` model-frame line segments.
-        :param color: Wireframe colour.
-        """
+        """Draw one lobe of the isosurface cage."""
         if len(segments) == 0 or self._painter is None:
             return
 
@@ -1883,4 +1712,3 @@ class MoleculeRendererMixin(ModelSourceMixin):
                 labels[i],
             )
         self._painter.restore()  # type: ignore[union-attr]
-

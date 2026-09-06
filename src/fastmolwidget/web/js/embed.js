@@ -1,20 +1,9 @@
 /**
- * Embedding entry point — the counterpart of `new Miew({container: ...})`.
+ * DOM embedding entry point.
  *
- * `createViewer(container, structure, options)` takes a plain DOM element
- * (typically an empty `<div style="height:400px">` in an HTML report), creates
- * the canvas inside it, keeps it sized to the container (HiDPI-aware), and
- * loads a structure in the fractional-coordinate JSON contract produced by
+ * `createViewer(container, structure, options)` creates a HiDPI-aware canvas,
+ * keeps it sized to the container, and loads the JSON from
  * `fastmolwidget.web.structure_json()`.
- *
- * ```html
- * <div id="mol" style="height:400px"></div>
- * <script>
- *   var mol = { ...structure JSON... };
- *   var viewer = Fastmolwidget.createViewer(
- *       document.getElementById('mol'), mol, {controls: false, grow: true});
- * </script>
- * ```
  */
 
 import { MoleculeViewer2D } from './viewer.js';
@@ -37,10 +26,8 @@ const DEFAULTS = {
 };
 
 /**
- * Individual control-bar elements shown when `options.controls` is truthy.
- * Every entry defaults to visible; pass an object (instead of `true`) as
- * `options.controls` to hide specific elements, e.g.
- * `{controls: {pack: false, bondWidth: false}}`.
+ * Per-element visibility for the optional control bar.
+ * When `options.controls` is an object, omitted keys default to `true`.
  */
 const CONTROL_ELEMENT_DEFAULTS = {
   grow: true,
@@ -79,12 +66,10 @@ function button(text, onClick) {
 }
 
 /**
- * Build the control bar shared by the demo page, the generated standalone HTML
- * and any report embedding that asks for `controls: true`.
- *
+ * Build the shared control bar.
  * @param {MoleculeViewer2D} viewer
- * @param {object} opts effective (merged) options
- * @param {object} [elements] per-element visibility, see `CONTROL_ELEMENT_DEFAULTS`.
+ * @param {object} opts effective options
+ * @param {object} [elements] per-element visibility
  * @returns {HTMLElement}
  */
 function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
@@ -124,9 +109,7 @@ function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
     bar.append(widthLabel);
   }
 
-  // Residual density. The controls stay hidden until a structure that
-  // actually ships a map is loaded, so pages exported without one show no
-  // dead controls (and the bar is built before the first load).
+  // Hide density controls until a structure with a map is loaded.
   if (show.density) {
     const levelLabel = el('label',
       'display:flex; align-items:center; gap:4px; font-size:13px; opacity:0.45;');
@@ -136,20 +119,15 @@ function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
       disabled: true,
     });
 
-    // Re-contour while the number is being changed, not only on Enter/blur:
-    // `change` alone makes the spinner arrows feel dead. Work is coalesced
-    // into one animation frame so that holding an arrow down, or typing
-    // quickly, cannot queue up more contours than the browser can draw.
+    // Re-contour on input, not just Enter/blur. Coalesce updates per frame.
     let pendingFrame = 0;
     let applyingFromInput = false;
     const applyLevel = () => {
       pendingFrame = 0;
       const value = parseFloat(levelInput.value);
-      // Ignore half-typed values ('', '0.', '-') and anything out of range;
-      // the `change` handler applies the clamped value once editing ends.
+      // Ignore half-typed or out-of-range values; `change` clamps on commit.
       if (!Number.isFinite(value) || value < 0.01 || value > 9.99) return;
-      // Suppress the echo, or the field would be rewritten (and the caret
-      // moved) underneath someone who is still typing in it.
+      // Do not rewrite the field while the user is still typing.
       applyingFromInput = true;
       try {
         viewer.setDensityLevel(value);
@@ -178,8 +156,7 @@ function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
                       document.createTextNode('e/\u00c5\u00b3'));
 
     const densityChk = checkbox('Density', false, (checked) => {
-      // Decoding the map is asynchronous, so the checkbox is only trusted
-      // once the viewer confirms the surface is really up.
+      // Decoding is async; trust the checkbox only after the viewer confirms.
       viewer.setDensityVisible(checked, parseFloat(levelInput.value)).then((shown) => {
         densityChk.inputEl.checked = shown;
         levelInput.disabled = !shown;
@@ -223,30 +200,25 @@ function createControlBar(viewer, opts, elements = CONTROL_ELEMENT_DEFAULTS) {
 }
 
 /**
- * Create a molecule viewer inside *container*.
+ * Create a viewer inside *container*.
  *
  * @param {HTMLElement|string} container element or element id to fill.
- * @param {object|null} [structure] structure in the fractional-coordinate JSON
- *   contract; may be `null` and loaded later via `viewer.loadStructure(...)`.
+ * @param {object|null} [structure] fractional-coordinate JSON, or `null`.
  * @param {object} [options]
- * @param {boolean|object} [options.controls=false] show the control bar. Pass
- *   `true` to show every element, or an object to selectively show/hide
- *   individual elements, e.g. `{grow: true, pack: false, bondWidth: false}`.
- *   Recognised keys (all default `true` when `controls` is an object):
- *   `grow`, `pack`, `adps`, `labels`, `hydrogens`, `partFilter`, `bondWidth`,
- *   `bestView`, `resetView`, `saveImage`.
- * @param {boolean} [options.grow=false] grow the asymmetric unit to whole molecules.
- * @param {boolean} [options.pack=false] pack one complete unit cell.
+ * @param {boolean|object} [options.controls=false] show all controls, or pass
+ *   an object of per-element visibility flags.
+ * @param {boolean} [options.grow=false] grow the asymmetric unit.
+ * @param {boolean} [options.pack=false] pack one unit cell.
  * @param {boolean} [options.adps=true] draw ADP ellipsoids.
  * @param {boolean} [options.labels=false] draw atom labels.
  * @param {boolean} [options.hydrogens=true] show hydrogen atoms.
- * @param {number}  [options.bondWidth=3]
- * @param {string}  [options.bondColor] CSS colour.
- * @param {string}  [options.background] CSS colour.
+ * @param {number} [options.bondWidth=3]
+ * @param {string} [options.bondColor] CSS colour.
+ * @param {string} [options.background] CSS colour.
  * @param {boolean} [options.bestView=false] align to the PCA best view after loading.
- * @param {string}  [options.saveFileName='molecule.png']
- * @param {number}  [options.devicePixelRatio] force a fixed ratio (tests/exports).
- * @returns {MoleculeViewer2D} with an extra `.destroy()` and `.container` property.
+ * @param {string} [options.saveFileName='molecule.png']
+ * @param {number} [options.devicePixelRatio] fixed ratio for tests/exports.
+ * @returns {MoleculeViewer2D} with extra `.destroy()` and `.container` properties.
  */
 export function createViewer(container, structure = null, options = {}) {
   const host = typeof container === 'string' ? document.getElementById(container) : container;
@@ -303,8 +275,7 @@ export function createViewer(container, structure = null, options = {}) {
   };
 
   if (structure) {
-    // Measure first: loading auto-zooms, and until the canvas has been
-    // measured the widget only knows the placeholder 300x150 default size.
+    // Measure first; otherwise auto-zoom uses the placeholder 300x150 canvas size.
     fit();
     viewer.loadStructure(structure);
     if (opts.pack) viewer.setPack(true);
@@ -312,7 +283,7 @@ export function createViewer(container, structure = null, options = {}) {
     fit();
     if (opts.bestView) viewer.widget.alignBestView();
     viewer.widget.fitToView();
-    // Without a control bar nothing else would switch the density on.
+    // Without controls, nothing else turns density on.
     if (opts.density && !controlsEnabled) {
       viewer.setDensityVisible(true, opts.densityLevel ?? undefined);
     }

@@ -1,28 +1,4 @@
-"""
-A versatile 2-D molecule drawing widget for PyQt/PySide.
-
-Renders molecules as ORTEP-style thermal ellipsoid plots (when anisotropic
-displacement parameters are provided) or as simple ball-and-stick diagrams.
-The widget supports interactive mouse rotation, zooming, and panning.
-
-All rendering logic lives in
-:class:`~fastmolwidget.molecule_painter.MoleculeRendererMixin`.
-This module keeps only the Qt-widget boilerplate (``paintEvent``,
-``resizeEvent``, palette setup, ``save_image``, etc.).
-
-Mouse controls:
-
-- **Left drag**:   Rotate the molecule.
-- **Right drag**:  Zoom in / out.
-- **Middle drag**: Pan the view.
-- **Scroll wheel**: Increase / decrease label font size.
-- **Ctrl + Scroll wheel**: Raise / lower the residual-density contour level.
-- **Left click**:  Select a single atom or bond.
-- **Ctrl + Left click**: Toggle multi-selection.
-- **Alt/Option + Left click**: Recentre pivot (middle-click alternative).
-- **Middle click**: Recentre rotation pivot on clicked atom.
-- **F1/F2/F3**: Align view to real-space axes a/b/c.
-"""
+"""Qt widget wrapper around the shared 2-D molecule renderer."""
 
 from __future__ import annotations
 
@@ -42,39 +18,22 @@ from fastmolwidget.sdm import Atomtuple  # noqa: F401
 
 
 class MoleculeWidget(MoleculeRendererMixin, QtWidgets.QWidget):
-    """Interactive Qt widget that renders a molecule as a 2-D projection.
-
-    Supports ORTEP-style anisotropic displacement parameter (ADP) ellipsoids
-    at 50 % probability level, isotropic spheres, and ball-and-stick
-    representations.  The molecule can be rotated (left-drag), zoomed
-    (right-drag), and panned (middle-drag) with the mouse.
-
-    Typical usage::
-
-        widget = MoleculeWidget(parent)
-        widget.open_molecule(atoms=atom_list, cell=cell_params)
-
-    :param parent: Optional parent widget.
-    """
+    """Interactive 2-D molecule widget."""
 
     _AUTO_ZOOM_PADDING = 1.1
 
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
-    #: Emitted after every :meth:`open_molecule` / :meth:`grow_molecule` call
-    #: with the frozenset of disorder-part numbers present in the loaded atoms.
+    #: Emitted after loading with the frozenset of disorder parts present.
     partsChanged = QtCore.Signal(object)
-    #: Emitted with the new contour level whenever the residual-density level
-    #: changes, so a control bar can follow a Ctrl+wheel adjustment.
+    #: Emitted when the residual-density contour level changes.
     densityLevelChanged = QtCore.Signal(float)
 
     def __init__(self, parent: QtGui.QWidget | None = None) -> None:
-        # Qt base class must be initialised first so that update() and signals
-        # are available before _init_renderer() is called.
+        # QWidget must exist before _init_renderer() uses update() or signals.
         QtWidgets.QWidget.__init__(self, parent)
         self._init_renderer()
 
-        # Widget-specific setup
         pal = QPalette()
         pal.setColor(QtGui.QPalette.ColorRole.Window, QtCore.Qt.GlobalColor.white)
         self.setAutoFillBackground(True)
@@ -123,8 +82,7 @@ class MoleculeWidget(MoleculeRendererMixin, QtWidgets.QWidget):
                 self._painter.end()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """Scale zoom proportionally so the molecule fills the same fraction
-        of the viewport after resize."""
+        """Keep the molecule at the same relative size after resize."""
         old = event.oldSize()
         new = event.size()
         self._on_resize(old.width(), old.height(), new.width(), new.height())
@@ -151,7 +109,7 @@ class MoleculeWidget(MoleculeRendererMixin, QtWidgets.QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Backwards-compatibility re-exports
+# Compatibility re-exports
 # ---------------------------------------------------------------------------
 __all__ = ['Atom', 'MoleculeWidget', 'RenderItem', 'calc_volume']
 

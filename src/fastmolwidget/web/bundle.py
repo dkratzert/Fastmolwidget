@@ -1,23 +1,4 @@
-"""Bundle the shipped ES modules (``fastmolwidget/web/js``) into a single
-classic ``<script>`` blob exposing ``window.Fastmolwidget``.
-
-Why a custom bundler?  The JavaScript renderer is written as ES modules with
-relative imports, which cannot be pasted into a plain ``<script>`` element.
-Import maps, ``data:`` URLs and ``blob:`` URLs all fail as well, because a
-relative specifier cannot be resolved against a ``data:``/``blob:`` base, so
-*nested* imports break.  Instead every module is wrapped in a tiny
-CommonJS-style registry inside one IIFE::
-
-    import { a, b as c } from './x.js';   ->  const { a, b: c } = __fmw_require('./x.js');
-    export function f() {}                ->  function f() {}   (+ registry assignment)
-
-The transformer only understands the (static, named) import/export syntax
-actually used in ``js/`` and raises :class:`UnsupportedJsSyntaxError` on
-anything else, so a future JavaScript change can never silently produce a
-broken bundle.
-
-This module imports nothing from Qt.
-"""
+"""Bundle shipped ES modules into one classic ``<script>`` blob."""
 
 from __future__ import annotations
 
@@ -31,7 +12,7 @@ __all__ = ['ENTRY_MODULE', 'GLOBAL_NAME', 'UnsupportedJsSyntaxError', 'bundle_js
 ENTRY_MODULE = 'index.js'
 GLOBAL_NAME = 'Fastmolwidget'
 
-#: ``import { a, b as c } from './x.js';`` (also spanning several lines)
+#: ``import { a, b as c } from './x.js';`` (multi-line too)
 _IMPORT_RE = re.compile(
     r'^[ \t]*import\s*\{(?P<names>[^}]*)\}\s*from\s*[\'"](?P<source>[^\'"]+)[\'"];?[ \t]*$',
     re.MULTILINE | re.DOTALL,
@@ -48,7 +29,7 @@ _EXPORT_DECL_RE = re.compile(
     r'^(?P<indent>[ \t]*)export\s+(?P<kind>function\*?|class|const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)',
     re.MULTILINE,
 )
-#: any remaining top-of-line import/export -> unsupported
+#: Any remaining top-level import/export is unsupported.
 _LEFTOVER_RE = re.compile(r'^[ \t]*(?P<word>import|export)\b', re.MULTILINE)
 
 _RUNTIME = """\
@@ -68,8 +49,7 @@ function __fmw_require(name) {
 
 
 class UnsupportedJsSyntaxError(ValueError):
-    """Raised when a shipped JS module uses import/export syntax the bundler
-    does not understand."""
+    """Raised for unsupported JS module syntax."""
 
 
 def _split_specifiers(names: str) -> list[tuple[str, str]]:
@@ -100,10 +80,7 @@ def _normalize(specifier: str, module: str) -> str:
 
 
 def _transform(module: str, source: str) -> tuple[str, list[str]]:
-    """Rewrite one ES module into a registry factory body.
-
-    Returns the transformed body and the list of modules it depends on.
-    """
+    """Rewrite one ES module into a registry factory body."""
     deps: list[str] = []
     export_lines: list[str] = []
 
@@ -144,8 +121,7 @@ def _transform(module: str, source: str) -> tuple[str, list[str]]:
             f'{module}:{line}: unsupported {leftover["word"]} statement for the '
             f'classic-script bundler: {snippet!r}'
         )
-    # Export assignments go last: `const`/`class` bindings are in their
-    # temporal dead zone until their declaration has been evaluated.
+    # Export assignments go last: `const`/`class` are not bound earlier.
     if export_lines:
         body = body + '\n' + '\n'.join(export_lines) + '\n'
     return body, deps
@@ -154,9 +130,7 @@ def _transform(module: str, source: str) -> tuple[str, list[str]]:
 def _check_no_cycles(graph: dict[str, list[str]], entry: str) -> None:
     """Raise if the module graph contains an import cycle.
 
-    The registry caches a module's exports object *before* running its factory,
-    so a cycle would hand out an empty object to the top-level destructuring of
-    the other module.  Reject it loudly instead.
+    A cycle would expose incomplete exports.
     """
     visiting: set[str] = set()
     done: set[str] = set()
@@ -177,29 +151,13 @@ def _check_no_cycles(graph: dict[str, list[str]], entry: str) -> None:
 
 
 def _escape_for_script_tag(text: str) -> str:
-    """Make *text* safe to paste inside an HTML ``<script>`` element."""
+    """Make *text* safe inside an HTML ``<script>`` tag."""
     return text.replace('</script', r'<\/script').replace('<!--', r'<\!--')
 
 
 @lru_cache(maxsize=None)  # noqa: UP033  (keyword form keeps `.cache_clear()` obvious)
 def bundle_js(entry: str = ENTRY_MODULE, *, version: str | None = None) -> str:
-    """Return the whole JavaScript renderer as one classic-script source.
-
-    The result defines ``window.Fastmolwidget`` (``createViewer``,
-    ``MoleculeViewer2D``, ``MoleculeWidget2D``, ``SDM``, ``createPartFilter``,
-    ``version``, …) and is safe to paste inside a ``<script>`` element, e.g. in
-    a Jinja report template::
-
-        <script>
-            {{ fastmolwidget_js | safe }}
-        </script>
-
-    :param entry: entry module, normally ``index.js``.
-    :param version: version string exposed as ``Fastmolwidget.version``;
-        defaults to the installed :data:`fastmolwidget.__version__`.
-    :raises UnsupportedJsSyntaxError: if a module uses syntax the bundler does
-        not understand, or the modules form an import cycle.
-    """
+    """Return the full renderer as one classic-script source."""
     if version is None:
         from fastmolwidget import __version__
 

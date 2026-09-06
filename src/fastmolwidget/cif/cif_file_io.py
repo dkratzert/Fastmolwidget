@@ -23,18 +23,10 @@ class GemmiError(Exception):
 
 
 class CifReader:
-    """
-    This class holds the content of a cif file, independent of the file parser used.
-    """
+    """CIF reader/writer wrapper around gemmi."""
 
     def __init__(self, file: Path | str, new_block: str = ''):
-        """
-
-        Args:
-            file: CIF file to open
-            new_block: Create a new block (new file) if a name is given. Otherwise, just
-                       the existing document is opened.
-        """
+        """Open an existing CIF or create a new document with one block."""
         self.chars_ok = True
         self._abs_hkl_details: dict[str, str] = {}
         if isinstance(file, str):
@@ -44,9 +36,7 @@ class CifReader:
         else:
             raise TypeError('The file parameter must be string or Path object.')
         self.current_block = ''
-        # I do this in small steps instead of gemmi.cif.read_file() in order to
-        # leave out the check_for_missing_values. This way, gemmi reads cif files even
-        # with missing values.
+        # Skip gemmi's missing-value check so incomplete CIFs still load.
         if new_block:
             self.doc: Document = gemmi.cif.Document()
             self.doc.add_new_block(new_block)
@@ -56,27 +46,21 @@ class CifReader:
             except Exception as e:
                 raise
                 raise GemmiError(e)
-        # Starting with first block, but can use others with subsequent self._onload():
+        # Start on the first block; callers may switch later.
         self.block: gemmi.cif.Block = self.doc[0]
         if self.block.name == 'New_Global_Publ_Block':
-            # Special case for PublCif files.
+            # PublCif special case.
             self.block: gemmi.cif.Block = self.doc[1]
         self._on_load()
 
     @property
     def path_base(self) -> Path:
-        """
-        The absolute path of the current file without file name:
-        /foo/bar/baz
-        """
+        """Absolute directory of the current file."""
         return Path(self.doc.source).resolve().parent
 
     @property
     def filename(self) -> str:
-        """
-        The name of the current file without path:
-        foo.cif
-        """
+        """File name of the current CIF."""
         return Path(self.doc.source).name or self.fileobj.name
 
     def get_line_numbers_of_bad_characters(self, filepath: Path):
@@ -107,33 +91,27 @@ class CifReader:
         self.block: gemmi.cif.Block = self.doc[0]
 
     def _on_load(self) -> None:
-        # will not ok with non-ascii characters in the res file:
+        # Reset until a non-ASCII embedded .res forces the fallback path.
         self.chars_ok = True
         try:
             self.doc.check_for_duplicates()
         except RuntimeError as e:
             raise GemmiError(e)
         self.atomic_struct: gemmi.SmallStructure = gemmi.make_small_structure_from_block(self.block)
-        # A dictionary to convert Atom names like 'C1_2' or 'Ga3' into Element names like 'C' or 'Ga'
+        # Map atom labels such as C1_2 or Ga3 to element symbols.
         self._name2elements = dict(zip([x.upper() for x in self.block.find_loop('_atom_site_label')],
                                        [y.upper() for y in self.block.find_loop('_atom_site_type_symbol')],
                                        strict=False))
 
     def read_file(self, path: Path) -> gemmi.cif.Document:
-        """
-        Reads a cif file and returns a gemmi document object.
-        """
+        """Read a CIF file into a gemmi document."""
         doc = gemmi.cif.Document()
         doc.source = str(path.resolve())
         doc.parse_file(str(path.resolve()))
         return doc
 
     def read_string(self, cif_string: str) -> gemmi.cif.Document:
-        """
-        Reads a cif file from a string and returns a gemmi cif docment.
-        :param cif_string: cif as string
-        :return: gemmi document
-        """
+        """Read a CIF string into a gemmi document."""
         doc = gemmi.cif.Document()
         doc.parse_string(cif_string)
         return doc
@@ -142,7 +120,7 @@ class CifReader:
         opt = gemmi.cif.WriteOptions()
         opt.align_pairs = 33
         if without_hkl:
-            # return a copy, do not delete hkl from original:
+            # Work on a copy; keep the original document unchanged.
             doc = gemmi.cif.Document()
             doc.parse_string(self.doc.as_string(options=opt))
             for block in doc:
@@ -155,18 +133,14 @@ class CifReader:
             return self.doc.as_string(options=opt)
 
     def __getitem__(self, item: str) -> str:
-        """
-        This method returns an empty string when the item value is '?'
-        """
+        """Return a CIF value, or ``''`` for a missing item."""
         if value := self.block.find_value(item):
             return as_string(value)
         else:
             return ''
 
     def __setitem__(self, key: str, value: str) -> None:
-        """Set a key value pair of the current block.
-        Values are automatically encoded from utf-8 and delimited.
-        """
+        """Set a key/value pair on the current block."""
         self.set_pair_delimited(key, value)
 
     def __delitem__(self, key: str) -> None:
@@ -188,26 +162,21 @@ class CifReader:
         return self.fileobj.exists() and self.fileobj.is_file() and os.access(self.fileobj, os.W_OK)
 
     def set_pair_delimited(self, key: str, txt: str):
-        """
-        Converts special characters to their markup counterparts.
-        """
+        """Store a quoted CIF value when needed."""
         # txt = utf8_to_str(txt)
         try:
-            # bad hack to get the numbered values correct
+            # Keep numeric-looking values unquoted.
             float(txt)
             self.block.set_pair(key, txt)
         except (TypeError, ValueError):
-            # prevent _key '?' in cif:
+            # Keep CIF null markers unquoted.
             if txt == '?':
                 self.block.set_pair(key, txt)
             else:
                 self.block.set_pair(key, quote(txt))
 
     def save(self, filename: Path | None = None) -> None:
-        """
-        Saves the current cif file. It uses the '[basename]-finalcif.cif' suffix by default.
-        :param filename:  Name to save cif file to if the default is not sufficient.
-        """
+        """Save the current CIF document."""
         if self.is_empty():
             print(f'DBG> CIF file {filename} is empty.')
             return
@@ -244,7 +213,7 @@ class CifReader:
             else:
                 return ''
         except UnicodeDecodeError:
-            # This is a fallback in case _shelx_res_file has non-ascii characters.
+            # Fall back to latin-1 if the embedded .res is not ASCII.
             print('File has non-ascii characters. Switching to compatible mode.')
             self.doc = self.read_string(self.fileobj.read_text(encoding='latin1', errors='ignore'))
             self.block = self.doc.sole_block()
@@ -257,7 +226,7 @@ class CifReader:
         if hkl_loop and hkl_loop.width() > 4:
             return self._hkl_from_cif_format(hkl_loop)
         else:
-            # returns an empty string if no cif hkl was found:
+            # Returns ``''`` when no embedded HKL is present.
             return self._hkl_from_shelx()
 
     def _hkl_from_cif_format(self, hkl_loop: Loop) -> str:
@@ -291,7 +260,7 @@ class CifReader:
 
     @property
     def hkl_file_without_foot(self) -> str:
-        """Returns a hkl file with no content after the 0 0 0 reflection"""
+        """Return the HKL text truncated at the ``0 0 0`` terminator."""
         zero_reflection_position = self._find_line_of_000(self.hkl_file)
         if zero_reflection_position:
             return '\n'.join(self.hkl_file.splitlines(keepends=False)[:zero_reflection_position + 1])
@@ -322,37 +291,29 @@ class CifReader:
         for num, line in enumerate(reversed(hkl_splitted)):
             found = pattern.search(line)
             if num > 500:
-                # A longer footer is not realistic
+                # Limit the footer search.
                 break
             if found:
                 zero_reflection_position = len(hkl_splitted) - num
         return zero_reflection_position
 
     def is_empty(self) -> bool:
-        """
-        Checks if the currebt CIF contains data, but this works only for single-CIFs!
-        """
+        """True if this single-block CIF contains no keys or loops."""
         if len(self.doc) < 2 and len(self.keys()) + len(self.loops) == 0:
             return True
         return False
 
     def keys(self) -> list[str]:
-        """
-        Returns a plain list of keys that are really in this CIF.
-        """
+        """Return the keys present in the current block."""
         return [x.pair[0] for x in self.block if x.pair is not None]
 
     def values(self):
-        """
-        Returns a plain list of keys that are really in this CIF.
-        """
+        """Return the values present in the current block."""
         return [x.pair[1] for x in self.block if x.pair is not None]
 
     @property
     def loops(self) -> list[gemmi.cif.Loop]:
-        """
-        Returns a list of loops contained in the current block.
-        """
+        """Return the loops contained in the current block."""
         loops = []
         for b in self.block:
             if b.loop:
@@ -400,10 +361,7 @@ class CifReader:
 
     @property
     def space_group(self) -> str:
-        """
-        Returns the space group from the symmetry operators.
-        spgr.short_name() gives the short name.
-        """
+        """Return the space-group Hermann-Mauguin symbol."""
         try:
             return self._spgr().xhm()
         except (AttributeError, RuntimeError, ValueError):
@@ -416,7 +374,7 @@ class CifReader:
 
     @property
     def symmops_from_spgr(self) -> list[str]:
-        # _symmetry_space_group_name_Hall
+        # Fall back to the named space group when explicit symmops are absent.
         space_group = None
         if self['_space_group_name_H-M_alt']:
             space_group = self['_space_group_name_H-M_alt']
@@ -453,9 +411,7 @@ class CifReader:
 
     @property
     def hkl_checksum_calcd(self) -> int:
-        """
-        Calculates the shelx checksum for the hkl file content of a cif file.
-        """
+        """Return the SHELX checksum of the embedded HKL text."""
         if self.hkl_file:
             return self.calc_checksum(self.hkl_file)
         else:
@@ -463,19 +419,14 @@ class CifReader:
 
     @property
     def res_checksum_calcd(self) -> int:
-        """
-        Calculates the shelx checksum for the res file content of a cif file.
-        """
+        """Return the SHELX checksum of the embedded RES text."""
         if self.res_file_data:
             return self.calc_checksum(self.res_file_data)
         return 0
 
     @staticmethod
     def calc_checksum(input_str: str) -> int:
-        """
-        Calculates the shelx checksum of a cif file.
-        The original algorithm was posted by Berthold Stöger on the Bruker Users Mailing list.
-        """
+        """Return the SHELX checksum of ``input_str``."""
         crc_sum = 0
         try:
             bytes_str = input_str.encode('cp1250', 'ignore')
@@ -492,10 +443,7 @@ class CifReader:
         return crc_sum
 
     def rename_data_name(self, newname: str = ''):
-        """
-        Renames data_ tags to the newname. Also _vrf tags are renamed accordingly.
-        http://journals.iucr.org/services/cif/checking/checkfaq.html
-        """
+        """Rename the current data block and matching ``_vrf`` tags."""
         newname = ''.join([i for i in newname if i.isascii()])
         self.block.name = newname
         for item in self.block:
@@ -508,9 +456,7 @@ class CifReader:
 
     @property
     def symmops(self) -> list[str]:
-        """
-        Reads the symmops from the cif file.
-        """
+        """Return symmetry operators from the CIF."""
         xyz1 = self.block.find(["_symmetry_equiv_pos_as_xyz"])  # deprecated
         xyz2 = self.block.find(["_space_group_symop_operation_xyz"])  # New definition
         if xyz1:
@@ -522,19 +468,15 @@ class CifReader:
 
     @property
     def is_centrosymm(self) -> bool:
-        """
-        Whether a structure is centrosymmetric or not.
-        """
+        """True if the current structure is centrosymmetric."""
         if not self.symmops or self.symmops == ['']:
-            # Do not crash without symmops
+            # Missing symmops means "unknown", not centrosymmetric.
             return False
         ops = gemmi.GroupOps([gemmi.Op(o) for o in self.symmops])
         return ops.is_centrosymmetric()
 
     def atoms(self, without_h: bool = False) -> Generator:
-        """
-        Atoms from the CIF where values are returned as string like in the CIF with esds.
-        """
+        """Yield atoms as CIF strings, preserving esds."""
         labels = self.block.find_loop('_atom_site_label')
         types = self.block.find_loop('_atom_site_type_symbol') or [atoms.get_atomlabel(x) for x in labels]
         x = self.block.find_loop('_atom_site_fract_x')
@@ -550,8 +492,7 @@ class CifReader:
                                                          u_eq, strict=False):
             if without_h and self.ishydrogen(label):
                 continue
-            #         0    1   2  3  4   5   6     7
-            # yield label, type, x, y, z, part, occ, ueq
+            # label, type, x, y, z, part, occ, u_eq
             yield atom(label=label, type=type, x=x, y=y, z=z, part=part, occ=occ, u_eq=u_eq)
 
     @property
@@ -570,9 +511,7 @@ class CifReader:
                        part=at.disorder_group, occ=at.occ, u_eq=at.u_iso)
 
     def displacement_parameters(self) -> Generator[adp, Any, None]:
-        """
-        Yields the anisotropic displacement parameters.
-        """
+        """Yield anisotropic displacement parameters."""
         labels = self.block.find_loop('_atom_site_aniso_label')
         u11 = self.block.find_loop('_atom_site_aniso_U_11')
         u22 = self.block.find_loop('_atom_site_aniso_U_22')
@@ -604,9 +543,7 @@ class CifReader:
         return cell(c.a, c.b, c.c, c.alpha, c.beta, c.gamma, c.volume)
 
     def ishydrogen(self, label: str) -> bool:
-        """
-        Determines if an atom with the name 'label' is a hydrogen atom.
-        """
+        """True if ``label`` names H or D."""
         hydrogen = ('H', 'D')
         if self._iselement(label) in hydrogen:
             return True
@@ -614,15 +551,13 @@ class CifReader:
             return False
 
     def checksymm(self, symm):
-        """Add translation of 555 to symmetry elements without translation"""
+        """Add ``_555`` to symmetry codes without an explicit translation."""
         if len(symm) == 1 and symm not in {'.', '?'}:
             symm = symm + '_555'
         return symm
 
     def bonds(self, without_h: bool = False) -> Generator:
-        """
-        Yields a list of bonds in the cif file.
-        """
+        """Yield bonds from the CIF."""
         label1 = self.block.find_loop('_geom_bond_atom_site_label_1')
         label2 = self.block.find_loop('_geom_bond_atom_site_label_2')
         dist = self.block.find_loop('_geom_bond_distance')
@@ -681,21 +616,15 @@ class CifReader:
         return len(tuple(self.atoms(without_h)))
 
     def nbonds(self, without_h: bool = False) -> int:
-        """
-        Number of bonds in the cif object, with and without hydrogen atoms.
-        """
+        """Return the number of bonds."""
         return len(tuple(self.bonds(without_h)))
 
     def nangles(self, without_h: bool = False) -> int:
-        """
-        Number of bond angles in the cif object, with and without hydrogen atoms.
-        """
+        """Return the number of bond angles."""
         return len(tuple(self.angles(without_h)))
 
     def ntorsion_angles(self, without_h: bool = False) -> int:
-        """
-        Number of torsion angles in the cif object, with and without hydrogen atoms.
-        """
+        """Return the number of torsion angles."""
         return len(tuple(self.torsion_angles(without_h)))
 
     def torsion_angles(self, without_h: bool = False) -> Generator:
@@ -753,9 +682,7 @@ class CifReader:
                 yield item.pair
 
     def test_res_checksum(self) -> bool:
-        """
-        A method to check whether the checksums in the cif file fit to the content.
-        """
+        """Check whether the embedded RES checksum matches the content."""
         cif_res_ckecksum = 0
         res_checksum_calcd = self.res_checksum_calcd
         if res_checksum_calcd > 0:
@@ -770,9 +697,7 @@ class CifReader:
             return True
 
     def test_hkl_checksum(self) -> bool:
-        """
-        A method to check whether the checksums in the cif file fit to the content.
-        """
+        """Check whether the embedded HKL checksum matches the content."""
         cif_hkl_ckecksum = 0
         hkl_checksum_calcd = self.hkl_checksum_calcd
         if hkl_checksum_calcd > 0:

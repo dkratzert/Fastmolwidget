@@ -1,25 +1,10 @@
 /**
- * Canvas 2D molecule renderer — JavaScript port of
- * `fastmolwidget.molecule2D.MoleculeWidget` + `fastmolwidget.molecule_painter`.
+ * Canvas 2D molecule renderer.
  *
- * Renders molecules as ORTEP-style thermal-ellipsoid plots (when anisotropic
- * displacement parameters are supplied) or ball-and-stick diagrams, with
- * mouse rotate/zoom/pan, hover tooltips, click-selection, best-view (PCA),
- * and F1/F2/F3 real-space-axis alignment (requires a unit cell).
- *
- * This module only renders. Structure parsing (CIF/SHELX) and the SDM
- * grow / pack-unit-cell logic live in `sdm.js` — see `viewer.js` for a
- * convenience wrapper that wires the two together.
- *
- * Mouse controls
- * --------------
- * - Left drag:    rotate
- * - Right drag:   zoom
- * - Middle drag:  pan
- * - Scroll wheel: label font size
- * - Left click:   select atom/bond; Ctrl = multi-select; Alt = recentre pivot
- * - Middle click: recentre rotation pivot on the clicked atom
- * - F1/F2/F3:     align view to real-space axes a/b/c (needs a unit cell + focus)
+ * JS port of `fastmolwidget.molecule2D.MoleculeWidget` and
+ * `fastmolwidget.molecule_painter`: ORTEP ellipsoids or ball-and-stick,
+ * mouse rotate/zoom/pan, selection, PCA best view, and F1/F2/F3 axis
+ * alignment. Parsing and SDM grow/pack live elsewhere.
  */
 
 import { getElementColor, getRadiusFromElement, displayRadiusForElement } from './elements.js';
@@ -53,17 +38,13 @@ const NPD_CUBE_FACE_INDICES = [
 ];
 
 /**
- * Projected faces of the NPD placeholder cube — port of
- * `fastmolwidget.molecule_painter.npd_cube_faces`.
- *
- * The cube is axis-aligned in the *molecular* Cartesian frame and is brought
- * into view space with `R` (the accumulated view rotation), so it turns
- * together with the rest of the structure.
+ * Projected faces of the NPD placeholder cube.
+ * Port of `fastmolwidget.molecule_painter.npd_cube_faces`.
  *
  * @param {number[][]} R 3x3 view rotation matrix (`cumulativeR`).
  * @param {number} half Half-edge length of the cube in screen pixels.
  * @returns {{corners: number[][], meanZ: number, normal: number[]}[]} faces
- *   sorted back-to-front (descending depth; smaller z is nearer the viewer).
+ *   sorted back-to-front (smaller z is nearer the viewer).
  *   `corners` are screen-space offsets relative to the atom centre.
  */
 export function npdCubeFaces(R, half) {
@@ -162,20 +143,15 @@ export class MoleculeWidget2D extends EventTarget {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
 
-    // HiDPI support: the canvas backing store is allocated at
-    // devicePixelRatio while all drawing happens in logical (CSS) pixels,
-    // exactly like Qt renders its widget at the screen's device pixel ratio.
-    // This keeps lines crisp on high-density displays and makes line
-    // thicknesses match the Qt QPainter widget 1:1. `options.devicePixelRatio`
-    // forces a fixed ratio (e.g. for deterministic tests / exports).
+    // Allocate the backing store at devicePixelRatio and draw in CSS pixels,
+    // matching Qt and keeping line widths crisp. `devicePixelRatio` can be
+    // forced for deterministic tests/exports.
     this._forcedDpr = options.devicePixelRatio ?? null;
     this.dpr = this._detectDpr();
-    // Device scale of the frame currently being rendered; see `render()`.
+    // Device scale used by the current render pass; see `render()`.
     this._renderScale = this.dpr;
-    // Fallback for callers that never call `resize()`; note that an
-    // unstyled <canvas> reports the HTML default of 300x150, which is not a
-    // meaningful viewport size. `_sized` therefore records whether a real
-    // measurement has been seen yet — see `resize()`.
+    // Fallback for callers that never call `resize()`. `_sized` records
+    // whether a real measurement has replaced the default 300x150 canvas size.
     this._cssWidth = canvas.width;
     this._cssHeight = canvas.height;
     this._sized = false;
@@ -234,19 +210,14 @@ export class MoleculeWidget2D extends EventTarget {
     /** @type {import('./density.js').DensityMap|null} */
     this.densityMap = null;
     this.densityLevel = 0.3;
-    /** Wireframe segments of both lobes, in the *unrotated* model frame. */
+    /** Density wireframe segments in the unrotated model frame. */
     this._densityPos = null;
     this._densityNeg = null;
-    /** Visible-atom positions the surface is clipped against, kept stable so
-     *  that a level change re-uses the density map's cached block. */
+    /** Visible-atom positions used for clipping; kept stable across level-only changes. */
     this._densityAtoms = null;
     this.densityPosColor = '#00c800';
     this.densityNegColor = '#e60000';
-    /**
-     * Atom coordinates as loaded, before any rotation. The map is defined in
-     * this frame, so the isosurface is clipped against these rather than
-     * against the displayed positions.
-     */
+    /** Atom coordinates before any rotation; density clipping stays in this frame. */
     this._modelCoords = null;
     /** Rigid model-to-view transform: `view = R . model + t`. */
     this._viewRotation = identity3();
@@ -322,14 +293,10 @@ export class MoleculeWidget2D extends EventTarget {
     this.update();
   }
 
-  /** Re-centre the rotation pivot on the current atoms and fit them into the
-   * viewport, *keeping* the current rotation.
-   *
-   * There is no single Qt counterpart: it is `reset_rotation_center()`
-   * followed by the zoom part of `reset_view()` — the combination the Qt
-   * desktop applications use after growing or packing a structure. Needed
-   * because loading with `keepView` deliberately does not touch the bounding
-   * sphere, so the auto-zoom would otherwise still fit the asymmetric unit. */
+  /**
+   * Re-centre the rotation pivot and refit the current atoms, keeping rotation.
+   * Used after grow/pack because `keepView` preserves the old bounding sphere.
+   */
   fitToView() {
     this._getCenterAndRadius();
     this.zoom = this._autoZoom();
@@ -386,7 +353,7 @@ export class MoleculeWidget2D extends EventTarget {
     }
 
     const carryRotation = keepView && !isIdentity(this.cumulativeR);
-    // Remember the unrotated coordinates: the density map lives in that frame.
+    // Keep the unrotated coordinates; density lives in that frame.
     this._modelCoords = new Float64Array(this.atoms.length * 3);
     for (let i = 0; i < this.atoms.length; i++) {
       const c = this.atoms[i].coordinate;
@@ -413,9 +380,8 @@ export class MoleculeWidget2D extends EventTarget {
 
     if (!keepView) this.zoom = this._autoZoom();
     this._invalidateDensityAtoms();
-    // A cached map survives a reload of the same structure (grow and pack do
-    // exactly that), but the visible atoms have moved, so the surface has to
-    // be re-clipped around them.
+    // A cached map can survive reloads of the same structure, but the visible
+    // atoms may have moved, so re-clip the surface.
     if (this.densityMap) this._buildDensityGeometry();
     this.update();
   }
@@ -547,7 +513,7 @@ export class MoleculeWidget2D extends EventTarget {
       for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) cov[i][j] += d[i] * d[j];
     }
     const { vectors } = eigSym3(cov);
-    // eigSym3 returns ascending eigenvalues; PCA wants descending variance order.
+    // eigSym3 returns ascending eigenvalues; PCA wants descending variance.
     const order = [2, 1, 0];
     const cols = order.map((i) => [vectors[0][i], vectors[1][i], vectors[2][i]]);
     const [xAxis, yAxis] = cols;
@@ -566,18 +532,9 @@ export class MoleculeWidget2D extends EventTarget {
 
   _applyDeltaRotation(deltaR) {
     this._applyViewTransform(deltaR);
-    // Rotate the cached eigen-decomposition rigidly instead of recomputing it
-    // from scratch (mirrors the Python/Qt renderer's `rotate_molecule`).
-    // Re-deriving eigenvectors every drag frame via the analytic eigSym3
-    // solver is numerically unstable whenever an atom has two (near-)equal
-    // ADP eigenvalues (e.g. an atom sitting on a symmetry axis): the
-    // null-space computation degenerates and eigSym3 falls back to an
-    // arbitrary fixed world-axis vector, unrelated to the atom's actual
-    // orientation. That made the principal-axis cross-section lines jump to
-    // nonsensical directions while the ellipse body (computed independently
-    // from the 2x2 projected covariance) stayed correct. Rotating the
-    // eigenvectors themselves is exact (eigenvalues are rotation-invariant)
-    // and keeps everything consistent frame to frame.
+    // Rotate the cached eigen-decomposition instead of recomputing it.
+    // Re-solving per drag step is unstable for repeated or near-repeated ADP
+    // eigenvalues, common on symmetry axes.
     for (const at of this.atoms) {
       at.coordinate = vecAdd(matVec(deltaR, vecSub(at.coordinate, this.moleculeCenter)), this.moleculeCenter);
       at.z = at.coordinate[2];
@@ -594,15 +551,10 @@ export class MoleculeWidget2D extends EventTarget {
   // ------------------------------------------------------------------
 
   /**
-   * Record a rotation that was just applied to the atom coordinates.
+   * Record a rotation applied to atom coordinates.
    *
-   * The atoms are rotated **in place** about `moleculeCenter`, and that pivot
-   * itself moves when the view is panned or recentred, so the orientation
-   * alone cannot reconstruct where a model-frame point ends up on screen.
-   * Every such step is the affine map `x -> R (x - c) + c`; composing it with
-   * what has been recorded so far keeps the model-to-view mapping as a single
-   * rotation plus offset, which `_toViewFrame()` then applies to the density
-   * wireframe.
+   * Atoms rotate in place about a movable pivot, so the density overlay needs
+   * a full affine model-to-view transform, not just the rotation.
    *
    * @param {number[][]} matrix the rotation just applied to the atoms.
    */
@@ -627,10 +579,8 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   /**
-   * Unrotated positions of the atoms that are currently drawn.
-   *
-   * Applies the same hydrogen and disorder-part filters as `_renderScene()`,
-   * so the density follows exactly what is on screen.
+   * Unrotated positions of the atoms currently drawn.
+   * Uses the same hydrogen and disorder-part filters as `_renderScene()`.
    *
    * @returns {Float64Array|null} flattened `(N, 3)`, or `null` when nothing is visible.
    */
@@ -662,9 +612,7 @@ export class MoleculeWidget2D extends EventTarget {
 
   /**
    * Re-contour the cached map at a new level.
-   *
-   * The map is reused, so this is far cheaper than decoding it again. A no-op
-   * when no map is loaded.
+   * Reuses the decoded map; no-op when none is loaded.
    *
    * @param {number} level contour level in e/A^3.
    */
@@ -690,11 +638,8 @@ export class MoleculeWidget2D extends EventTarget {
 
   /**
    * Contour the cached map into wireframe segments for both lobes.
-   *
-   * Restricted to `map.margin` around the *visible* atoms, so grown or packed
-   * structures get density around every displayed atom while hidden hydrogens
-   * and filtered-out disorder parts drag nothing in. The segments stay in the
-   * model frame; the rotation is applied when they are drawn.
+   * Restrict to `map.margin` around visible atoms. Segments stay in model
+   * space; rotation is applied only when drawing.
    */
   _buildDensityGeometry() {
     if (!this.densityMap) {
@@ -702,8 +647,7 @@ export class MoleculeWidget2D extends EventTarget {
       this._densityNeg = null;
       return;
     }
-    // Kept between calls so that changing only the level re-uses the density
-    // map's cached block: the cache is keyed on this array's identity.
+    // Keep this array stable so level-only changes reuse the density block cache.
     if (!this._densityAtoms) this._densityAtoms = this._visibleModelPositions();
     const atoms = this._densityAtoms;
     const margin = this.densityMap.margin ?? 1.5;
@@ -724,11 +668,7 @@ export class MoleculeWidget2D extends EventTarget {
 
   /**
    * Draw one lobe of the isosurface cage.
-   *
-   * A contoured map easily holds thousands of segments and this runs on every
-   * repaint, including while the molecule is dragged, so segments outside the
-   * viewport and segments shorter than a pixel (they only overdraw each other
-   * once zoomed out) are skipped, and the whole lobe goes into a single path.
+   * Skip off-screen and sub-pixel segments; draw the rest as one path.
    */
   _drawDensityLobe(ctx, lobe, color, width, height) {
     if (!lobe || lobe.segments.length === 0) return;
@@ -785,19 +725,13 @@ export class MoleculeWidget2D extends EventTarget {
     return clamp(this.zoom * 3.0, 1.0, 6.0);
   }
 
-  /** Resize the drawing surface. `cssWidth`/`cssHeight` are logical (CSS)
-   * pixels — normally the element's `getBoundingClientRect()` size. The
-   * backing store is allocated at `devicePixelRatio` so lines stay crisp on
-   * HiDPI displays, mirroring Qt rendering the widget at the screen's device
-   * pixel ratio. Keeps the on-screen scale proportional (like Qt's
-   * `resizeEvent`).
+  /**
+   * Resize the drawing surface in logical (CSS) pixels.
    *
-   * The *first* call with positive dimensions re-fits the molecule instead of
-   * scaling proportionally: until then the widget only knows the placeholder
-   * `canvas.width`/`canvas.height` (300x150 by default), so scaling from that
-   * baseline would produce a wildly wrong zoom. This matters for viewers
-   * created inside a hidden container (e.g. an inactive report tab), whose
-   * real size only arrives later via a `ResizeObserver`. */
+   * The backing store tracks `devicePixelRatio`, like Qt. The first real size
+   * change refits the molecule instead of scaling from the placeholder
+   * 300x150 canvas size.
+   */
   resize(cssWidth, cssHeight) {
     if (!(cssWidth > 0) || !(cssHeight > 0)) return;
     this.dpr = this._detectDpr();
@@ -813,17 +747,14 @@ export class MoleculeWidget2D extends EventTarget {
     this.update();
   }
 
-  /** Backwards-compatible resize entry point. `newW`/`newH` are treated as
-   * logical (CSS) pixels and forwarded to {@link resize}. */
+  /** Backwards-compatible resize entry point forwarding logical pixels to `resize()`. */
   handleResize(oldW, oldH, newW, newH) {
     this.resize(newW, newH);
   }
 
   /**
    * True when `atom` renders as an ADP ellipsoid rather than a sphere.
-   * Hydrogens use their fixed `HYDROGEN_DISPLAY_RADIUS` sphere unless they
-   * were refined anisotropically and ADPs are being shown, in which case
-   * they are drawn like any other element.
+   * H/D stay fixed-radius unless refined anisotropically and ADPs are shown.
    */
   _drawsAdpEllipsoid(atom) {
     return Boolean(this.showAdpsFlag && atom.uCart && atom.adpValid);
@@ -927,10 +858,7 @@ export class MoleculeWidget2D extends EventTarget {
     const canvas = this.canvas;
     if (canvas.tabIndex < 0) canvas.tabIndex = 0;
     if (!canvas.style.touchAction) canvas.style.touchAction = 'none';
-    // Prevent the browser from starting a text/element selection drag over
-    // the canvas — without this, dragging (e.g. to rotate) can trigger the
-    // browser's "auto-scroll toward viewport edge to extend selection"
-    // behaviour, which visibly shifts the whole page.
+    // Stop drag-selection and the page auto-scroll it can trigger.
     canvas.style.userSelect = 'none';
     canvas.style.webkitUserSelect = 'none';
 
@@ -964,8 +892,7 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _onMouseDown(e) {
-    // preventScroll avoids the browser scrolling the canvas into view (which
-    // would otherwise shift the whole page on every click-drag).
+    // `preventScroll` stops focus() from shifting the page on click-drag.
     this.canvas.focus?.({ preventScroll: true });
     const pos = this._eventPos(e);
     this.lastPos = pos;
@@ -979,10 +906,7 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   _onDragMove(e) {
-    // Prevent the browser from starting/extending a text selection while
-    // dragging, which on many browsers auto-scrolls the page toward the
-    // viewport edge the cursor approaches (visible as the toolbar "shifting
-    // upward" during an upward rotate-drag).
+    // Stop drag-selection and the page auto-scroll it can trigger.
     e.preventDefault();
     const pos = this._eventPos(e);
     if (this._dragButton === 0) {
@@ -1072,10 +996,7 @@ export class MoleculeWidget2D extends EventTarget {
     const Rx = [[1, 0, 0], [0, Math.cos(xAngle), -Math.sin(xAngle)], [0, Math.sin(xAngle), Math.cos(xAngle)]];
     const Ry = [[Math.cos(yAngle), 0, Math.sin(yAngle)], [0, 1, 0], [-Math.sin(yAngle), 0, Math.cos(yAngle)]];
     const R = matMul(Rx, Ry);
-    // Re-orthonormalize after composing: many small rotation multiplications
-    // in a row (every mousemove of a drag, over a long session) otherwise
-    // accumulate floating-point drift away from a proper rotation matrix,
-    // which would gradually distort the rendered geometry.
+    // Re-orthonormalize after composing to prevent long-session drift.
     this.cumulativeR = orthonormalize3(matMul(R, this.cumulativeR));
     this._applyDeltaRotation(R);
     this.update();
@@ -1174,33 +1095,23 @@ export class MoleculeWidget2D extends EventTarget {
     });
   }
 
-  /** Render immediately onto `this.canvas` (or a supplied context/size for export).
-   * `scale` sets the baseline transform (used by `toDataURL`/`saveImage` to
-   * render at higher resolution without the caller having to pre-apply
-   * `ctx.scale()`, which would otherwise be wiped out by the reset below). */
+  /**
+   * Render immediately onto `this.canvas` or a supplied export context.
+   * `scale` sets the baseline transform for high-resolution export.
+   */
   render(ctx = this.ctx, width = this._cssWidth, height = this._cssHeight,
     scale = (this._cssWidth > 0 ? this.canvas.width / this._cssWidth : 1)) {
-    // Always start from a clean, known state. If a previous frame threw
-    // between a ctx.save() and its matching ctx.restore() (e.g. an
-    // unexpected NaN or an invalid colour string reaching a canvas API that
-    // throws), the active transform could otherwise stay leaked — every
-    // following frame would then render translated/rotated/skewed, which
-    // looks like darkened, streaky "stripes" across the canvas. Resetting
-    // the transform up front makes that failure mode structurally
-    // impossible regardless of what caused the earlier exception.
+    // Reset the transform up front so a failed earlier frame cannot leak it
+    // into later renders.
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    // Remember the device scale actually in effect for this frame. Qt strokes
-    // the ADP intersection lines with a *cosmetic* pen, whose width is in
-    // device pixels; the canvas draws in logical pixels, so those strokes have
-    // to divide by this factor to come out the same thickness. Taken from
-    // `scale` rather than `this.dpr` so high-resolution exports match too.
+    // Qt's ADP arc pen is cosmetic (device-pixel width), so remember the
+    // actual render scale for this frame, including exports.
     this._renderScale = scale || 1;
     ctx.save();
     try {
       this._renderScene(ctx, width, height);
     } catch (err) {
-      // Mirrors the Python widget's paintEvent try/except: never let a
-      // single bad frame corrupt the canvas or crash the caller.
+      // Match the Python widget: a bad frame must not crash the caller.
       console.error('MoleculeWidget2D render failed:', err);
     } finally {
       ctx.restore();
@@ -1260,8 +1171,7 @@ export class MoleculeWidget2D extends EventTarget {
 
     for (const atom of labelAtoms) this._drawLabel(ctx, atom, atom.name === this.hoveredAtom);
 
-    // Drawn after the atoms and bonds so the cage stays readable on top of the
-    // solid geometry, matching the Qt renderers.
+    // Draw last so the cage stays readable on top of the solid geometry.
     this._drawResidualDensity(ctx, width, height);
 
     if (this.hoveredAtom === null && this.hoveredBond !== null && this.hoveredBondDistance != null && this.hoverCursor) {
@@ -1359,14 +1269,12 @@ export class MoleculeWidget2D extends EventTarget {
   _drawAtom(ctx, atom) {
     const cx = atom.screenx, cy = atom.screeny;
     if (atom.uCart && !atom.adpValid) {
-      // Non-positive-definite tensor: show the cube placeholder in both ADP
-      // and isotropic mode so the broken atom is never hidden.
+      // Non-positive-definite tensor: always show the placeholder cube.
       this._drawInvalidAdp(ctx, atom);
       return;
     }
     if (HYDROGENS.has(atom.type) && !this._drawsAdpEllipsoid(atom)) {
-      // Hydrogen without an anisotropic tensor (or with ADPs switched off):
-      // fixed-size sphere, identical in both display modes.
+      // H/D without a drawn anisotropic tensor stay fixed-size spheres.
       const circleSize = atom.displayRadius * this.scale * 2;
       const radius = circleSize / 2;
       if (this.selectedAtoms.has(atom.name)) this._drawSelection(ctx, cx, cy, radius, radius, 0);
@@ -1428,9 +1336,8 @@ export class MoleculeWidget2D extends EventTarget {
   }
 
   /**
-   * Non-positive-definite ADP fallback: a real 3-D cube oriented in the
-   * molecular frame and projected through the current view rotation, so it
-   * turns with the structure. All six faces are painted back-to-front.
+   * Non-positive-definite ADP fallback.
+   * Draw a real 3-D cube in molecular space so it rotates with the structure.
    */
   _drawInvalidAdp(ctx, atom) {
     const cx = atom.screenx, cy = atom.screeny;
@@ -1443,9 +1350,7 @@ export class MoleculeWidget2D extends EventTarget {
     ctx.save();
     ctx.strokeStyle = this.fallbackPenColor;
     ctx.lineWidth = 1;
-    // Match Qt's QPen defaults (BevelJoin, miter limit 2).  The canvas
-    // default is 'miter' with a limit of 10, which grows a long spike out of
-    // the acute corners of a face that is projected nearly edge-on.
+    // Match Qt's QPen defaults; the canvas miter default spikes on edge-on faces.
     ctx.lineJoin = 'bevel';
     ctx.miterLimit = 2;
     for (const face of npdCubeFaces(this.cumulativeR, half)) {
@@ -1476,14 +1381,10 @@ export class MoleculeWidget2D extends EventTarget {
 
   _drawPrincipalArcs(ctx, atom, cx, cy, r1, r2, angle) {
     const eigvals = atom.uEigvals;
-    // Qt uses a *cosmetic* pen here, i.e. a width measured in device pixels
-    // and unaffected by any transform. The canvas draws in logical pixels
-    // scaled by `_renderScale`, so divide to land on the same thickness.
+    // Qt uses a cosmetic pen here, so divide by `_renderScale`.
     const lineWidth = this.cachedAdpLineWidth / (this._renderScale || 1);
     if (!eigvals || eigvals[0] <= 0 || eigvals[1] <= 0 || eigvals[2] <= 0) {
-      // Fallback cross spanning the ellipse along its principal axes, matching
-      // `molecule_painter._draw_principal_arcs` (which draws it under the
-      // painter's `rotate(angle)`).
+      // Fallback cross along the ellipse principal axes.
       const ca = Math.cos(angle), sa = Math.sin(angle);
       ctx.save();
       ctx.strokeStyle = `rgba(0,0,0,${120 / 255})`;
@@ -1511,43 +1412,18 @@ export class MoleculeWidget2D extends EventTarget {
       const vi = [eigenvectors[0][i], eigenvectors[1][i], eigenvectors[2][i]];
       const vj = [eigenvectors[0][j], eigenvectors[1][j], eigenvectors[2][j]];
 
-      // Qt applies a rotation-compensated brush transform here; the
-      // compensation cancels out algebraically, leaving a transform built
-      // directly from the raw (world-frame) eigenvector x/y components.
+      // The Qt brush compensation cancels algebraically; use raw x/y components.
       const Ax = s * ri3d * vi[0], Ay = s * ri3d * vi[1];
       const Bx = s * rj3d * vj[0], By = s * rj3d * vj[1];
 
-      // This cross-section curve lies ON the ellipsoid surface, so the
-      // visible/hidden split is the silhouette (front-facing surface),
-      // determined by the surface NORMAL — not by the depth of the curve
-      // point. For a point P(t) = ri3d*cos(t)*vi + rj3d*sin(t)*vj on the
-      // surface, the outward normal is proportional to
-      //   (cos(t)/ri3d)*vi + (sin(t)/rj3d)*vj,
-      // hence the z-amplitude below uses division by the radius, not
-      // multiplication. For a spherical ADP (ri3d == rj3d) the two agree,
-      // but for elongated ellipsoids the depth-based split is wrong.
+      // Split visible/hidden halves by the surface normal, not point depth.
+      // The normal scales with 1/radius, so use division here.
       const AzN = vi[2] / ri3d, BzN = vj[2] / rj3d;
       const zAmp = Math.hypot(AzN, BzN);
 
-      // Sample the arc directly in screen space (rather than stroking a
-      // unit circle through a ctx.transform) so the stroke width stays
-      // exactly `cachedAdpLineWidth` device pixels (see `lineWidth` above),
-      // mirroring Qt's cosmetic pen. Relying on ctx.transform + a
-      // compensating 1/det line-width scale breaks down when the ellipsoid's
-      // principal plane is viewed near edge-on: the transform becomes nearly
-      // singular, 1/det blows up, and the "circle" degenerates into a huge
-      // filled band across the canvas instead of a thin arc.
-      //
-      // The visible (front-facing) half of this on-surface cross-section is
-      // where the surface normal's depth component n_z(t) = AzN*cos(t) +
-      // BzN*sin(t) is <= 0 (normal pointing toward the viewer; smaller z =
-      // closer, matching the z-order painter's-algorithm sort below).
-      // n_z(t) = zAmp*cos(t - phiN), which is <= 0 exactly for t in
-      // [phiN + pi/2, phiN + 3*pi/2] — a plain half turn starting at
-      // phiN + pi/2. (Qt's `drawArc` needs the negated/offset angle here
-      // because its angle parameter is measured the opposite way from the
-      // cos(t)/sin(t) sampling used below; since we sample directly there
-      // is no such flip to compensate for.)
+      // Sample directly in screen space so the stroke stays cosmetic-width even
+      // near edge-on, where transformed-circle approaches become singular.
+      // The visible half is where n_z(t) <= 0, i.e. a half turn from phiN+pi/2.
       let startAngle = 0;
       let sweep = 2 * Math.PI;
       if (zAmp >= 1e-8) {

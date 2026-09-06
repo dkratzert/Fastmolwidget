@@ -1,7 +1,4 @@
-/**
- * Small colour helper mimicking the subset of Qt's `QColor` behaviour used
- * by the renderer: hex/rgb parsing plus HSV-based `lighter()` / `darker()`.
- */
+/** Small colour helper matching the `QColor` subset used by the renderer. */
 
 function hexToRgb(hex) {
   let h = hex.replace('#', '');
@@ -46,13 +43,11 @@ function hsvToRgb(h, s, v) {
   return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
 }
 
-/** Parse a colour into `{r,g,b,a}` (0..255, alpha 0..1). Accepts hex strings,
- * `rgb()`/`rgba()` strings, `[r,g,b]` / `[r,g,b,a]` arrays, or any other valid
- * CSS colour (named colours, `hsl()`, etc. — resolved via a throwaway canvas).
- * Never throws: an unparsable value falls back to opaque black, mirroring
- * Qt's `QColor` (an invalid colour string silently yields an invalid/black
- * colour rather than raising), so a single bad colour can never crash a
- * render pass. */
+/**
+ * Parse a colour into `{r,g,b,a}`.
+ * Accepts hex, `rgb()`/`rgba()`, arrays, or any CSS colour the canvas can parse.
+ * Never throws: invalid input falls back to opaque black, like `QColor`.
+ */
 export function parseColor(color) {
   if (Array.isArray(color)) {
     const [r, g, b, a = 1] = color;
@@ -73,10 +68,8 @@ export function parseColor(color) {
   return { r: 0, g: 0, b: 0, a: 1 };
 }
 
-// Lazily created 1x1 canvas used to resolve any CSS-colour syntax the fast
-// paths above don't handle (named colours, hsl(), etc.) without ever
-// throwing — the canvas 2D API silently ignores an invalid `fillStyle`
-// assignment instead of raising.
+// Lazy 1x1 canvas for CSS colour syntaxes handled by the browser parser.
+// Invalid `fillStyle` assignments are ignored rather than throwing.
 let _colorProbeCtx = null;
 function parseColorViaCanvas(color) {
   try {

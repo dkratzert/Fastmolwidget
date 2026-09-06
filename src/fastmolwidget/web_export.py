@@ -1,24 +1,4 @@
-"""Export a parsed structure (CIF or SHELX) as the fractional-coordinate
-JSON contract consumed by the JavaScript renderer (see ``js/README.md``).
-
-Structure **parsing** stays in Python (via ``gemmi``/``shelxfile``, same as
-:mod:`fastmolwidget.loader`); growing the asymmetric unit to whole molecules
-and packing unit cells now happen in the browser (``js/sdm.js``), so this
-module only needs to ship the asymmetric unit in fractional coordinates plus
-the symmetry operations and cell.
-
-:func:`export_density` additionally ships a residual (Fo−Fc) map, which the
-browser contours itself (``js/density.js``).  It is deliberately **opt-in**: a
-page that does not ask for density carries no map payload at all.
-
-Usage::
-
-    from fastmolwidget.web_export import export_cif, export_shelx
-    import json
-
-    data = export_cif('structure.cif')
-    print(json.dumps(data))
-"""
+"""Export structures and optional density for the web renderer."""
 
 from __future__ import annotations
 
@@ -40,20 +20,15 @@ __all__ = [
     'export_to_json',
 ]
 
-#: Grid spacing in Å used for web exports.  Coarser than the desktop default
-#: (:data:`fastmolwidget.density.DEFAULT_GRID_SPACING`, 0.15 Å) because the map
-#: has to travel inside the HTML page: 0.20 Å is about a tenth of the payload
-#: and still resolves the features a report-sized view can show.
+#: Web density grid spacing in Å. Coarser than desktop to keep payloads small.
 DEFAULT_WEB_GRID_SPACING: float = 0.20
 
-#: Extra padding, in grid steps, added to the masking radius.  Grid points just
-#: outside the displayed envelope still take part in the interpolation of the
-#: contour that runs *inside* it, so they must survive the mask.
+#: Extra mask padding in grid steps so contour interpolation stays intact.
 _MASK_SLACK_STEPS: int = 2
 
 
 def export_cif(path: str | Path) -> dict[str, Any]:
-    """Parse a CIF file and return the fractional-coordinate JSON contract."""
+    """Parse a CIF file into the web JSON contract."""
     from fastmolwidget.cif.cif_file_io import CifReader
 
     cif = CifReader(Path(path))
@@ -83,8 +58,7 @@ def export_cif(path: str | Path) -> dict[str, Any]:
 
 
 def export_shelx(path: str | Path) -> dict[str, Any]:
-    """Parse a SHELX ``.res``/``.ins`` file and return the fractional-coordinate
-    JSON contract."""
+    """Parse a SHELX ``.res``/``.ins`` file into the web JSON contract."""
     from shelxfile import Shelxfile
 
     shx = Shelxfile()
@@ -129,15 +103,7 @@ def export_shelx(path: str | Path) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _coverage_atoms(data: dict[str, Any], coverage: str) -> np.ndarray:
-    """Cartesian positions of every atom the browser might display.
-
-    The map is masked around these, so whatever the viewer grows or packs to
-    still has density around it.
-
-    :param data: The structure dict from :func:`export_cif` / :func:`export_shelx`.
-    :param coverage: ``'asu'``, ``'grow'`` or ``'cell'``.
-    :returns: An ``(N, 3)`` array of Cartesian coordinates in Å.
-    """
+    """Return Cartesian atom positions for the chosen coverage mode."""
     from fastmolwidget.sdm import SDM
 
     cell = tuple(data['cell'])
@@ -174,19 +140,9 @@ def _envelope_mask(
     atoms: np.ndarray,
     radius: float,
 ) -> np.ndarray:
-    """Boolean grid marking the points within *radius* of any atom.
+    """Return grid points within *radius* of any atom.
 
-    Only the neighbourhood of each atom is examined — a few thousand points per
-    atom — instead of testing the whole grid against every atom, which for a
-    packed cell would be hundreds of millions of distances.
-
-    Grid indices wrap, because the map covers one unit cell periodically and
-    the atoms may lie outside it.
-
-    :param shape: Grid dimensions of one unit cell.
-    :param orth: ``3x3`` fractional-to-Cartesian matrix.
-    :param atoms: ``(N, 3)`` Cartesian atom positions.
-    :param radius: Masking radius in Å.
+    Indices wrap because the map is one periodic unit cell.
     """
     dims = np.asarray(shape)
     mask = np.zeros(tuple(dims), dtype=bool)
@@ -194,8 +150,7 @@ def _envelope_mask(
         return mask
 
     inverse = np.linalg.inv(orth)
-    # Width of the radius along each axis in fractional units, then in grid
-    # steps.  The row norms of the inverse keep this correct for oblique cells.
+    # Convert the radius to per-axis grid steps for oblique cells too.
     steps = np.ceil(radius * np.linalg.norm(inverse, axis=1) * dims).astype(int)
     ranges = [np.arange(-s, s + 1) for s in steps]
     block = np.stack(np.meshgrid(*ranges, indexing='ij'), axis=-1)
@@ -223,34 +178,11 @@ def export_density(
     coverage: str = 'asu',
     compress: bool = True,
 ) -> dict[str, Any]:
-    """Compute a residual (Fo−Fc) map and pack it for the JavaScript renderer.
+    """Compute a residual-density payload for the web renderer.
 
-    The map is shipped as the **whole unit cell**, quantised to one byte per
-    grid point, so the browser can contour it at any level and wrap it around
-    grown or packed molecules exactly as
-    :meth:`~fastmolwidget.density.ResidualDensityMap._region` does.
-
-    Density far from any atom is never drawn (the isosurface is clipped to
-    *margin* around the displayed atoms), so it is zeroed here before
-    compression.  That costs nothing visually and shrinks the payload three- to
-    fourfold, which matters because it travels inside the HTML page.
-
-    :param model: The refined model — a CIF, or a SHELX ``.res``/``.ins``.
-    :param hkl: Reflections.  ``None`` looks them up automatically.
-    :param level: Contour level in e/Å³ the viewer should start at.  ``None``
-        uses :data:`~fastmolwidget.density.DEFAULT_SIGMA` times the map's RMS.
-    :param grid_spacing: FFT grid spacing in Å.  The default is coarser than
-        the desktop one to keep the page small.
-    :param margin: Radius in Å around the covered atoms that is kept.
-    :param coverage: Which atoms to keep density around — ``'asu'`` (the
-        asymmetric unit, matching the viewer's default view), ``'grow'`` (whole
-        molecules) or ``'cell'`` (a packed unit cell).  Use the widest mode the
-        page's controls allow, since the browser cannot recover what was
-        masked away.
-    :param compress: gzip the payload before base64-encoding it.  The browser
-        inflates it with ``DecompressionStream``.
-    :returns: The ``density`` object of the JSON contract.
-    :raises ValueError: If *coverage* is not one of the three modes.
+    Exports one whole unit cell so the browser can wrap it around grown or
+    packed views. Density outside the display margin is zeroed before
+    compression to shrink the payload.
     """
     from fastmolwidget.density import calculate_residual_density
 
@@ -272,8 +204,7 @@ def export_density(
     )
     values[~mask] = 0.0
 
-    # Full-range quantisation - no clipping, so even the strongest peak keeps
-    # its shape when the level is raised.
+    # Full-range quantization: no clipping.
     scale = float(np.abs(values).max())
     if scale <= 0.0:
         raise ValueError(f'The residual density of {model} is empty')
@@ -301,8 +232,7 @@ def export_density(
 
 
 def export_to_json(path: str | Path, out_path: str | Path | None = None) -> str:
-    """Export a CIF or SHELX file to the JSON contract, returning the JSON
-    string (and optionally writing it to *out_path*)."""
+    """Export a CIF or SHELX file to JSON."""
     path = Path(path)
     if path.suffix.lower() == '.cif':
         data = export_cif(path)

@@ -1,37 +1,17 @@
-"""
-Residual (Fo−Fc) electron-density maps computed directly from reflection data.
+"""Residual ``Fo-Fc`` density maps from refined models and reflections.
 
-The map is calculated from a raw reflection file (SHELX ``.hkl`` or an
-fcf-style CIF reflection loop) together with the refined atomic model, using
-`gemmi <https://gemmi.readthedocs.io>`_ for the structure-factor summation and
-the FFT.  No pre-computed map file (``.fcf``, ``.map``) is required.
+Workflow:
+1. read and merge reflections into the reciprocal ASU;
+2. reuse or compute ``F_c`` (with real anomalous term ``f'``);
+3. scale observed amplitudes with SHELXL's OSF so ``|Fo| / OSF`` matches
+   ``|Fc|``;
+4. build unweighted SHELXL-style coefficients
+   ``ΔF = (|Fo| / OSF - |Fc|) * exp(i φc)``;
+5. expand over the space group and FFT to a periodic unit-cell map in e/Å³.
 
-Method
-------
-1. Reflections are read with :mod:`fastmolwidget.hkl_io` and merged into the
-   reciprocal-space asymmetric unit (σ-weighted mean of F²).
-2. *F*\\ :sub:`c` is obtained either from the reflection file itself (fcf-style
-   CIFs already contain it) or by direct summation with
-   :class:`gemmi.StructureFactorCalculatorX`, including the real part of the
-   anomalous dispersion *f′* for the radiation wavelength.
-3. SHELXL's refined overall scale factor (the first ``FVAR``) puts the two on a
-   common scale — SHELX refines such that ``|Fo| ≈ OSF · |Fc|``, so the map is
-   computed on the *F*\\ :sub:`c` (electron) scale using ``|Fo| / OSF``.
-4. The difference coefficients are SHELXL's own, **unweighted**, convention::
-
-       ΔF(hkl) = (|Fo| / OSF − |Fc|) · exp(i·φc)
-
-   SHELXL applies the ``WGHT`` scheme only to the least-squares objective, not
-   to Fourier map coefficients, so it is deliberately *not* used here.
-5. :meth:`gemmi.ComplexAsuData.transform_f_phi_to_map` expands the coefficients
-   over the space group and runs the FFT, giving ρ in e/Å³ over one unit cell.
-
-Isosurfaces are extracted with the optional :mod:`density_cpp` marching-cubes
-extension.  When it is not compiled in, :attr:`HAS_DENSITY_CPP` is ``False``
-and :meth:`ResidualDensityMap.isosurface` raises a clear error instead of
-crashing the host application.
-
-This module is Qt-free.
+``WGHT`` is intentionally not applied to Fourier coefficients. Isosurfaces use
+the optional :mod:`density_cpp` extension; without it, the feature fails
+cleanly. This module is Qt-free.
 """
 
 from __future__ import annotations
@@ -63,52 +43,33 @@ from fastmolwidget.hkl_io import (
 try:
     from fastmolwidget import density_cpp
 
-    #: ``True`` only when the compiled extension is really importable.  The
-    #: attribute is checked rather than just the import, so that a stale or
-    #: not-yet-built extension degrades to a clear error instead of an
-    #: ``AttributeError`` deep inside :meth:`ResidualDensityMap.isosurface`.
+    #: True only when the compiled extension exposes the needed bindings.
     HAS_DENSITY_CPP: bool = hasattr(density_cpp, 'marching_cubes')
 except ImportError:  # pragma: no cover - depends on the compiled extension
     HAS_DENSITY_CPP = False
 
-#: Grid spacing of the FFT map in Å.  Deliberately a fixed length rather than
-#: a multiple of ``d_min``, so that the number of grid points depends only on
-#: the size of the unit cell and never on how high the data resolution is.
-#: 0.15 Å resolves the shape of individual residual-density features; coarser
-#: grids (0.3-0.4 Å) are noticeably blockier once contoured.  Pass
-#: ``grid_spacing=`` to :func:`calculate_residual_density` to trade detail
-#: against speed and memory.
+#: FFT grid spacing in Å. Fixed by cell size, not by data resolution.
+#: ``0.15`` preserves residual-feature shape; ``0.3-0.4`` looks blocky.
 DEFAULT_GRID_SPACING: float = 0.15
 
 #: Default padding around the displayed atoms, in Å.
 DEFAULT_MARGIN: float = 1.5
 
-#: Default contour level, as a multiple of the map's RMS.  A fixed absolute
-#: level cannot suit every dataset — the RMS of a residual map varies by an
-#: order of magnitude between structures — whereas 3σ is the usual
-#: crystallographic threshold for "significant" residual density and gives a
-#: comparable picture for good and poor refinements alike.
+#: Default contour level as a multiple of map RMS. ``3σ`` is the usual
+#: crystallographic threshold, and an absolute level does not transfer between
+#: structures.
 DEFAULT_SIGMA: float = 3.0
 
-#: Default strength of the down-weighting of weak data.  Every Fourier
-#: coefficient is multiplied by ``1 / (1 + w·(σ(F)/|Fc|)³)``, so reflections
-#: whose σ approaches their calculated amplitude — the noisy, mostly
-#: high-angle ones — barely contribute, while strong data passes through
-#: untouched.  This is the only smoothing applied: it acts in reciprocal
-#: space, on the data, rather than blurring the finished map.  ``0.0``
-#: switches it off.
+#: Default strength of the weak-data damping
+#: ``1 / (1 + w·(σ(F)/|Fc|)^3)``. This is the only smoothing and acts in
+#: reciprocal space. ``0.0`` disables it.
 DEFAULT_WEAK_WEIGHT: float = 1.0
 
-#: Exponent of the ``σ(F)/|Fc|`` ratio in the down-weighting of weak data.
-#: The higher it is, the more abruptly a reflection is cut once its σ becomes
-#: comparable with its calculated amplitude.
+#: Exponent of ``σ(F)/|Fc|`` in weak-data damping.
 WEAK_DATA_EXPONENT: float = 3.0
 
-#: Number of marching-cubes cubes per entry of the coarse occupancy mask that
-#: confines contouring to the neighbourhood of the atoms (see
-#: :meth:`ResidualDensityMap._cube_mask`).  8 keeps the mask small - a few tens
-#: of thousands of entries - while still following the shape of a molecule
-#: closely enough that most of its bounding box is skipped.
+#: Cubes per cell of the coarse marching-cubes mask. ``8`` keeps the mask small
+#: while still skipping most of a molecule's bounding box.
 CUBE_MASK_BLOCK: int = 8
 
 __all__ = [
@@ -126,10 +87,7 @@ __all__ = [
     'small_structure_from_shelx',
 ]
 
-#: Everything :func:`calculate_residual_density` accepts as a model: a path to
-#: a CIF or SHELX file, an in-memory CIF document or block, or a structure that
-#: was built elsewhere.  The in-memory forms let a host application use the
-#: document it is already editing instead of writing a temporary file.
+#: Model source accepted by :func:`calculate_residual_density`.
 ModelSource = CifSource | gemmi.SmallStructure
 
 
@@ -139,18 +97,7 @@ ModelSource = CifSource | gemmi.SmallStructure
 
 @dataclass
 class ResidualDensityMap:
-    """A residual (Fo−Fc) density map covering one unit cell.
-
-    The map is periodic, so it can be sampled outside ``[0, 1)`` in fractional
-    coordinates simply by wrapping the grid indices — which is what
-    :meth:`isosurface` does to cover grown or packed molecules.
-
-    :param array: ``(nu, nv, nw)`` grid of ρ in e/Å³, indexed along the *a*,
-        *b* and *c* axes.
-    :param cell: Unit-cell parameters ``(a, b, c, α, β, γ)``.
-    :param d_min: Resolution limit of the data used, in Å.
-    :param scale: The scale factor applied to ``|Fo|`` (SHELXL's OSF).
-    """
+    """Residual ``Fo-Fc`` density over one periodic unit cell."""
 
     array: np.ndarray
     cell: tuple[float, float, float, float, float, float]
@@ -173,15 +120,7 @@ class ResidualDensityMap:
         return float(self.array.min())
 
     def sigma_level(self, sigma: float = DEFAULT_SIGMA) -> float:
-        """Return the contour level *sigma* times the map RMS, in e/Å³.
-
-        Residual maps differ hugely in scale between structures, so a level
-        expressed in σ transfers between datasets where an absolute one does
-        not.  The value is rounded to two decimals to match the precision the
-        viewer's spin box offers, and never returns zero.
-
-        :param sigma: Multiple of the RMS to contour at.
-        """
+        """Return ``sigma * rms`` in e/Å³, rounded to 2 decimals, never zero."""
         level = round(sigma * self.rms, 2)
         return max(level, 0.01)
 
@@ -197,27 +136,11 @@ class ResidualDensityMap:
         atoms: np.ndarray | None = None,
         margin: float = DEFAULT_MARGIN,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Extract a wireframe isosurface at *level* in Cartesian coordinates.
+        """Extract one wireframe isosurface in Cartesian coordinates.
 
-        Marching cubes runs in fractional-coordinate space and the resulting
-        vertices are transformed to Cartesian afterwards, so triclinic and
-        monoclinic cells are handled correctly.
-
-        When *atoms* is given, only the density within *margin* of those atoms
-        is contoured.  This keeps the surface aligned with grown or packed
-        molecules, avoids drawing density where nothing is displayed, and is
-        much faster than contouring the whole cell.
-
-        :param level: Contour level in e/Å³.  Use a negative value for the
-            negative-density surface.
-        :param atoms: Optional ``(N, 3)`` array of Cartesian atom positions
-            used to restrict the contoured region.  ``None`` contours exactly
-            one unit cell.
-        :param margin: Radius around each atom to keep, in Å.
-        :returns: ``(vertices, edges)`` — an ``(M, 3)`` float array of
-            Cartesian vertex positions and a ``(K, 2)`` integer array of
-            deduplicated line segments, ready for ``GL_LINES``.
-        :raises RuntimeError: If the :mod:`density_cpp` extension is missing.
+        Marching cubes runs in fractional space; vertices are converted to
+        Cartesian afterwards. With ``atoms``, contour only within ``margin`` Å
+        of those atoms.
         """
         return self.isosurfaces((level,), atoms=atoms, margin=margin)[0]
 
@@ -228,24 +151,7 @@ class ResidualDensityMap:
         atoms: np.ndarray | None = None,
         margin: float = DEFAULT_MARGIN,
     ) -> list[tuple[np.ndarray, np.ndarray]]:
-        """Extract several isosurfaces that share one cut-out of the grid.
-
-        The positive and negative lobe of a residual map are contoured from
-        exactly the same region, and cutting that region out is a gather over
-        every voxel of it - for a molecule spanning more than one cell that is
-        tens of megabytes, and it was being done once per lobe.  Asking for
-        both levels in one call does it once.
-
-        :param levels: The contour levels in e/Å³, in the order the results
-            are wanted.
-        :param atoms: Optional ``(N, 3)`` array of Cartesian atom positions
-            used to restrict the contoured region.  ``None`` contours exactly
-            one unit cell.
-        :param margin: Radius around each atom to keep, in Å.
-        :returns: One ``(vertices, edges)`` pair per level, as returned by
-            :meth:`isosurface`.
-        :raises RuntimeError: If the :mod:`density_cpp` extension is missing.
-        """
+        """Extract several isosurfaces from one shared grid cut-out."""
         if not HAS_DENSITY_CPP:
             raise RuntimeError(
                 'Residual-density isosurfaces need the compiled "density_cpp" '
@@ -280,22 +186,10 @@ class ResidualDensityMap:
         atoms: np.ndarray | None,
         margin: float,
     ) -> np.ndarray | None:
-        """Mark the blocks of the cut-out grid that lie near *atoms*.
+        """Mark cut-out blocks that lie near *atoms*.
 
-        The cut-out is the atoms' bounding box, which for anything but a
-        compact blob is several times the volume actually wanted - for a
-        molecule spanning two cells it is easily 85 % empty.  Marching cubes
-        would read every one of those voxels and produce vertices that
-        :func:`_clip_to_atoms` throws away again, so the region is instead
-        described to it as a coarse occupancy mask over blocks of
-        :data:`CUBE_MASK_BLOCK` cubes and the empty blocks are never touched.
-
-        Each atom marks the axis-aligned block box covering its *margin*
-        sphere, so the mask is a conservative over-estimate: no cube that
-        could carry a wanted vertex is ever skipped, and the few extra ones it
-        keeps are removed by the exact distance test afterwards.
-
-        :returns: The boolean mask, or ``None`` when the whole grid is wanted.
+        The mask is a conservative over-estimate of each atom's ``margin``
+        sphere, so no cube that could contain a wanted vertex is skipped.
         """
         if atoms is None or len(atoms) == 0:
             return None
@@ -305,7 +199,7 @@ class ResidualDensityMap:
         if np.any(blocks <= 0):
             return None
 
-        # Atom positions and the margin, both in grid steps of the cut-out.
+        # Atom positions and margin, both in cut-out grid steps.
         inverse = np.linalg.inv(self.orth_matrix)
         frac = np.asarray(atoms, dtype=float) @ inverse.T
         position = (frac - origin_frac) / step_frac
@@ -326,32 +220,25 @@ class ResidualDensityMap:
         atoms: np.ndarray | None,
         margin: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Cut the periodic map down to the bounding box around *atoms*.
+        """Cut the periodic map to the bounding box around *atoms*.
 
-        This is only a cheap box pre-filter; :func:`_clip_to_atoms` then trims
-        the result to the actual per-atom radius.
-
-        :returns: ``(sub_grid, origin_fractional, step_fractional)`` where the
-            sub-grid is a contiguous copy sampled with wrapped (periodic)
-            indices.
+        This is only a box pre-filter; :func:`_clip_to_atoms` applies the exact
+        per-atom radius later.
         """
         shape = np.array(self.array.shape)
         step = 1.0 / shape
 
         if atoms is None or len(atoms) == 0:
-            # One unit cell, plus one duplicated layer so the surface closes
-            # across the periodic boundary.
+            # One cell plus a duplicated outer layer, so surfaces close across
+            # the periodic boundary.
             sub = np.empty(shape + 1, dtype=np.float32)
             idx = [np.arange(n + 1) % n for n in shape]
             sub[:] = self.array[np.ix_(*idx)]
             return sub, np.zeros(3), step
 
         frac = np.asarray(atoms, dtype=float) @ np.linalg.inv(self.orth_matrix).T
-        # Convert the Cartesian margin into a safe fractional padding: the
-        # width of the cell along each axis is volume / (area of opposite
-        # face), which for the orthogonalisation matrix is 1 / |row of the
-        # inverse|.  Using the row norms keeps the padding correct for
-        # oblique cells instead of under-padding along the skewed axes.
+        # Convert Cartesian margin to safe fractional padding. Using inverse-row
+        # norms keeps the padding correct for oblique cells.
         inverse = np.linalg.inv(self.orth_matrix)
         pad = margin * np.linalg.norm(inverse, axis=1)
         lo = np.floor((frac.min(axis=0) - pad) * shape).astype(int)
@@ -363,11 +250,7 @@ class ResidualDensityMap:
 
 
 def _neighbour_offsets() -> np.ndarray:
-    """The 27 cell offsets of a spatial-hash neighbourhood, nearest first.
-
-    Ordering them by distance from the centre lets :func:`_clip_to_atoms`
-    accept most vertices in the first few passes and skip the rest.
-    """
+    """The 27 neighbour-cell offsets, ordered nearest first."""
     offsets = np.array([(x, y, z)
                         for x in (-1, 0, 1)
                         for y in (-1, 0, 1)
@@ -381,9 +264,8 @@ _NEIGHBOUR_OFFSETS: np.ndarray = _neighbour_offsets()
 def _dilated(mask: np.ndarray) -> np.ndarray:
     """Grow a boolean 3-D mask by one cell in every direction.
 
-    Done as three separable passes rather than 27 shifted ORs, which is the
-    same result for a Chebyshev-distance-1 neighbourhood at a ninth of the
-    work.
+    Three separable passes give the same Chebyshev-distance-1 result as 27
+    shifted ORs.
     """
     grown = mask.copy()
     for axis in range(3):
@@ -400,22 +282,12 @@ def _dilated(mask: np.ndarray) -> np.ndarray:
 def _clip_candidates(
     vertex_cells: np.ndarray, atom_cells: np.ndarray, shape: np.ndarray,
 ) -> np.ndarray:
-    """Vertices whose bucket neighbourhood contains at least one atom.
+    """Indices of vertices whose bucket neighbourhood contains an atom.
 
-    A cheap, exact pre-filter for :func:`_clip_to_atoms`: a vertex more than
-    one bucket away from every occupied bucket is more than one bucket edge -
-    that is, more than ``margin`` - from every atom, so it can be rejected
-    without any distance being computed.  The bucket grid is tiny (the
-    molecule's extent divided by ``margin``), so building and growing it costs
-    almost nothing next to the per-vertex work it saves.
-
-    :param vertex_cells: ``(M, 3)`` bucket index of every vertex.
-    :param atom_cells: ``(N, 3)`` bucket index of every atom.
-    :param shape: Bucket-grid dimensions the atoms span.
-    :returns: Indices of the vertices worth testing, as a sorted array.
+    This is a cheap exact pre-filter for :func:`_clip_to_atoms`.
     """
-    # One cell of padding on each side: a vertex may sit one bucket outside
-    # the atoms' own extent and still be within margin of one of them.
+    # One-cell padding: a vertex may sit one bucket outside the occupied region
+    # and still be within ``margin`` of an atom.
     padded = np.zeros(shape + 2, dtype=bool)
     padded[atom_cells[:, 0] + 1, atom_cells[:, 1] + 1, atom_cells[:, 2] + 1] = True
     near_atoms = _dilated(padded)
@@ -435,34 +307,12 @@ def _clip_to_atoms(
     atoms: np.ndarray,
     margin: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Drop every line segment further than *margin* from any atom.
+    """Drop segments farther than *margin* from every atom.
 
-    The bounding box used to cut the grid is necessarily larger than the
-    molecule, so this removes the density blobs that sit in the corners of the
-    box but are nowhere near an atom.  An edge is kept when **both** of its
-    vertices are close enough, which avoids segments dangling into empty space.
-
-    Distances are evaluated with a uniform spatial hash of cell size *margin*,
-    so only the 27 neighbouring buckets of each vertex have to be checked.
-    That keeps this linear in the number of vertices instead of the
-    ``len(vertices) x len(atoms)`` a brute-force test would need.  The whole
-    search is vectorised — the buckets are a sorted array of cell keys that all
-    vertices query at once with :func:`numpy.searchsorted`, one pass per
-    neighbour offset — because this runs on the interactive path: every change
-    of the contour level, of the hydrogen filter or of the visible disorder
-    parts re-clips both lobes.
-
-    Most vertices are nowhere near an atom: the box handed to marching cubes
-    has to cover the molecule's bounding box, which for anything but a compact
-    blob is several times its volume.  So the buckets holding atoms are first
-    marked in a small boolean grid, grown by one cell (:func:`_dilated`), and
-    every vertex is looked up in it in a single gather.  A vertex whose own
-    bucket is not in that dilated set cannot have an atom within *margin* by
-    construction, and only what survives is worth the 27-offset search.  The
-    offsets are then walked nearest first over a set that shrinks as vertices
-    are accepted.
-
-    :returns: ``(vertices, edges)`` renumbered to the surviving vertices.
+    The marching-cubes box is larger than the molecule, so corner blobs must be
+    removed afterwards. The search uses a vectorised spatial hash with bucket
+    size ``margin`` and a cheap dilated-bucket pre-filter; an edge survives
+    only if both vertices do.
     """
     if len(vertices) == 0 or len(edges) == 0:
         return vertices, edges
@@ -474,8 +324,7 @@ def _clip_to_atoms(
     vertices = np.asarray(vertices)
     origin = atoms.min(axis=0) - margin
 
-    # Bucket the atoms by cell and sort them, so a bucket is a contiguous
-    # slice that searchsorted can locate in O(log n).
+    # Sort atoms by bucket so each bucket is one contiguous slice.
     atom_cells = np.floor((atoms - origin) / margin).astype(np.int64)
     shape = atom_cells.max(axis=0) + 1
     atom_keys = (atom_cells[:, 0] * shape[1] + atom_cells[:, 1]) * shape[2] \
@@ -507,7 +356,7 @@ def _clip_to_atoms(
             continue
         todo, start, counts = (todo[nonempty], start[nonempty],
                                counts[nonempty])
-        # Flatten the ragged (vertex -> its bucket's atoms) pairs.
+        # Flatten the ragged ``vertex -> bucket atoms`` relation.
         total = int(counts.sum())
         offsets = np.repeat(np.cumsum(counts) - counts, counts)
         atom_index = np.repeat(start, counts) + \
@@ -557,24 +406,12 @@ def _orthogonalisation_matrix(
 # ---------------------------------------------------------------------------
 
 def _sanitise_adps(structure: gemmi.SmallStructure) -> list[str]:
-    """Replace non-positive-definite ADP tensors with their isotropic equivalent.
+    """Replace non-positive-definite ADPs with isotropic equivalents.
 
-    A negative eigenvalue makes the Debye-Waller factor *grow* exponentially
-    with resolution, so a single bad tensor turns the whole high-angle part of
-    *F*\\ :sub:`c` into nonsense and buries the map under a huge dipole at that
-    atom.  Files with such tensors do occur — ``_atom_site_aniso`` values are
-    sometimes mangled by CIF writers, and refinements can end on a genuinely
-    NPD tensor — so they are neutralised here rather than trusted.
-
-    Positive-definiteness is invariant under the congruence transform that
-    takes U\\ :sub:`cif` to U\\ :sub:`cart`, so the test can be applied
-    directly to the stored tensor.
-
-    The offending atom keeps its ``u_iso`` (normally U\\ :sub:`eq`, which is
-    usually still sensible) and is rendered isotropically.
-
-    :param structure: The structure to clean, modified in place.
-    :returns: The labels of the atoms whose ADPs were replaced.
+    Negative eigenvalues make the Debye-Waller factor grow with resolution and
+    corrupt high-angle ``F_c``. The test is valid directly on the stored tensor;
+    offending atoms keep ``u_iso`` (or a trace-based fallback) and become
+    isotropic.
     """
     replaced: list[str] = []
     for site in structure.sites:
@@ -599,14 +436,10 @@ def _sanitise_adps(structure: gemmi.SmallStructure) -> list[str]:
 
 
 def small_structure_from_cif(source: CifSource) -> gemmi.SmallStructure:
-    """Read a CIF into a :class:`gemmi.SmallStructure` ready for SF calculation.
+    """Read a CIF into a :class:`gemmi.SmallStructure` for SF calculation.
 
-    A leading ``global_`` block is skipped — it only carries values inherited
-    by the blocks that follow, and has no atom sites of its own.  The first
-    block that does contain atom sites is used.
-
-    :param source: Path to the CIF file, a parsed document, or a single block.
-    :raises ValueError: If the source has no block with atom sites.
+    Leading ``global_`` blocks are skipped; the first block with atom sites is
+    used.
     """
     for block in _cif_blocks(source):
         structure = small_structure_from_block(block)
@@ -616,14 +449,10 @@ def small_structure_from_cif(source: CifSource) -> gemmi.SmallStructure:
 
 
 def small_structure_from_block(block) -> gemmi.SmallStructure | None:
-    """Build a :class:`gemmi.SmallStructure` from a single CIF block.
+    """Build a :class:`gemmi.SmallStructure` from one CIF block.
 
-    ``change_occupancies_to_crystallographic()`` is required by gemmi before
-    the structure factors are summed, so that atoms on special positions
-    contribute with the correct multiplicity.
-
-    :param block: A :class:`gemmi.cif.Block`.
-    :returns: The structure, or ``None`` when the block has no atom sites.
+    ``change_occupancies_to_crystallographic()`` is required so special-position
+    atoms contribute with the correct multiplicity.
     """
     structure = gemmi.make_small_structure_from_block(block)
     if not structure.sites:
@@ -654,9 +483,8 @@ def _source_name(source: object) -> str:
     return str(source)
 
 
-#: SHELX ``LATT`` centring translations, in fractional coordinates.  The sign
-#: of the ``LATT`` number selects centrosymmetry, its magnitude the lattice
-#: type.  ``LATT 1`` (primitive) has no extra translation.
+#: SHELX ``LATT`` centring translations in fractional coordinates. The sign
+#: selects centrosymmetry; the magnitude selects lattice type.
 _LATT_CENTRING: dict[int, tuple[tuple[float, float, float], ...]] = {
     1: (),                                                    # P
     2: ((0.5, 0.5, 0.5),),                                    # I
@@ -671,14 +499,9 @@ _LATT_CENTRING: dict[int, tuple[tuple[float, float, float], ...]] = {
 def _shelx_spacegroup(shx) -> gemmi.SpaceGroup | None:
     """Derive the space group of a SHELX model.
 
-    The ``SYMM`` cards alone are **not** the full group: ``LATT`` adds the
-    lattice centring translations, and a positive ``LATT`` additionally implies
-    an inversion centre.  Leaving the centring out silently yields a primitive
-    subgroup (``C2/c`` becomes ``P2/c``), which halves the number of symmetry
-    mates and makes every calculated structure factor wrong.
-
-    :param shx: A parsed :class:`shelxfile.Shelxfile`.
-    :returns: The space group, or ``None`` if gemmi cannot identify it.
+    ``SYMM`` cards are incomplete on their own: ``LATT`` adds centring
+    translations, and positive ``LATT`` also adds inversion. Omitting centring
+    would silently reduce the group to a primitive subgroup.
     """
     base = [gemmi.Op(card.to_shelxl().replace(' ', '')) for card in shx.symmcards]
 
@@ -711,20 +534,9 @@ def _shelx_spacegroup(shx) -> gemmi.SpaceGroup | None:
 def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
     """Build a :class:`gemmi.SmallStructure` from a parsed SHELX model.
 
-    SHELX's **negative U_iso** convention has to be resolved explicitly: a
-    riding hydrogen with ``U = -1.5`` means *1.5 × U_eq of the atom it rides
-    on*.  ``shelxfile`` (v25) still reports the raw ``-1.5`` from ``uvals``
-    and a meaningless negative ``ueq`` for those atoms, so the pivot's U_eq is
-    tracked here.
-
-    Occupancies come straight from ``atom.occupancy``; ``shelxfile`` v25
-    decodes the SOF free-variable codes correctly, including negative SOFs
-    combined with a site occupancy factor and riding atoms inside an ``AFIX``
-    group.
-
-    :param shx: A :class:`shelxfile.Shelxfile` that has already read a file.
-    :returns: The structure, with the space group and cell filled in.
-    :raises ValueError: If the SHELX model has no ``CELL`` instruction.
+    Resolves SHELX negative ``U_iso`` riding-atom conventions explicitly:
+    ``-1.5`` means ``1.5 * U_eq`` of the pivot atom. Occupancies come from
+    ``atom.occupancy``.
     """
     if shx.cell is None:
         raise ValueError('SHELX model has no CELL instruction')
@@ -746,8 +558,7 @@ def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
         site = gemmi.SmallStructure.Site()
         site.label = atom.fullname_short
         site.type_symbol = atom.element.capitalize()
-        # type_symbol is only a label - the scattering factors are looked up
-        # from .element, which must be set explicitly.
+        # ``type_symbol`` is only a label; scattering factors use ``.element``.
         site.element = gemmi.Element(atom.element.capitalize())
         site.fract = gemmi.Fractional(atom.x, atom.y, atom.z)
         site.occ = atom.occupancy
@@ -764,8 +575,7 @@ def small_structure_from_shelx(shx) -> gemmi.SmallStructure:
             last_ueq = atom.ueq
         structure.add_site(site)
 
-    # gemmi's structure-factor calculator reads the symmetry from the UnitCell,
-    # not from the space group, so the cell images must be generated here.
+    # gemmi reads symmetry from ``UnitCell.images``, not from the space group.
     structure.setup_cell_images()
     bad = _sanitise_adps(structure)
     if bad:
@@ -786,21 +596,12 @@ def _apply_hklf_transform(
     reflections: ReflectionData,
     params: ShelxParameters,
 ) -> ReflectionData:
-    """Apply the ``HKLF`` index transformation and scale factors.
+    """Apply the ``HKLF`` index transform and scale factors.
 
-    ``HKLF N S r11…r33 sm`` lets the reflection file be indexed on a different
-    setting from the model: the new indices are ``h' = R h`` (so
-    ``h' = r11·h + r12·k + r13·l``).  The cell, symmetry and coordinates in the
-    ``.res`` refer to the *transformed* indices, so this has to happen before
-    anything else touches the data.  ``S`` scales F² and σ, ``sm`` scales σ
-    again.
-
-    :param reflections: The data as read from the file.
-    :param params: Refinement parameters carrying the ``HKLF`` card.
-    :returns: The transformed data, or the input unchanged when the card is
-        the default ``HKLF 4``.
-    :raises ValueError: If the transformation matrix is singular or has a
-        negative determinant, which SHELXL does not allow.
+    ``HKLF N S r11…r33 sm`` can re-index reflections into the model setting.
+    That must happen first, because the cell, symmetry and coordinates in the
+    model already refer to the transformed indices. ``S`` scales F² and σ;
+    ``sm`` scales σ again.
     """
     matrix = params.hklf_matrix
     scale = params.hklf_scale
@@ -817,7 +618,7 @@ def _apply_hklf_transform(
                 f'HKLF matrix must have a positive determinant, got '
                 f'{determinant:.3f}'
             )
-        # h'_i = sum_j R_ij h_j  ->  row vectors transform with R transposed.
+        # ``h'_i = sum_j R_ij h_j``; row vectors therefore use ``R.T``.
         transformed = np.asarray(hkl, dtype=float) @ law.T
         hkl = np.rint(transformed).astype(np.int32)
 
@@ -838,26 +639,16 @@ def _twin_domain_indices(
     *,
     racemic: bool = False,
 ) -> list[np.ndarray]:
-    """Return the Miller indices of every twin domain for each reflection.
+    """Return each reflection's Miller indices in every twin domain.
 
-    Domain *k* is reached by applying the ``TWIN`` matrix *k* times to the
-    prime indices, using the same convention as the ``HKLF`` card:
-    ``h' = r11·h + r12·k + r13·l``, i.e. ``h' = M h`` for a column vector.
-    When *racemic* is set the ``TWIN`` count was negative, meaning general and
-    racemic twinning together: the matrix generates components ``1…m`` (with
-    ``m = components / 2``) and components ``m+1…2m`` are their Friedel
+    A negative ``TWIN`` count means general plus racemic twinning: the matrix
+    generates components ``1…m`` and components ``m+1…2m`` are their Friedel
     opposites.
-
-    :param hkl: ``(N, 3)`` prime indices.
-    :param matrix: The ``TWIN`` matrix in row-major order.
-    :param components: Total number of twin components.
-    :param racemic: Whether the second half are the inverted components.
-    :returns: A list of ``components`` ``(N, 3)`` float arrays.
     """
     law = np.array(matrix, dtype=float).reshape(3, 3)
     generated = components // 2 if racemic else components
 
-    # Row-vector arrays transform with the transpose of the column-vector law.
+    # Row-vector arrays use the transpose of the column-vector law.
     indices = [np.asarray(hkl, dtype=float)]
     for _ in range(max(generated - 1, 0)):
         indices.append(indices[-1] @ law.T)
@@ -868,12 +659,7 @@ def _twin_domain_indices(
 
 
 class _StructureFactorCache:
-    """Memoised ``|Fc|²`` lookups for a structure.
-
-    Twin domains map many reflections onto indices that are already needed
-    elsewhere, and direct summation is the expensive part of the calculation,
-    so results are cached by Miller index.
-    """
+    """Memoised ``|Fc|²`` lookups keyed by Miller index."""
 
     def __init__(self, structure: gemmi.SmallStructure,
                  calculator: gemmi.StructureFactorCalculatorX) -> None:
@@ -897,43 +683,20 @@ def _detwin_observations(
     structure: gemmi.SmallStructure,
     params: ShelxParameters,
 ) -> ReflectionData:
-    """Split twinned intensities into the contribution of the first domain.
+    """Split twinned intensities into the primary-domain contribution.
 
-    Each measured intensity of a twinned crystal is the sum over domains,
-    ``Io = Σ_k b_k |Fc(h_k)|²``.  The model tells us how that sum divides, so
-    the part belonging to the domain we are mapping is recovered as
+    Uses
 
     .. math::
         F_o^2(h_1) = I_{obs}\\,\\frac{|F_c(h_1)|^2}{\\sum_k b_k |F_c(h_k)|^2}
 
-    which reduces to ``|Fc(h₁)|²`` for a perfect model — i.e. the detwinned
-    data is on the same scale as the single-domain calculated values, exactly
-    what the difference map needs.
+    Handles ``HKLF 4 + TWIN`` and ``HKLF 5``. In ``HKLF 4``, negative batch
+    values are *not* overlap markers; they may be *R*\\ :sub:`free` flags.
 
-    Two data layouts are handled:
-
-    * **HKLF 4 + TWIN** — one record per observation; the other domains'
-      indices are generated from the twin law.
-    * **HKLF 5** — the domains are listed explicitly, one record each, with a
-      negative component number on every record of an overlap group except the
-      last.  ``HKLF 5`` may not be combined with ``TWIN``, so the format alone
-      decides which layout applies — a negative batch number in ``HKLF 4``
-      data means something else entirely (an *R*\\ :sub:`free` flag).
-
-    :param reflections: The measured data.
-    :param structure: The refined model, used to apportion the intensities.
-    :param params: Refinement parameters carrying ``TWIN`` / ``BASF``.
-    :returns: New :class:`ReflectionData` holding one detwinned observation per
-        group, indexed by the primary domain.
-
-    .. note::
-       A pure **inversion (racemic) twin** is a no-op here.  Splitting the
-       intensity relies on the domains having different ``|Fc|``, but for
-       ``h`` and ``-h`` that difference comes entirely from the imaginary
-       anomalous term *f″*, which gemmi's real-valued addends cannot express.
-       The map is therefore left slightly too large for racemic twins — an
-       error of the size of the anomalous signal, which is small for light
-       atoms.
+    A pure inversion (racemic) twin is effectively a no-op here: ``h`` and
+    ``-h`` differ only through the imaginary anomalous term ``f''``, which
+    gemmi's real-valued addends cannot express, so the map stays slightly too
+    large.
     """
     calculator = gemmi.StructureFactorCalculatorX(structure.cell)
     if params.wavelength:
@@ -974,11 +737,7 @@ def _detwin_observations(
 
 
 def _hklf4_groups(reflections: ReflectionData, params: ShelxParameters):
-    """Yield ``(primary, members, F², σ)`` for ``HKLF 4`` data with a twin law.
-
-    The domains are generated from the ``TWIN`` matrix, so every record is one
-    complete observation.
-    """
+    """Yield ``(primary, members, F², σ)`` for ``HKLF 4`` twinned data."""
     matrix = params.twin_matrix or _DEFAULT_TWIN_MATRIX
     domains = _twin_domain_indices(reflections.hkl, matrix,
                                    params.twin_components,
@@ -999,11 +758,8 @@ def _hklf4_groups(reflections: ReflectionData, params: ShelxParameters):
 def _hklf5_groups(reflections: ReflectionData):
     """Yield ``(primary, members, F², σ)`` for ``HKLF 5`` overlap groups.
 
-    Records belonging to one measured intensity are consecutive; all but the
-    last carry a negative component number.  They share ``F²`` and ``σ``, so
-    the values of the closing record are used.  The map is built for domain 1,
-    so that record is chosen as the primary one when the group contains it —
-    groups without a domain-1 contribution fall back to their first record.
+    Consecutive records form one observation; all but the last have a negative
+    component number. Domain 1 is preferred as the primary index.
     """
     batch = reflections.batch
     members: list[tuple[int, tuple[int, int, int]]] = []
@@ -1030,13 +786,10 @@ def _is_model_object(source: object) -> bool:
 
 
 def _find_reflections_for(model: ModelSource) -> ReflectionSource | None:
-    """Locate the reflection data belonging to *model*.
+    """Locate the reflection data for *model*.
 
-    An in-memory CIF can only carry its reflections itself, since there is no
-    directory to look in; a path additionally gets the sibling search of
-    :func:`~fastmolwidget.hkl_io.find_reflection_file`.
-
-    :returns: The reflection source, or ``None`` when there is none.
+    In-memory CIF objects can only supply embedded data; file paths also get
+    same-basename sibling lookup.
     """
     if _is_cif_object(model):
         return model if has_reflections(model) else None
@@ -1065,27 +818,12 @@ def calculate_residual_density(
     d_min: float | None = None,
     weak_weight: float = DEFAULT_WEAK_WEIGHT,
 ) -> ResidualDensityMap:
-    """Compute a residual (Fo−Fc) density map from a model and reflection data.
+    """Compute a residual ``Fo-Fc`` density map.
 
-    :param model_path: The refined model — a CIF or SHELX ``.res``/``.ins``
-        path, an in-memory :class:`gemmi.cif.Document` or
-        :class:`gemmi.cif.Block`, or a ready :class:`gemmi.SmallStructure`.
-    :param hkl_path: Reflections — a SHELX ``.hkl``, an fcf-style CIF loop, a
-        CIF with an embedded ``_shelx_hkl_file``, an in-memory document or
-        block, or already read :class:`~fastmolwidget.hkl_io.ReflectionData`.
-        ``None`` looks them up in the model itself; for a model *path* the
-        sibling files found by
-        :func:`~fastmolwidget.hkl_io.find_reflection_file` are searched too.
-    :param grid_spacing: FFT grid spacing in Å.  A fixed length, so the grid
-        size depends only on the unit cell and not on the data resolution.
-    :param d_min: Optional resolution cut-off in Å.  ``None`` uses all data.
-    :param weak_weight: Strength of the down-weighting of weak data, see
-        :func:`_weak_data_damping`.  ``0.0`` disables it.
-    :returns: The computed map.
-    :raises FileNotFoundError: If *hkl_path* is ``None`` and no reflection
-        data could be found for the model.
-    :raises ValueError: If the model cannot be interpreted or the reflection
-        data contains nothing usable.
+    ``model_path`` may be a CIF or SHELX path, an in-memory CIF object, or a
+    ready :class:`gemmi.SmallStructure`. ``hkl_path`` may be a reflection path,
+    CIF source, or ready :class:`ReflectionData`. ``None`` looks reflections up
+    from the model; file paths also search same-basename siblings.
     """
     model = model_path if _is_model_object(model_path) else Path(model_path)
     structure, params = _load_model(model)
@@ -1101,13 +839,10 @@ def calculate_residual_density(
     reflections = read_reflections(hkl_path)
 
     if not reflections.has_f_calc:
-        # HKLF can re-index the data into the model's setting; everything
-        # downstream assumes that has already happened.
+        # HKLF re-indexing must be applied before any downstream use.
         reflections = _apply_hklf_transform(reflections, params)
 
-        # Twinned data has to be split into single-domain intensities before
-        # the map is built, otherwise the other domains' scattering shows up
-        # as residual density all over the map.
+        # Twinned data must be split before map calculation.
         if params.is_twinned:
             reflections = _detwin_observations(reflections, structure, params)
 
@@ -1119,8 +854,8 @@ def calculate_residual_density(
     f_calc = _calculated_structure_factors(structure, hkl, params, reflections)
     scale = _scale_factor(params, f_obs, np.abs(f_calc))
 
-    # Fix the grid from the cell alone, then drop the few reflections that are
-    # finer than it can represent, so the map size never follows the data.
+    # Fix the grid from the cell alone; drop reflections finer than it can
+    # represent so map size never follows data resolution.
     size = _grid_size(structure.cell, grid_spacing)
     fits = _fits_in_grid(hkl, size)
     hkl, f_obs, f_calc = hkl[fits], f_obs[fits], f_calc[fits]
@@ -1133,7 +868,7 @@ def calculate_residual_density(
 
     delta = (f_obs / scale - np.abs(f_calc)) * np.exp(1j * np.angle(f_calc))
     if reflections.sigma_known:
-        # σ has to be brought onto the calculated scale, just like |Fo|.
+        # Bring σ onto the calculated scale, just like ``|Fo|``.
         delta = delta * _weak_data_damping(sigma / scale, np.abs(f_calc),
                                            weak_weight)
     asu = gemmi.ComplexAsuData(structure.cell, structure.spacegroup,

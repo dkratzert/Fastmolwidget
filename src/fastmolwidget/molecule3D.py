@@ -1,49 +1,4 @@
-"""
-Real 3D OpenGL molecule-display widget.
-
-Provides :class:`MoleculeWidget3D`, a drop-in replacement for
-:class:`~fastmolwidget.molecule2D.MoleculeWidget` that uses hardware-accelerated
-OpenGL rendering.  The public API is identical to :class:`MoleculeWidget`.
-
-If *PyOpenGL* is not installed the widget degrades gracefully to a plain
-:class:`~qtpy.QtWidgets.QWidget` that shows an informational message.  Any
-OpenGL initialisation failure is caught at runtime and the same text fallback
-is activated, so the host application never crashes.
-
-Rendering overview
-------------------
-* **Atoms** – sphere impostors: each atom is rendered as a billboard quad; the
-  fragment shader ray-casts a sphere and writes the correct depth value so that
-  atoms overlap correctly regardless of draw order.
-* **ADP ellipsoids** – same impostor technique, but the fragment shader is given
-  the inverse of the scaled U_cart tensor via a ``mat3`` uniform and
-  ray-casts an exact ellipsoid.  One draw call per ADP atom.
-* **Bonds** – tessellated cylinder mesh (8 sides) generated on the CPU and
-  uploaded as a single VBO.  No end caps are needed because atom spheres visually
-  close the cylinder ends.
-* **Labels** – rendered with :class:`~qtpy.QtGui.QPainter` as an overlay after
-  the OpenGL pass.
-
-All GLSL shaders target ``#version 120`` on macOS (OpenGL 2.1 / GLSL 1.20,
-the maximum available in a macOS compatibility-profile context) and
-``#version 140`` on Windows/Linux (OpenGL 3.1+ / GLSL 1.40).
-See :mod:`fastmolwidget.shaders` for the shader templates.
-The widget always requests a compatibility-profile context so that Qt's
-``QPainter`` GL paint engine (used for the label overlay) keeps working
-alongside the molecule shaders.
-
-Mouse controls
---------------
-* **Left drag**  – rotate.
-* **Right drag** – zoom.
-* **Middle drag** – pan.
-* **Middle click** – centre the view on the clicked atom (becomes the new
-  rotation pivot).
-* **Scroll wheel** – increase / decrease label font size.
-* **Ctrl + scroll wheel** – raise / lower the residual-density contour level.
-* **Left click** – select atom or bond; emit ``atomClicked`` / ``bondClicked``.
-* **Ctrl + left click** – add to / remove from selection.
-"""
+"""OpenGL 3-D molecule widget with a safe QWidget fallback."""
 
 from __future__ import annotations
 
@@ -81,7 +36,7 @@ except Exception:  # ImportError or any platform error
     gl = None  # type: ignore[assignment]
     _glshaders = None  # type: ignore[assignment]
 
-# Locate the best QOpenGLWidget base class available in the current Qt binding
+# Pick the best available QOpenGLWidget base class.
 _QOGLBase: type | None = None
 try:
     from qtpy.QtOpenGLWidgets import QOpenGLWidget as _QOGLBase  # Qt ≥ 6 / qtpy shim
@@ -147,16 +102,7 @@ def _make_cylinder(
     n_seg: int = 20,
     selected: bool = False,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    """Generate a cylinder mesh between *p1* and *p2*.
-
-    Returns ``(vertices, indices)`` arrays, or ``(None, None)`` if the
-    endpoints are too close together.
-
-    Vertex layout: ``[x, y, z, nx, ny, nz, r, g, b, selected]`` (10 floats,
-    40 bytes).  ``selected`` is 1.0 for selected bonds (rendered flat, no
-    shading) and 0.0 otherwise.  The full cylinder uses one uniform colour.
-    No end caps are generated because atom spheres close the bond ends visually.
-    """
+    """Generate a cylinder mesh between *p1* and *p2*."""
     axis = p2 - p1
     length = float(np.linalg.norm(axis))
     if length < 1e-6:
@@ -164,7 +110,7 @@ def _make_cylinder(
 
     u = axis / length
 
-    # Find two vectors perpendicular to the cylinder axis
+    # Two vectors perpendicular to the cylinder axis.
     if abs(u[0]) < 0.9:
         v = np.cross(u, np.array([1.0, 0.0, 0.0], dtype=np.float32))
     else:
@@ -176,27 +122,27 @@ def _make_cylinder(
     cos_a = np.cos(angles)
     sin_a = np.sin(angles)
 
-    # Outward normals for each segment
+    # Outward segment normals.
     normals = cos_a[:, None] * v[None, :] + sin_a[:, None] * w[None, :]  # (n_seg, 3)
 
     verts = np.zeros((2 * n_seg, 10), dtype=np.float32)
     sel_flag = 1.0 if selected else 0.0
 
-    # Bottom ring (p1)
+    # Bottom ring.
     for i in range(n_seg):
         verts[i, :3] = p1 + radius * normals[i]
         verts[i, 3:6] = normals[i]
         verts[i, 6:9] = color
         verts[i, 9] = sel_flag
 
-    # Top ring (p2)
+    # Top ring.
     for i in range(n_seg):
         verts[n_seg + i, :3] = p2 + radius * normals[i]
         verts[n_seg + i, 3:6] = normals[i]
         verts[n_seg + i, 6:9] = color
         verts[n_seg + i, 9] = sel_flag
 
-    # Triangle indices for the side surface (two tris per quad strip segment)
+    # Side-surface triangles.
     idx_list = []
     for i in range(n_seg):
         next_i = (i + 1) % n_seg
@@ -240,25 +186,20 @@ class _Atom3D:
         hex_color = element2color.get(type_, "#808080")
         self.color_f: tuple[float, float, float] = _hex_to_rgb_float(hex_color)
 
-        # World-space visual radius (Å) for sphere rendering: the covalent
-        # radius scaled to display size, or the fixed hydrogen radius for H/D.
+        # World-space display radius (Å).
         self.display_radius: float = display_radius_for_element(type_)
 
         self.u_cart: np.ndarray | None = None
-        # Store the isotropic U value (Å²); radius = sqrt(u_iso) * _ADP_SCALE.
-        # Starts as None for H/D so a hydrogen without an anisotropic tensor
-        # uses the fixed display_radius; _load_molecule fills it in for a
-        # hydrogen that *was* refined anisotropically.
+        # Isotropic U (Å²); H/D keeps None unless refined anisotropically.
         self.u_iso: float | None = u_eq if type_ not in ('H', 'D') else None
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
         self.u_eigvecs: np.ndarray | None = None
 
-        # Set by _build_geometry when ADP data is present
+        # Set by _build_geometry when ADP data is present.
         self.adp_billboard_r: float = 0.0
         self.adp_A_matrix: np.ndarray | None = None
-        # Half-edge length (Å) of the NPD-cube placeholder; only set when
-        # u_cart exists but adp_valid is False.
+        # Half-edge of the NPD placeholder cube (Å).
         self.npd_half_edge: float = 0.0
 
     def __repr__(self) -> str:  # pragma: no cover
@@ -269,7 +210,7 @@ class _Atom3D:
 # GLSL shader sources  (see fastmolwidget/shaders.py for the templates)
 # ---------------------------------------------------------------------------
 
-# Platform-selected at import time: GLSL 1.20 on macOS, 1.40 elsewhere.
+# Platform-selected GLSL sources.
 _SPHERE_VERT          = _shaders.SPHERE_VERT
 _SPHERE_FRAG          = _shaders.SPHERE_FRAG
 _CYLINDER_VERT        = _shaders.CYLINDER_VERT
@@ -279,36 +220,31 @@ _ELLIPSOID_BATCH_FRAG = _shaders.ELLIPSOID_BATCH_FRAG
 _LINE_VERT            = _shaders.LINE_VERT
 _LINE_FRAG            = _shaders.LINE_FRAG
 
-# Residual-density isosurface colours: green = positive, red = negative.
+# Residual-density wireframe colours.
 _DENSITY_POS_COLOR: tuple[float, float, float] = (0.0, 0.85, 0.0)
 _DENSITY_NEG_COLOR: tuple[float, float, float] = (0.9, 0.0, 0.0)
 
 #: Residual density is only shown within this distance (Å) of a visible atom.
 DENSITY_MARGIN: float = 1.5
 
-# Selection highlight colour (cyan)
+# Selection highlight colour.
 _SEL_COLOR: tuple[float, float, float] = (0.0, 0.75, 1.0)
 
-# Default bond colour (grey-brown)
+# Default bond colour.
 _DEFAULT_BOND_COLOR: tuple[float, float, float] = _hex_to_rgb_float("#d1812a")
 
-# ORTEP 50 % probability scale factor
+# ORTEP 50 % scale factor.
 _ADP_SCALE: float = 1.5382
 
 # Screen-space tolerance in pixels for bond hit-testing.
 _BOND_HIT_TOLERANCE_PX: float = 6.0
 
-# Bounding-sphere radius of the NPD placeholder cube, as a multiple of its
-# half-edge (the half body diagonal, sqrt(3)).
+# Bounding-sphere radius of the NPD placeholder cube.
 _NPD_BOUND_FACTOR: float = 1.7320508075688772
 
 
 def _npd_bound_radius(atom: _Atom3D) -> float:
-    """Return the bounding-sphere radius of an atom's NPD placeholder cube.
-
-    Used for picking and for label offsets.  ``u_iso`` of an NPD atom can be
-    negative, so the usual ``sqrt(u_iso)`` radius is not available here.
-    """
+    """Return the bounding-sphere radius of an atom's NPD placeholder cube."""
     return float(atom.npd_half_edge) * _NPD_BOUND_FACTOR
 
 
@@ -317,29 +253,13 @@ def _npd_bound_radius(atom: _Atom3D) -> float:
 # ---------------------------------------------------------------------------
 
 class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-type,misc]
-    """Real 3-D OpenGL crystal-structure display widget.
-
-    Drop-in replacement for :class:`~fastmolwidget.molecule2D.MoleculeWidget`
-    with an identical public API.  Rendering is GPU-accelerated via
-    hardware-accelerated OpenGL 3.2 (compatibility) sphere / ellipsoid
-    impostors and tessellated cylinder bonds.
-
-    If *PyOpenGL* is unavailable or OpenGL initialisation fails the widget
-    gracefully shows an informational message rather than crashing.
-
-    Parameters
-    ----------
-    parent:
-        Optional parent widget.
-    """
+    """OpenGL 3-D molecule widget."""
 
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
-    #: Emitted after every :meth:`open_molecule` / :meth:`grow_molecule` call
-    #: with the frozenset of disorder-part numbers present in the loaded atoms.
+    #: Emitted after loading with the frozenset of disorder parts present.
     partsChanged = QtCore.Signal(object)
-    #: Emitted with the new contour level whenever the residual-density level
-    #: changes, so a control bar can follow a Ctrl+wheel adjustment.
+    #: Emitted when the residual-density contour level changes.
     densityLevelChanged = QtCore.Signal(float)
 
     # Vertical half-extent multiplier used for orthographic framing.
@@ -439,7 +359,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         # ---- Residual-density isosurface ----------------------------------
         #: The computed map, or ``None`` when no density is loaded.
         self._density_map = None
-        #: Path of the structure file last loaded, used to compute Fc.
+        #: Path of the last loaded structure file, when applicable.
         self._model_path: Path | None = None
         self._density_level: float = 0.30
         self._density_verts: np.ndarray = np.empty(0, dtype=np.float32)
@@ -460,11 +380,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._lastPos: QtCore.QPointF | None = None
         self._pressPos: QtCore.QPointF | None = None
         self._mouse_moved: bool = False
-        # Label of the atom currently under the cursor (None if no atom hovered)
+        # Label of the atom under the cursor, if any.
         self._hover_atom_label: str | None = None
-        # Bond currently under the cursor (sorted label tuple) and its
-        # Cartesian length in Å, plus the latest cursor position used to
-        # anchor the rounded distance label.
+        # Hovered bond, its length in Å, and the label anchor position.
         self._hover_bond: tuple[str, str] | None = None
         self._hover_bond_distance: float | None = None
         self._hover_cursor: QtCore.QPointF | None = None
@@ -472,11 +390,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.setMouseTracking(True)
 
         # ---- Widget appearance --------------------------------------------
-        # NB: do NOT enable autoFillBackground on a QOpenGLWidget.  The Qt
-        # paint engine would erase our GL framebuffer to the palette Window
-        # colour the moment we construct a QPainter for the label overlay,
-        # leaving only the painter's output visible.  The background is
-        # cleared explicitly with glClearColor in _do_paintGL instead.
+        # QOpenGLWidget + autoFillBackground would clear the GL buffer.
         pal = QtGui.QPalette()
         pal.setColor(QtGui.QPalette.ColorRole.Window, QtCore.Qt.GlobalColor.white)
         self.setAutoFillBackground(False)
@@ -484,18 +398,18 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.setPalette(pal)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        # Request a sensible OpenGL surface format for this widget instance
+        # Request a compatible surface format for this widget.
         if _IS_GL_WIDGET and not self._gl_failed:
             self._setup_surface_format()
 
-        # Connect default no-op handlers so signals can be emitted safely
+        # Connect default no-op handlers so emits are always safe.
         self.atomClicked.connect(lambda _x: None)
         self.bondClicked.connect(lambda _x, _y: None)
 
     def paintGL(self):
         if not self._gl_initialized and not self._gl_failed:
             try:
-                # try to initialize; this happens with a current context (paintGL guaranteed current)
+                # paintGL runs with a current context.
                 self._do_initializeGL()
                 self._gl_initialized = True
                 if self._geometry_dirty and self.atoms:
@@ -504,7 +418,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 self._gl_failed = True
                 self._gl_fail_reason = f"OpenGL initialisation failed:\n{exc}"
                 print(self._gl_fail_reason)
-                # fallback painting continues
+                # Fallback painting continues.
         if self._gl_failed:
             self._paint_fallback_on_gl()
             return
@@ -515,18 +429,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
     # ------------------------------------------------------------------
 
     def _setup_surface_format(self) -> None:
-        """Request an OpenGL compatibility context with depth buffer and 4× MSAA.
+        """Request a compatibility context with depth buffer and 4× MSAA.
 
-        Compatibility profile is required because Qt's ``QPainter`` GL paint
-        engine — used here for the atom-label / hover-distance overlay — emits
-        legacy GLSL 1.10 (``attribute``/``varying``/``gl_FragColor``) which a
-        Core-profile context refuses to compile.
-
-        Version strategy:
-        * **macOS** — requests OpenGL 2.1 (compatibility profile tops out here;
-          Core Profile goes higher but breaks QPainter).  Shaders use GLSL 1.20.
-        * **Other** — requests OpenGL 3.2 (widely available since ~2010).
-          Shaders use GLSL 1.40 (``in``/``out``/``fragColor``).
+        Compatibility profile is required for the QPainter overlay path.
         """
         try:
             fmt = QtGui.QSurfaceFormat()
@@ -539,7 +444,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             fmt.setDepthBufferSize(24)
             fmt.setSwapBehavior(QtGui.QSurfaceFormat.SwapBehavior.DoubleBuffer)
             fmt.setSamples(4)
-            # setFormat exists on QOpenGLWidget but not QWidget
+            # setFormat exists on QOpenGLWidget, not QWidget.
             if hasattr(self, "setFormat"):
                 self.setFormat(fmt)
         except Exception:
@@ -572,13 +477,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         except Exception:
             pass  # not fatal
 
-        # GL 3.0+ ships VAOs; we use one persistent scratch VAO for the
-        # widget's lifetime.  The compatibility profile permits using the
-        # default VAO 0 too, but binding our own keeps the code Core-ready
-        # and avoids cross-talk with QPainter's paint-engine VAO state.
-        # On macOS the default context is OpenGL 2.1 (compatibility profile),
-        # where glGenVertexArrays raises GL_INVALID_OPERATION (err=1282).
-        # Fall back to VAO 0 gracefully; the if-guard in paintGL handles it.
+        # Use one scratch VAO when available; macOS 2.1 may not support it.
         try:
             self._vao = int(gl.glGenVertexArrays(1))
             gl.glBindVertexArray(self._vao)
@@ -586,7 +485,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             self._vao = 0
             print(f"[MoleculeWidget3D] VAO unavailable, using default VAO 0: {vao_exc}")
 
-        # Compile shaders
+        # Compile shaders.
         self._sphere_prog = self._compile_program(
             _SPHERE_VERT, _SPHERE_FRAG, "sphere"
         )
@@ -600,8 +499,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             _LINE_VERT, _LINE_FRAG, "line"
         )
 
-        # Allocate VBOs / IBOs (sphere, cylinder, ellipsoid batch, NPD cubes,
-        # residual-density wireframe)
+        # Allocate VBOs / IBOs.
         buffers = gl.glGenBuffers(10)
         (
             self._sphere_vbo, self._sphere_ibo,
@@ -611,8 +509,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             self._density_vbo, self._density_ibo,
         ) = buffers
 
-        # One-shot MSAA diagnostic: warn when the actual sample count is < 2,
-        # which usually means the driver fell back to a single-sample format.
+        # Warn if the driver fell back to no MSAA.
         try:
             samples = int(self.format().samples())
             if samples < 2:
@@ -621,20 +518,15 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             pass
 
     def _compile_program(self, vert_src: str, frag_src: str, name: str) -> int:
-        """Compile and link a GLSL 1.40 shader program.
-
-        Raises :class:`RuntimeError` on compilation failure so that
-        :meth:`initializeGL` can catch and set the failure flag.
-        """
+        """Compile and link a shader program."""
         try:
             vert = _glshaders.compileShader(vert_src, gl.GL_VERTEX_SHADER)
             frag = _glshaders.compileShader(frag_src, gl.GL_FRAGMENT_SHADER)
-            # compileProgram validates by default; in QOpenGLWidget.initializeGL the
-            # draw FBO may not be fully ready yet, which can trigger false negatives.
+            # Skip validation here; the draw FBO may not be ready yet.
             try:
                 prog = _glshaders.compileProgram(vert, frag, validate=False)
             except TypeError:
-                # Older PyOpenGL without validate kwarg: keep previous behavior.
+                # Older PyOpenGL lacks the validate kwarg.
                 prog = _glshaders.compileProgram(vert, frag)
             return int(prog)
         except Exception as exc:
@@ -663,12 +555,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         if self._geometry_dirty and self.atoms:
             self._upload_geometry()
 
-        # Re-assert GL state every frame.  Once a QPainter has run on this
-        # QOpenGLWidget (for atom labels or the bond-distance hover), Qt's
-        # paint engine leaves several state bits flipped — most importantly
-        # GL_MULTISAMPLE, GL_DEPTH_TEST and the viewport — which would
-        # otherwise persist into the next paintGL and degrade the image
-        # ("view gets worse after the first label was shown").
+        # QPainter mutates GL state; restore what the renderer expects.
         self._reassert_gl_state()
 
         r, g, b = self._bg_rgb
@@ -681,38 +568,29 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         mv = self._compute_mv_matrix()
         proj = self._compute_proj_matrix()
 
-        # Bonds first (behind atom spheres)
+        # Bonds first.
         if self._cylinder_count > 0:
             self._render_cylinders(mv, proj)
 
-        # Regular atom spheres
+        # Regular atom spheres.
         if self._sphere_count > 0:
             self._render_spheres(mv, proj)
 
-        # NPD-cube placeholders (atoms whose ADP tensor is non-positive-definite).
-        # Drawn in both ADP and isotropic mode so they are never hidden.
+        # NPD placeholders stay visible in both display modes.
         if self._cube_count > 0:
             self._render_cubes(mv, proj)
 
-        # ADP ellipsoids – all in a single batched draw call
+        # ADP ellipsoids.
         if self._show_adps and self._ellipsoid_count > 0:
             self._render_ellipsoids_batched(mv, proj)
 
-        # Residual-density isosurface wireframe, drawn last so its lines sit
-        # visually on top of the solid atom/bond geometry (depth testing still
-        # hides the parts that are genuinely behind an atom).
+        # Draw the density wireframe last.
         if self._density_dirty:
             self._upload_density_geometry()
         if self._density_pos_count or self._density_neg_count:
             self._render_density(mv, proj)
 
-        # Build the full 2-D overlay (atom labels, hover tooltip, axis arrows)
-        # on an *off-screen* QImage using Qt's raster paint engine, then blit
-        # the image onto the GL widget.  Qt's OpenGL paint engine cannot
-        # rasterise glyphs reliably on Windows — it falls back to drawing the
-        # ".notdef" rectangle ("tofu") for every character — so building the
-        # overlay in raster and uploading the result as a texture is the only
-        # portable way to get readable text on top of a QOpenGLWidget.
+        # Build the 2-D overlay off-screen; Qt's GL painter is unreliable here.
         overlay = self._compose_overlay_image(mv, proj)
         painter = QtGui.QPainter(self)
         try:
@@ -722,13 +600,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             painter.end()
 
     def _reassert_gl_state(self) -> None:
-        """Restore the raw-GL state we depend on.
-
-        QPainter (used for atom-label / bond-distance overlays) silently
-        toggles GL_DEPTH_TEST, GL_BLEND, GL_SCISSOR_TEST, GL_MULTISAMPLE and
-        the viewport.  Re-assert everything we rely on at the top of every
-        paintGL so a previous frame's overlay cannot poison this one.
-        """
+        """Restore the GL state expected by the renderer."""
         try:
             gl.glEnable(gl.GL_DEPTH_TEST)
             gl.glDepthFunc(gl.GL_LEQUAL)
@@ -740,8 +612,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 gl.glEnable(gl.GL_MULTISAMPLE)
             except Exception:
                 pass  # not fatal on contexts without MSAA
-            # QPainter swaps in its own VAO between frames; rebind ours so
-            # vertex-attribute state is consistent for the next draw.
+            # QPainter may leave a different VAO bound.
             if self._vao:
                 gl.glBindVertexArray(self._vao)
             dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
@@ -749,17 +620,17 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             h = max(1, int(self.height() * dpr))
             gl.glViewport(0, 0, w, h)
         except Exception:
-            # Never let a state hiccup take the host app down.
+            # Never let GL state recovery crash the host app.
             pass
 
     # ------------------------------------------------------------------
-    # paintEvent – routes to OpenGL path or pure-QPainter fallback
+    # paintEvent: OpenGL path or QPainter fallback
     # ------------------------------------------------------------------
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # type: ignore[override]
         """Route paint requests to the appropriate renderer."""
         if _IS_GL_WIDGET:
-            # Let QOpenGLWidget's paintEvent call makeCurrent → paintGL → doneCurrent
+            # Let QOpenGLWidget handle makeCurrent → paintGL → doneCurrent.
             try:
                 super().paintEvent(event)
             except Exception:
@@ -767,7 +638,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 self._draw_fallback_text(painter)
                 painter.end()
         else:
-            # Pure QWidget fallback: no OpenGL context
+            # Pure QWidget fallback: no OpenGL context.
             painter = QtGui.QPainter(self)
             self._draw_fallback_text(painter)
             painter.end()
@@ -808,14 +679,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._geometry_dirty = True
 
     def _build_sphere_geometry(self) -> None:
-        """Create billboard quad data for non-ADP atoms.
-
-        Atoms are routed to one of three buckets: a valid anisotropic ADP →
-        ellipsoid impostor (only while ``_show_adps`` is on); an NPD ADP (any
-        eigenvalue ≤ 0) → 3-D cube placeholder; everything else → sphere
-        impostor.  The NPD cube is shown in *both* modes so a broken tensor
-        is never silently hidden — matching the 2-D widget's behaviour.
-        """
+        """Create billboard quad data for atoms rendered as spheres."""
         corners = np.array([[-1, -1], [-1, 1], [1, -1], [1, 1]], dtype=np.float32)
         quad_idx_tpl = np.array([0, 1, 2, 1, 3, 2], dtype=np.uint32)
 
@@ -1009,14 +873,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._ellipsoid_count = int(len(idx))
 
     def _build_cube_geometry(self) -> None:
-        """Build a tessellated cube mesh per NPD atom.
-
-        NPD (non-positive-definite) atoms cannot be drawn as ellipsoids, so
-        they get an axis-aligned cube placeholder — same convention as the
-        2-D widget.  The mesh re-uses the cylinder shader's vertex layout
-        (10 floats: position3, normal3, color3, selected1) so the existing
-        ``_cylinder_prog`` can render it without a dedicated shader.
-        """
+        """Build one tessellated cube placeholder per NPD atom."""
         atoms = self._npd_draw_list
         if not atoms:
             self._cube_verts = np.empty(0, dtype=np.float32)
@@ -1370,12 +1227,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         gl.glUseProgram(0)
 
     def _draw_labels_overlay(self, mv: np.ndarray, proj: np.ndarray) -> None:
-        """Draw atom labels as a QPainter overlay on top of the GL scene.
-
-        Standalone entry point used by the pure-QWidget fallback path.  Inside
-        the GL paintGL flow the painter is owned by ``_do_paintGL`` and the
-        labels are drawn by :meth:`_draw_labels_with_painter` directly.
-        """
+        """Draw the QPainter overlay used by the fallback path."""
         if not self.atoms:
             return
         overlay = self._compose_overlay_image(mv, proj)
@@ -1392,36 +1244,20 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         mv: np.ndarray,
         proj: np.ndarray,
     ) -> QtGui.QImage | None:
-        """Render the full 2-D overlay onto a transparent QImage.
-
-        Atom labels, the hover tooltip and the unit-cell axis indicator are
-        all drawn through Qt's raster paint engine here, which — unlike the
-        OpenGL paint engine on Windows — can rasterise glyphs reliably.  The
-        returned image is meant to be blitted onto the GL widget with
-        ``painter.drawImage(0, 0, overlay)``.
-
-        Returns ``None`` when the widget has no size yet so the caller can
-        skip the draw entirely.
-        """
+        """Render the full 2-D overlay into a transparent QImage."""
         w = max(1, int(self.width()))
         h = max(1, int(self.height()))
         if w <= 0 or h <= 0:
             return None
 
-        # Render at the *device* pixel resolution so high-DPI displays get
-        # crisp glyphs.  Without this the QImage is created at logical
-        # (CSS) pixel size, then up-scaled 1.25× / 1.5× / 2× by Qt when
-        # composited onto the GL framebuffer, which softens every stroke
-        # and is what made the labels look pixelated after the move from
-        # direct GL-painter text to the offscreen raster overlay.
+        # Render at device resolution so high-DPI text stays crisp.
         dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
         if dpr <= 0.0:
             dpr = 1.0
         pw = max(1, int(round(w * dpr)))
         ph = max(1, int(round(h * dpr)))
 
-        # ARGB32_Premultiplied is the recommended format for compositing —
-        # it avoids per-pixel un-premultiply during drawImage on the GL side.
+        # Premultiplied alpha is best for compositing.
         image = QtGui.QImage(pw, ph, QtGui.QImage.Format.Format_ARGB32_Premultiplied)
         image.setDevicePixelRatio(dpr)
         image.fill(QtCore.Qt.GlobalColor.transparent)
@@ -1431,10 +1267,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
             painter.setRenderHint(QtGui.QPainter.RenderHint.TextAntialiasing, True)
             painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
-            # The painter works in logical coordinates because the image
-            # carries a devicePixelRatio; all our existing draw helpers
-            # use logical (self.width() / self.height()) coordinates and
-            # therefore need no changes.
+            # The devicePixelRatio keeps painter coordinates logical.
             self._draw_labels_with_painter(painter, mv, proj)
             if self._is_packed:
                 self._draw_axis_indicator(painter)
@@ -1467,39 +1300,28 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         hover_label = self._hover_atom_label
         hover_atom = None
 
-        # Compute pixels-per-Ångström so label offsets scale with zoom.
+        # Label offsets scale with zoom.
         _, half_h = self._ortho_half_extents()
         px_per_angstrom = (h * 0.5) / half_h if half_h > 1e-8 else 1.0
 
-        # Rotation portion of the model-view matrix; used to project the
-        # ADP covariance into view-space for directional radius computation.
+        # Rotation part of the model-view matrix.
         R_view = np.asarray(mv[:3, :3], dtype=np.float64)
 
-        # Label offset direction in view-space xy.  Screen-space points
-        # diagonally up-right (+x, -y); view-space y is flipped, giving
-        # the unit vector (1, 1) / sqrt(2).  The quadratic form is
-        # symmetric so the sign convention does not matter.
+        # Label offset direction in view-space xy.
         _label_dir2 = np.array([1.0, 1.0], dtype=np.float64) / sqrt(2.0)
 
         def _atom_screen_radius(atom: _Atom3D) -> float:
-            """Return the screen-space radius (pixels) of *atom* in the label-offset direction.
-
-            For anisotropic ADPs the on-screen silhouette is an ellipse, so
-            the offset must shrink along short axes and grow along long ones.
-            """
+            """Return the screen-space radius of *atom* along the label direction."""
             if self._show_adps and atom.u_cart is not None and atom.adp_valid:
-                # Covariance of the 50 % ORTEP ellipsoid in world space.
+                # 50 % ORTEP covariance in world space.
                 C_world = np.asarray(atom.u_cart, dtype=np.float64)
-                # Rotate into view space, then take the 2x2 marginal —
-                # which is the silhouette of an orthographically projected
-                # ellipsoid.
+                # The 2x2 marginal gives the orthographic silhouette.
                 C_view = R_view @ C_world @ R_view.T
                 C2 = C_view[:2, :2]
                 quad = float(_label_dir2 @ C2 @ _label_dir2)
                 r = sqrt(max(quad, 0.0))
             elif atom.u_cart is not None and not atom.adp_valid and atom.npd_half_edge > 0.0:
-                # NPD cube placeholder: use its bounding-sphere radius.
-                # ``u_iso`` may be negative here, so sqrt() is not an option.
+                # ``u_iso`` may be negative here, so use the cube bound radius.
                 r = _npd_bound_radius(atom)
             elif self._show_adps and atom.u_iso is not None:
                 r = sqrt(atom.u_iso)
@@ -1686,9 +1508,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             else:
                 a3d.symmgen = False
 
-            # Hydrogens keep their ADP tensor: an anisotropically refined H
-            # is drawn as a real ellipsoid while "Show ADP" is on, and falls
-            # back to the fixed HYDROGEN_DISPLAY_RADIUS sphere when it is off.
+            # Anisotropic H atoms keep their ADP tensor.
             adp_vals = getattr(at, "adp", None)
             if adp_vals is not None and self._cell:
                 try:
@@ -1699,18 +1519,14 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                     a3d.u_eigvals = evals
                     a3d.u_eigvecs = evecs
                     if np.any(evals <= 0):
-                        # NPD: render as a cube placeholder.  Size the cube
-                        # from the largest |eigenvalue| so it is visible
-                        # even when one principal component is negative.
-                        # Scaled to 40 % of what the full ellipsoid radius
-                        # would be, so the cube is visually compact.
+                        # Use a compact cube placeholder for NPD tensors.
                         a3d.adp_valid = False
                         a3d.npd_half_edge = float(
                             0.4 * _ADP_SCALE * np.sqrt(np.max(np.abs(evals)))
                         )
                     else:
                         a3d.adp_valid = True
-                        # Billboard radius for the ellipsoid impostor quad
+                        # Billboard radius for the ellipsoid quad.
                         a3d.adp_billboard_r = float(_ADP_SCALE * np.sqrt(np.max(evals)) * 1.2)
                         A = np.linalg.inv(_ADP_SCALE ** 2 * a3d.u_cart)
                         a3d.adp_A_matrix = A.astype(np.float32)
@@ -1735,20 +1551,16 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             self.selected_atoms.clear()
             self.selected_bonds.clear()
         else:
-            # Update centre so grown structures stay in view
+            # Update the centre so grown structures stay in view.
             self._compute_molecule_bounds()
 
         self._build_geometry()
-        # A cached density map survives a reload of the *same* structure (grow
-        # and pack do this), but the visible atoms have moved, so the surface
-        # has to be re-clipped around them.
+        # Same-model reloads keep the map but must re-clip it.
         if self._density_map is not None:
             self._build_density_geometry()
         self.update()
 
-        # Emit after geometry is fully built so signal handlers (e.g.
-        # _update_part_controls → set_visible_parts) won't trigger a
-        # redundant _build_geometry() with stale state.
+        # Emit after geometry is ready.
         self.partsChanged.emit(self.available_parts)
 
     def _compute_molecule_bounds(self) -> None:
@@ -1920,31 +1732,9 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         *,
         model_path: object | None = None,
     ) -> None:
-        """Compute and display a residual (Fo−Fc) electron-density isosurface.
+        """Compute and display a residual (Fo−Fc) isosurface.
 
-        The map is calculated from the reflection data together with the
-        refined model (see :mod:`fastmolwidget.density`); nothing has to be
-        pre-computed by another program.  Two wireframe surfaces are drawn:
-        ``+level`` in green and ``-level`` in red.
-
-        The result is cached, so :meth:`set_residual_density_level` can change
-        the contour afterwards without recomputing the map.
-
-        :param hkl_path: A SHELX ``.hkl`` file, a CIF/fcf with a reflection
-            loop, an in-memory document or block, or already read
-            ``ReflectionData``.  ``None`` (the default) uses the source given
-            to :meth:`set_model_source`, or finds the data automatically from
-            the model file itself or a file of the same basename.
-        :param level: Contour level in e/Å³.  ``None`` (the default) uses
-            :data:`~fastmolwidget.density.DEFAULT_SIGMA` times the map's RMS,
-            which adapts to the quality of the structure instead of imposing
-            one absolute value on every dataset.
-        :param model_path: The refined model to calculate *F*\\ :sub:`c` from.
-            Defaults to the source given to :meth:`set_model_source`, or the
-            file this widget last loaded.
-        :raises RuntimeError: If no model is available, or the compiled
-            ``density_cpp`` extension is missing.
-        :raises FileNotFoundError: If no reflection data could be found.
+        The map is cached, so later level changes only re-contour it.
         """
         from fastmolwidget.density import calculate_residual_density
 
@@ -1956,25 +1746,14 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.update()
 
     def refresh_residual_density(self) -> None:
-        """Re-clip the cached map around the atoms that are visible now.
-
-        The map itself is kept, so this is cheap.  Only needed by hosts that
-        change what is displayed behind the widget's back; loading a molecule
-        and the hydrogen / disorder-part filters already do it themselves.
-        """
+        """Re-clip the cached map around the visible atoms."""
         if self._density_map is None:
             return
         self._build_density_geometry()
         self.update()
 
     def set_residual_density_level(self, level: float) -> None:
-        """Re-contour the residual-density map at a new level.
-
-        Does nothing when no map has been computed yet.  The map itself is
-        reused, so this is much cheaper than :meth:`show_residual_density`.
-
-        :param level: Contour level in e/Å³.
-        """
+        """Re-contour the cached residual-density map."""
         level = abs(float(level))
         if level == self._density_level:
             return
@@ -1985,14 +1764,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             self.update()
 
     def step_residual_density_level(self, steps: int) -> bool:
-        """Raise or lower the contour level by *steps* wheel notches.
-
-        Used by Ctrl+wheel in the view.  The level is clamped to the same
-        range the Level spin box offers, so the two can never drift apart.
-
-        :param steps: Number of notches; positive raises the level.
-        :returns: ``True`` when a map was loaded and the level was adjusted.
-        """
+        """Adjust the contour level by *steps* wheel notches."""
         if self._density_map is None:
             return False
         level = self._density_level + steps * DENSITY_LEVEL_STEP
@@ -2094,38 +1866,24 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.update()
 
     def reset_rotation_center(self) -> None:
-        """Restore the rotation pivot to the molecule's geometric centre.
-
-        Undoes any previous middle-click recentring: the pivot is moved back
-        to the centre of the atom bounding box and the pan offset is cleared
-        so the molecule is re-framed.  Rotation, zoom and selection are kept.
-        """
+        """Restore the rotation pivot to the molecule centre."""
         self._compute_molecule_bounds()
         self._pan = np.zeros(2, dtype=np.float32)
         self.update()
 
     def _align_to_reciprocal_axis(self, axis_index: int) -> None:
-        """Align the view so that real-space axis *axis_index* (0=a, 1=b, 2=c) points towards the viewer.
-
-        Uses the real-space lattice vectors (columns of the orthogonalisation
-        matrix), matching the convention of Mercury, VESTA and PLATON.  For
-        orthogonal cells this is identical to the reciprocal-axis direction;
-        for non-orthogonal cells it makes the chosen cell edge go straight into
-        the screen so the opposite face is seen flat-on.
-
-        Does nothing if no unit cell is available.
-        """
+        """Align the view so real-space axis 0/1/2 points at the viewer."""
         if self._amatrix is None or self._cell is None:
             return
 
-        # Real-space lattice vectors in Cartesian are the columns of _amatrix.
+        # Real-space lattice vectors are the columns of _amatrix.
         direct_vec = self._amatrix[:, axis_index].copy()
         direct_vec = direct_vec / np.linalg.norm(direct_vec)
 
-        # Build rotation that maps direct_vec → +Z (screen normal, towards viewer)
+        # Map direct_vec to +Z.
         z_axis = direct_vec.astype(np.float32)
 
-        # Choose an initial "up" vector; avoid degeneracy if z_axis is parallel to Y
+        # Choose an "up" vector that is not parallel to z_axis.
         up_candidate = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         if abs(np.dot(z_axis, up_candidate)) > 0.99:
             up_candidate = np.array([1.0, 0.0, 0.0], dtype=np.float32)
@@ -2135,7 +1893,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         y_axis = np.cross(z_axis, x_axis)
         y_axis /= np.linalg.norm(y_axis)
 
-        # Target rotation: rows are the new basis vectors expressed in the original frame
+        # Rows are the new basis vectors in the original frame.
         target_R = np.array([x_axis, y_axis, z_axis], dtype=np.float32)
 
         self._rot_matrix = target_R
@@ -2204,11 +1962,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             super().keyPressEvent(event)
 
     def save_image(self, filename: Path, image_scale: float = 1.5) -> None:
-        """Save the current view to an image file.
-
-        For *GL* contexts :meth:`QOpenGLWidget.grabFramebuffer` is used to
-        capture the raw scene pixels with atom labels.
-        """
+        """Save the current view to an image file."""
         image: QtGui.QImage = self.grabFramebuffer()
 
         if image_scale != 1.0:
@@ -2296,14 +2050,13 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self.update()
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
-        # Support Macs / trackpads without a middle mouse button by allowing
-        # Alt/Option + left-click to act as a middle-click centring gesture.
+        # Alt/Option + left-click emulates middle-click recentering.
         if (
             event.button() == Qt.MouseButton.LeftButton
             and not self._mouse_moved
             and self._pressPos is not None
         ):
-            # Alt/Option modifier recentres the rotation pivot (emulate middle-click)
+            # Emulate middle-click recentering.
             if bool(event.modifiers() & Qt.KeyboardModifier.AltModifier):
                 self._handle_middle_click(event)
             else:
@@ -2464,12 +2217,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         for i in range(3):
             vx, vy = float(axes[i][0]), float(axes[i][1])
             tip_x = origin_x + vx * arrow_len
-            # OpenGL renders with Y-up in view space; Qt screen Y increases
-            # downward.  The QPainter overlay therefore needs the sign flip so
-            # that a positive view-space Y (= upward on screen = low screen Y)
-            # produces a tip_y that is *less than* origin_y.
-            # (The 2D QPainter renderer uses +vy because it draws atoms without
-            # a Y-flip: screeny = c[1]*scale + cy.)
+            # OpenGL view Y is up; Qt screen Y is down.
             tip_y = origin_y - vy * arrow_len
 
             pen = QtGui.QPen(colors[i], 2.0)
@@ -2510,18 +2258,13 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         painter.restore()
 
     def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # type: ignore[override]
-        """Scroll changes the label font size; Ctrl+scroll the density level.
-
-        Ctrl+wheel is swallowed whenever a residual-density map is loaded, so
-        it never silently resizes the labels instead.
-        """
+        """Scroll changes label size; Ctrl+scroll changes density level."""
         delta = event.angleDelta().y()
         if delta == 0:
             return
         steps = 1 if delta > 0 else -1
         if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
-            # Only claim the event when there is a map to re-contour; without
-            # one it is left to whatever the widget is embedded in.
+            # Only claim Ctrl+wheel when a map is loaded.
             if self.step_residual_density_level(steps):
                 event.accept()
             else:
@@ -2543,10 +2286,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         best_atom, best_t = self._pick_atom_at(sx, sy, mv=mv)
         best_bond: tuple[str, str] | None = None
 
-        # Bonds are tested in the same pass so that a bond visually in front of
-        # an atom behind it can still be selected.  _ray_bond_screen returns
-        # viewspace t (same unit as the atom ray-casters), so the comparison is
-        # consistent and the front-most object always wins.
+        # Compare atom and bond hits in the same view-space t units.
         for n1, n2 in self.connections:
             at1, at2 = self.atoms[n1], self.atoms[n2]
             if not self.show_hydrogens_flag:
@@ -2737,21 +2477,8 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         a_matrix: np.ndarray,
         mv: np.ndarray,
     ) -> float | None:
-        """Ray–ellipsoid intersection in view space.
-
-        The ellipsoid is defined in world space by
-        ``(P - C)^T · A · (P - C) = 1`` where ``A = a_matrix`` is the same
-        matrix uploaded to the ellipsoid fragment shader (i.e.
-        ``inv(_ADP_SCALE² · U_cart)``).  Picking against this matrix
-        guarantees that the clickable region equals the visible silhouette.
-
-        Returns parametric *t* of the front-face hit (smallest non-negative
-        root) or ``None`` if the ray misses the ellipsoid.
-        """
-        # World→eye is mv.  For a point P_world, P_eye = R · P_world + T,
-        # so (P_world - C) = R^T · (P_eye - C_eye).  The ellipsoid form
-        # transforms to view space as q^T · M · q = 1 with M = R · A · R^T,
-        # where q = P_eye - C_eye and R = mv[:3, :3].
+        """Ray–ellipsoid intersection in view space."""
+        # Transform the quadratic form into view space.
         c4 = np.array([*world_center, 1.0], dtype=np.float32)
         c_eye = (mv @ c4)[:3]
 
@@ -2791,16 +2518,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         mv: np.ndarray,
         proj: np.ndarray,
     ) -> float | None:
-        """Return the viewspace *t* of the closest point on bond *p1–p2* to the
-        screen click *(sx, sy)* if that point is within 6 pixels of the projected
-        line segment, else ``None``.
-
-        The returned value uses the same unit as
-        :meth:`_ray_sphere_hit_viewspace` and
-        :meth:`_ray_ellipsoid_hit_viewspace` (``t = −z_eye``, positive, smaller
-        = closer to the camera), so all three can be compared directly and the
-        front-most object wins.
-        """
+        """Return the view-space hit distance for a bond near *(sx, sy)*."""
         w = max(1, self.width())
         h = max(1, self.height())
 

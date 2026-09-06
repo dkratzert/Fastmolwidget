@@ -1,19 +1,4 @@
-"""
-Loader class for :class:`~fastmolwidget.molecule2D.MoleculeWidget`.
-
-Uses composition to provide file-format–aware loading of molecular data into a
-:class:`MoleculeWidget`.  Supported formats:
-
-* **CIF** – Crystallographic Information File (``.cif``)
-* **SHELX** – SHELXL instruction file (``.res`` / ``.ins``)
-* **XYZ** – Standard XYZ coordinate file (``.xyz``)
-
-Example usage::
-
-    widget = MoleculeWidget()
-    loader = MoleculeLoader(widget)
-    loader.load_file("structure.cif")
-"""
+"""File-format loaders for :class:`~fastmolwidget.molecule2D.MoleculeWidget`."""
 
 from __future__ import annotations
 
@@ -28,14 +13,7 @@ from fastmolwidget.tools import to_float
 
 
 class MoleculeLoader:
-    """Load molecular structures from various file formats into a
-    :class:`MoleculeWidget`.
-
-    The loader uses **composition**: it holds a reference to the widget and
-    delegates rendering to it via :meth:`MoleculeWidget.open_molecule`.
-
-    :param widget: The molecule widget to populate.
-    """
+    """Load CIF, SHELX and XYZ files into a :class:`MoleculeWidget`."""
 
     _FORMAT_MAP: dict[str, str] = {
         '.cif': '_load_cif',
@@ -79,12 +57,8 @@ class MoleculeLoader:
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
-        # A different structure invalidates any residual-density map, which
-        # belongs to the reflections of the *previous* model.  Reloading the
-        # same file (what grow / pack do) keeps it, which is exactly what
-        # ``set_model_source`` does — it only clears on a real change.  It is
-        # called before the atoms are loaded so that a stale map is gone by the
-        # time the new molecule re-clips its isosurface.
+        # A new model invalidates the old density map. Reloading the same path
+        # keeps it, which is what grow/pack rely on.
         self._widget.set_model_source(path)
         loader = getattr(self, loader_name)
         loader(path, keep_view=keep_view)
@@ -92,16 +66,10 @@ class MoleculeLoader:
     _GROWABLE_FORMATS: frozenset[str] = frozenset({'.cif', '.res', '.ins'})
 
     def set_grow(self, enabled: bool) -> None:
-        """Toggle SDM grow mode and reload the current file if it supports
-        crystal symmetry (CIF or SHELX).
+        """Toggle SDM grow mode.
 
-        Grow expands the asymmetric unit to complete molecules using crystal
-        symmetry.  Has no effect when the last loaded file is an XYZ (no
-        symmetry information).  When :meth:`set_pack` is active, pack mode
-        takes priority and grow does nothing until pack is disabled.
-
-        :param enabled: ``True`` to enable structure growing, ``False`` to
-            revert to the bare asymmetric unit.
+        Reloads the current CIF or SHELX file with ``keep_view=True``. XYZ has
+        no symmetry, and pack mode still takes priority.
         """
         self._grow_enabled = enabled
         if (self._last_path is not None
@@ -116,18 +84,8 @@ class MoleculeLoader:
     ) -> None:
         """Toggle unit-cell packing mode and reload the current file.
 
-        Packing generates all symmetry-equivalent positions within one unit
-        cell.  Positions closer than the default tolerance to an already-added
-        atom are discarded as duplicates.  When pack is enabled it takes
-        priority over :meth:`set_grow`.
-
-        :param enabled: ``True`` to enable packing, ``False`` to revert to the
-            asymmetric unit (or to grown molecules if grow is still active).
-        :param symmop_indices: Optional list of 0-based symmetry-operation
-            indices (referring to the internal ``SymmCards`` list, including the
-            identity at index 0) to apply.  ``None`` applies all operations
-            from the space group, including the inversion centre for
-            centrosymmetric structures.
+        Packing applies all or selected symmetry operations, folds positions
+        into ``[0, 1)``, drops near-duplicates, and takes priority over grow.
         """
         self._pack_enabled = enabled
         self._pack_symmop_indices = symmop_indices
@@ -171,17 +129,10 @@ class MoleculeLoader:
         cif: CifReader,
         symmop_indices: list[int] | None = None,
     ) -> list:
-        """Pack one complete unit cell from a CIF.
+        """Pack one CIF unit cell.
 
-        Applies all (or selected) symmetry operations to the fractional-
-        coordinate atoms and folds every position back into [0, 1).
-        Near-duplicate positions are discarded automatically.
-
-        :param cif: The parsed CIF to pack.
-        :param symmop_indices: Optional subset of 0-based symmetry-operation
-            indices.  ``None`` uses all operations from the space group.
-        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
-            coordinates covering one unit cell.
+        Applies all or selected symmetry operations, folds positions into
+        ``[0, 1)``, and drops near-duplicates.
         """
         from fastmolwidget.sdm import SDM
 
@@ -199,18 +150,7 @@ class MoleculeLoader:
 
     @staticmethod
     def _compute_grown_atoms(cif: CifReader) -> list:
-        """Expand the asymmetric unit to complete molecules via the SDM.
-
-        Reads fractional-coordinate atoms, runs the Shortest Distance Matrix
-        algorithm with the CIF's symmetry operators, and returns the packed
-        Cartesian-coordinate atom list.  ADPs are re-attached from the CIF
-        displacement parameters after growing.
-
-        :param cif: The parsed CIF to grow.
-        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
-            coordinates including all symmetry-generated atoms that complete
-            the molecule(s).
-        """
+        """Expand a CIF asymmetric unit to complete molecules via the SDM."""
         from fastmolwidget.sdm import SDM
 
         adp_by_label: dict[str, tuple] = {
@@ -220,7 +160,7 @@ class MoleculeLoader:
             )
             for dp in cif.displacement_parameters()
         }
-        # SDM.calc_molindex mutates the atom lists in place – pass a fresh copy
+        # SDM mutates the atom lists in place.
         fract_atoms = list(cif.atoms_fract)
         sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
         need_symm = sdm.calc_sdm()
@@ -244,14 +184,7 @@ class MoleculeLoader:
 
     @staticmethod
     def _compute_grown_atoms_shelx(path: Path) -> list:
-        """Expand the asymmetric unit of a SHELX file to complete molecules
-        via the SDM, analogous to :meth:`_compute_grown_atoms` for CIF files.
-        ADPs are re-attached by (label, part) after growing.
-
-        :param path: Path to the SHELX ``.res`` / ``.ins`` file.
-        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
-            coordinates including all symmetry-generated atoms.
-        """
+        """Expand a SHELX asymmetric unit to complete molecules via the SDM."""
         from fastmolwidget.sdm import SDM
 
         shx = Shelxfile()
@@ -263,13 +196,13 @@ class MoleculeLoader:
         )
 
         adp_by_lp: dict[tuple, tuple] = {}
-        # Build fractional-coordinate atom lists (mutable – SDM mutates them)
+        # SDM mutates these fractional-coordinate atom lists.
         fract_atoms: list[list] = []
         for at in shx.atoms:
             if at.qpeak:
                 continue
             x, y, z = at.frac_coords
-            label = at.fullname_short  # unique across residues (e.g. "C1_1")
+            label = at.fullname_short  # residue-unique, e.g. "C1_1"
             fract_atoms.append(
                 [label, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
@@ -277,7 +210,7 @@ class MoleculeLoader:
                 u11, u22, u33, u23, u13, u12 = at.uvals
                 adp_by_lp[(label, at.part.n)] = (u11, u22, u33, u23, u13, u12)
 
-        # Collect symmetry operations as comma-separated strings (skip identity)
+        # SHELX SYMM cards, without the implicit identity.
         symmops: list[str] = [s.to_shelxl() for s in shx.symmcards]
         centric = shx.latt.centric if shx.latt else False
 
@@ -294,18 +227,11 @@ class MoleculeLoader:
         path: Path,
         symmop_indices: list[int] | None = None,
     ) -> list:
-        """Pack one complete unit cell from a SHELX file.
+        """Pack one SHELX unit cell.
 
-        Applies all (or selected) symmetry operations to the fractional-
-        coordinate atoms and folds every position back into [0, 1).
-        Near-duplicate positions are discarded automatically.
-        ADPs are re-attached by (label, part) after packing.
-
-        :param path: Path to the SHELX ``.res`` / ``.ins`` file.
-        :param symmop_indices: Optional subset of 0-based symmetry-operation
-            indices.  ``None`` uses all operations from the space group.
-        :returns: A list of :class:`~fastmolwidget.sdm.Atomtuple` in Cartesian
-            coordinates covering one unit cell.
+        Applies all or selected symmetry operations, folds positions into
+        ``[0, 1)``, drops near-duplicates, and re-attaches ADPs by
+        ``(label, part)``.
         """
         from fastmolwidget.sdm import SDM
 
@@ -323,7 +249,7 @@ class MoleculeLoader:
             if at.qpeak:
                 continue
             x, y, z = at.frac_coords
-            label = at.fullname_short  # unique across residues (e.g. "C1_1")
+            label = at.fullname_short  # residue-unique, e.g. "C1_1"
             fract_atoms.append(
                 [label, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
@@ -346,17 +272,9 @@ class MoleculeLoader:
     # ------------------------------------------------------------------
 
     def _load_xyz(self, path: Path, *, keep_view: bool = False) -> None:
-        """Load a standard XYZ coordinate file.
+        """Load a standard XYZ file.
 
-        The format is::
-
-            <number of atoms>
-            <comment line>
-            <element> <x> <y> <z>
-            ...
-
-        Coordinates are assumed to be in Ångströms (Cartesian).
-        XYZ files have no unit-cell or ADP information.
+        Coordinates are Cartesian Å. XYZ carries no cell or ADP data.
         """
         atoms = self._parse_xyz(path)
         self._widget.open_molecule(atoms=atoms, cell=None, keep_view=keep_view)
@@ -372,14 +290,10 @@ class MoleculeLoader:
         list[Atomtuple],
         tuple[float, float, float, float, float, float],
     ]:
-        """Parse a SHELX .res / .ins file using the :mod:`shelxfile` library.
+        """Parse a SHELX ``.res``/``.ins`` file.
 
-        Returns the atom list (in Cartesian coordinates, with embedded ADPs)
-        and the unit-cell parameters.
-
-        Q-peaks (residual electron-density peaks) are excluded.
-        Anisotropic displacement parameters are embedded in each
-        :class:`~fastmolwidget.sdm.Atomtuple` as the ``adp`` field.
+        Returns Cartesian atoms with embedded ADPs and the unit cell. Q-peaks
+        are skipped.
         """
         shx = Shelxfile()
         shx.read_file(path)
@@ -394,7 +308,7 @@ class MoleculeLoader:
 
         atoms: list[Atomtuple] = []
         for at in shx.atoms:
-            # Skip Q-peaks (residual electron-density peaks, not real atoms).
+            # Skip Q-peaks: residual density, not atoms.
             if at.qpeak:
                 continue
 

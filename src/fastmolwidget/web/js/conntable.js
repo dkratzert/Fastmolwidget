@@ -6,8 +6,7 @@ import { getRadiusFromElement } from './elements.js';
  * @param {string[]} types element symbols.
  * @param {number[]} parts SHELX disorder-part numbers.
  * @param {object} [opts]
- * @param {number[]} [opts.radii] pre-computed covalent radii, looked up from
- *   `types` when omitted.
+ * @param {number[]} [opts.radii] Precomputed covalent radii.
  * @param {number} [opts.extraParam=1.2] bond-detection tolerance multiplier.
  * @param {boolean[]} [opts.symmgen] per-atom symmetry-generated flag.
  * @returns {Array<[number, number]>} list of `[i, j]` bonded pairs (i < j).

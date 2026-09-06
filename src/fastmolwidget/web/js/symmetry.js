@@ -1,7 +1,4 @@
-/**
- * Symmetry-operation parsing and fractional/cartesian conversions.
- * Port of `fastmolwidget.dsrmath.SymmetryElement` / `frac_to_cart`.
- */
+/** Symmetry parsing and fractional/cartesian conversion helpers. */
 
 import { identity3, matVec } from './linalg.js';
 
@@ -41,9 +38,7 @@ function parseAxisExpr(expr) {
 }
 
 /**
- * Parse a SHELX-style symmetry operation, e.g. `"X,Y,Z"` or
- * `"1/2+X,1/2-Y,Z"`, into `{ matrix, trans }` such that the transformed
- * point is `matrix @ [x,y,z] + trans`.
+ * Parse a SHELX-style symmetry op into `{ matrix, trans }`.
  * @param {string|string[]} symm Comma-joined string or 3-element array.
  */
 export function parseSymmOp(symm) {
@@ -95,7 +90,7 @@ export function calcVolume(a, b, c, alpha, beta, gamma) {
   return a * b * c * Math.sqrt(1 + 2 * ca * cb * cg - ca * ca - cb * cb - cg * cg);
 }
 
-/** Port of `dsrmath.frac_to_cart`. `cell` is `[a,b,c,alpha,beta,gamma]` (degrees). */
+/** Port of `dsrmath.frac_to_cart`. `cell` is `[a,b,c,alpha,beta,gamma]` in degrees. */
 export function fracToCart(fracCoord, cell) {
   const [a, b, c, alpha, beta, gamma] = cell;
   const [x, y, z] = fracCoord;

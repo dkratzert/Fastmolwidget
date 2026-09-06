@@ -23,9 +23,7 @@ def to_float_list(st: Sequence[str]) -> list[float] | None:
 
 
 def get_error_from_value(value: str) -> tuple[float, float]:
-    """
-    Returns the error value from a number string.
-    """
+    """Return ``(value, esd)`` from a CIF-style numeric string."""
     try:
         value = value.replace(" ", "")
     except AttributeError:
@@ -48,9 +46,7 @@ def get_error_from_value(value: str) -> tuple[float, float]:
 
 
 def isnumeric(value: str) -> bool:
-    """
-    Determines if a string can be converted to a number.
-    """
+    """True if a CIF-style numeric string can be converted to ``float``."""
     value = value.split('(')[0]
     try:
         float(value)
@@ -72,27 +68,10 @@ def build_conntable(
         extra_param: float = 1.2,
         symmgen: list[bool] | np.ndarray | None = None,
 ) -> tuple[tuple[int, int], ...]:
-    """Vectorised connectivity-table builder (shared by 2D and 3D widgets).
+    """Build the bond table for Cartesian coordinates.
 
-    Parameters
-    ----------
-    coords : ndarray of shape (N, 3)
-        Cartesian atom positions.
-    types : list[str]
-        Element symbols (length N).
-    parts : list[int]
-        SHELX disorder-part numbers (length N).
-    radii : ndarray of shape (N,), optional
-        Pre-computed covalent radii.  If *None*, looked up from *types*.
-    extra_param : float
-        Multiplier applied to the sum of covalent radii for bond detection.
-    symmgen : list[bool] or ndarray of shape (N,), optional
-        Per-atom flag indicating whether the atom was symmetry-generated.
-        Required for the negative-PART exclusion rule.
-
-    Returns
-    -------
-    tuple of (i, j) pairs with i < j.
+    Bonds are limited by distance, covalent radii, PART rules, the negative-
+    PART symmetry-copy rule, and an H-H exclusion.
     """
     n = len(coords)
     if n == 0:
@@ -100,11 +79,11 @@ def build_conntable(
 
     coords = np.asarray(coords, dtype=np.float64)
 
-    # ── pairwise distance matrix ─────────────────────────────────────────
+    # Pairwise distance matrix.
     diff = coords[:, None, :] - coords[None, :, :]  # (N, N, 3)
     dists = np.linalg.norm(diff, axis=2)  # (N, N)
 
-    # ── per-pair bond-distance thresholds ────────────────────────────────
+    # Per-pair bond-distance thresholds.
     if radii is None:
         radii = np.array(
             [get_radius_from_element(t) for t in types], dtype=np.float64
@@ -114,15 +93,14 @@ def build_conntable(
 
     radii_sum = (radii[:, None] + radii[None, :]) * extra_param  # (N, N)
 
-    # ── combined Boolean mask ────────────────────────────────────────────
-    # Upper triangle (i < j), non-trivial distance, within 4 Å pre-filter
+    # Upper triangle, non-trivial distance, and 4 Å pre-filter.
     triu = np.triu(np.ones((n, n), dtype=bool), k=1)
     bond_mask = triu & (dists > 0.01) & (dists <= 4.0) & (dists < radii_sum)
 
     if not np.any(bond_mask):
         return ()
 
-    # Part filter: forbidden when both parts are non-zero and differ
+    # Different non-zero PART values cannot bond.
     parts_arr = np.array(parts, dtype=np.int32)
     bond_mask &= ~(
             (parts_arr[:, None] != 0)
@@ -130,20 +108,18 @@ def build_conntable(
             & (parts_arr[:, None] != parts_arr[None, :])
     )
 
-    # Negative-part filter: if an atom has a negative part number, bonds
-    # crossing the asymmetric-unit / symmetry-copy boundary are excluded.
-    # This prevents disordered fragments on special positions from bonding
-    # to their own symmetry images while preserving intra-copy connectivity.
+    # Negative PART forbids bonds across the asymmetric-unit/symmetry-copy
+    # boundary, preventing self-bonding on special positions.
     if symmgen is not None:
         symmgen_arr = np.asarray(symmgen, dtype=bool)
         neg_part = parts_arr < 0
-        # True when the two atoms are on different sides of the boundary
+        # True when atoms lie on opposite sides of that boundary.
         cross_boundary = symmgen_arr[:, None] != symmgen_arr[None, :]
-        # Exclude when at least one atom has negative part and they cross
+        # Exclude cross-boundary bonds involving a negative PART.
         either_neg = neg_part[:, None] | neg_part[None, :]
         bond_mask &= ~(either_neg & cross_boundary)
 
-    # H–H filter: skip bonds between two hydrogen atoms
+    # Skip H-H bonds.
     is_h = np.array([t in ("H", "D") for t in types], dtype=bool)
     bond_mask &= ~(is_h[:, None] & is_h[None, :])
 
