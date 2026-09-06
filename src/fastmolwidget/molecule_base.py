@@ -1,19 +1,4 @@
-"""
-Shared interface protocol for molecule display widgets.
-
-Both :class:`~fastmolwidget.molecule2D.MoleculeWidget` and
-:class:`~fastmolwidget.molecule3D.MoleculeWidget3D` satisfy this protocol, so
-either can be used wherever a :class:`MoleculeWidgetProtocol` is expected.
-
-Usage::
-
-    from fastmolwidget.molecule_base import MoleculeWidgetProtocol
-    from fastmolwidget.molecule2D import MoleculeWidget
-
-    def render(widget: MoleculeWidgetProtocol) -> None:
-        widget.open_molecule(atoms, cell=cell)
-
-"""
+"""Shared protocol and source-tracking helpers for molecule widgets."""
 
 from __future__ import annotations
 
@@ -22,24 +7,20 @@ from typing import Protocol, runtime_checkable
 
 from fastmolwidget.sdm import Atomtuple
 
-#: Change in the residual-density contour level per Ctrl+wheel notch, in e/Å³.
+#: Residual-density level step for Ctrl+wheel, in e/Å³.
 DENSITY_LEVEL_STEP: float = 0.01
 
-#: Lowest contour level the interactive controls allow, in e/Å³.  A level of
-#: zero would contour the whole map, so it is never reached.
+#: Lowest allowed contour level, in e/Å³.
 DENSITY_LEVEL_MIN: float = 0.01
 
-#: Highest contour level the interactive controls allow, in e/Å³.
+#: Highest allowed contour level, in e/Å³.
 DENSITY_LEVEL_MAX: float = 9.99
 
 
 def _same_source(new: object | None, old: object | None) -> bool:
-    """Whether two model / reflection sources mean the same thing.
+    """Return ``True`` when two model or reflection sources are equivalent.
 
-    File names are compared by value, so reloading the same file (what grow
-    and pack do) is recognised as unchanged; in-memory objects are compared by
-    identity, because two documents can carry the same block name without
-    describing the same structure.
+    Paths compare by value; in-memory sources compare by identity.
     """
     if new is old:
         return True
@@ -49,45 +30,18 @@ def _same_source(new: object | None, old: object | None) -> bool:
 
 
 class ModelSourceMixin:
-    """Bookkeeping of the model and reflections behind the displayed atoms.
+    """Track the model and reflection sources behind the displayed atoms."""
 
-    A widget that was filled by :class:`~fastmolwidget.loader.MoleculeLoader`
-    knows the file it is showing, but one that was handed a list of
-    :class:`~fastmolwidget.sdm.Atomtuple` through ``open_molecule()`` does not
-    — and residual density needs the model to calculate *F*\\ :sub:`c` from.
-    This mixin lets such a host declare the sources once
-    (:meth:`set_model_source`) and answers the two questions the renderers and
-    control bars ask about them.
-
-    Both renderers mix it in, so 2-D, Qt Quick and 3-D behave identically.
-    """
-
-    #: The model backing the displayed atoms: a path, an in-memory
-    #: :class:`gemmi.cif.Document` / :class:`gemmi.cif.Block`, or a
-    #: :class:`gemmi.SmallStructure`.
+    #: Backing model source.
     _model_source: object | None = None
-    #: Where its reflections come from; ``None`` means "look in / next to the
-    #: model".
+    #: Reflection source, or ``None`` to resolve it from the model.
     _reflection_source: object | None = None
-    #: Path of the structure file last loaded, kept in step with
-    #: :attr:`_model_source` when that is a real file.
+    #: Path form of the current model source, when applicable.
     _model_path: Path | None = None
 
     def set_model_source(self, model: object | None = None,
                          reflections: object | None = None) -> None:
-        """Declare which model and reflections back the displayed atoms.
-
-        A cached density map belongs to the previous model's reflections, so
-        it is dropped whenever the sources really change.
-
-        :param model: The refined model — a path, a :class:`gemmi.cif.Document`
-            or :class:`gemmi.cif.Block`, or a :class:`gemmi.SmallStructure`.
-            ``None`` forgets it.
-        :param reflections: Where its reflections come from — the same kinds of
-            source, or already read
-            :class:`~fastmolwidget.hkl_io.ReflectionData`.  ``None`` means
-            "look inside the model, and next to it when it is a file".
-        """
+        """Declare the model and reflection sources for the displayed atoms."""
         changed = not (_same_source(model, self._model_source)
                        and _same_source(reflections, self._reflection_source))
         self._model_source = model
@@ -108,12 +62,7 @@ class ModelSourceMixin:
 
     @property
     def has_residual_density_data(self) -> bool:
-        """``True`` when a map could be calculated for the current model.
-
-        Only the declared sources are inspected — no map is computed — so a
-        host can enable or disable its density control right after loading a
-        structure.
-        """
+        """``True`` when a residual-density map could be calculated."""
         from fastmolwidget.density import HAS_DENSITY_CPP
         from fastmolwidget.hkl_io import find_reflection_file, has_reflections
 
@@ -136,12 +85,7 @@ class ModelSourceMixin:
         model: object | None = None,
         reflections: object | None = None,
     ) -> tuple[object, object | None]:
-        """Resolve the arguments of ``show_residual_density`` against the state.
-
-        :returns: ``(model, reflections)`` ready for
-            :func:`~fastmolwidget.density.calculate_residual_density`.
-        :raises RuntimeError: If no model is available at all.
-        """
+        """Resolve ``show_residual_density`` arguments against widget state."""
         if model is None:
             model = self.model_source
         if model is None:
@@ -154,21 +98,10 @@ class ModelSourceMixin:
 
 @runtime_checkable
 class MoleculeWidgetProtocol(Protocol):
-    """Protocol defining the common public API shared by all molecule widgets.
+    """Common public API for all molecule widgets.
 
-    Both :class:`~fastmolwidget.molecule2D.MoleculeWidget` and
-    :class:`~fastmolwidget.molecule3D.MoleculeWidget3D` implement this
-    protocol.  Any class that provides all of these methods is a valid
-    molecule display widget regardless of inheritance.
-
-    Expected signals (not enforceable via Protocol):
-
-    * ``atomClicked(str)`` – emitted with the atom label when an atom is clicked.
-    * ``bondClicked(str, str)`` – emitted with the two atom labels when a bond
-      is clicked.
-    * ``densityLevelChanged(float)`` – emitted with the new contour level
-      whenever the residual-density level changes, so that a control bar can
-      follow a Ctrl+wheel adjustment made in the view.
+    Expected signals: ``atomClicked(str)``, ``bondClicked(str, str)``, and
+    ``densityLevelChanged(float)``.
     """
 
     # ------------------------------------------------------------------
@@ -181,16 +114,7 @@ class MoleculeWidgetProtocol(Protocol):
         cell: tuple[float, float, float, float, float, float] | None = None,
         keep_view: bool = False,
     ) -> None:
-        """Load a new set of atoms and redraw.
-
-        :param atoms: List of :class:`~fastmolwidget.sdm.Atomtuple` in
-            Cartesian coordinates (Å).
-        :param cell: Unit-cell parameters ``(a, b, c, α, β, γ)`` needed to
-            convert fractional ADP tensors to Cartesian.  ``None`` for
-            molecules with no periodic boundary.
-        :param keep_view: If ``True`` the current zoom / rotation / pan is
-            preserved.
-        """
+        """Load atoms and redraw."""
         ...
 
     def clear(self) -> None:
@@ -215,11 +139,7 @@ class MoleculeWidgetProtocol(Protocol):
         ...
 
     def set_visible_parts(self, parts: set[int] | None) -> None:
-        """Set which disorder parts are rendered.
-
-        :param parts: A set of part numbers to display, or ``None`` to show
-            all parts (no filtering).  An empty set hides every atom.
-        """
+        """Set the visible disorder parts."""
         ...
 
     @property
@@ -236,10 +156,7 @@ class MoleculeWidgetProtocol(Protocol):
         ...
 
     def set_bond_color(self, color: object) -> None:
-        """Set the default colour used for non-selected bonds.
-
-        :param color: A :class:`~qtpy.QtGui.QColor`, hex string, or RGB tuple.
-        """
+        """Set the default colour for non-selected bonds."""
         ...
 
     # ------------------------------------------------------------------
@@ -247,10 +164,7 @@ class MoleculeWidgetProtocol(Protocol):
     # ------------------------------------------------------------------
 
     def set_background_color(self, color: object) -> None:
-        """Set the background colour.
-
-        :param color: A :class:`~qtpy.QtGui.QColor` instance.
-        """
+        """Set the background colour."""
         ...
 
     def set_labels_visible(self, visible: bool) -> None:
@@ -270,23 +184,12 @@ class MoleculeWidgetProtocol(Protocol):
         ...
 
     def align_best_view(self) -> None:
-        """Rotate the structure to the orientation that maximises atom visibility.
-
-        Uses PCA on the currently visible atom positions so that the direction
-        with the least spread points towards the camera (Z-axis) and the widest
-        face of the molecule faces the viewer.  Hydrogen / deuterium atoms are
-        excluded when ``show_hydrogens_flag`` is ``False``.  No-op when fewer
-        than two visible atoms are loaded.
-        """
+        """Align the structure with a PCA-based best view."""
         ...
 
     def set_model_source(self, model: object | None = None,
                          reflections: object | None = None) -> None:
-        """Declare the model and reflections behind the displayed atoms.
-
-        See
-        :meth:`~fastmolwidget.molecule_base.ModelSourceMixin.set_model_source`.
-        """
+        """Declare the model and reflection sources behind the displayed atoms."""
         ...
 
     @property
@@ -296,48 +199,15 @@ class MoleculeWidgetProtocol(Protocol):
 
     def show_residual_density(self, hkl_path: object | None = None,
                               level: float | None = None) -> None:
-        """Compute and display a residual (Fo−Fc) electron-density isosurface.
-
-        The map is calculated from the reflection data together with the
-        refined model, so nothing has to be pre-computed by another program.
-        All three renderers implement this: the 3-D widget draws a true
-        wireframe isosurface, while the 2-D and Qt Quick renderers project the
-        same cage into their 2-D view.
-
-        :param hkl_path: Path to a raw SHELX ``.hkl`` reflection file (or a
-            ``.cif``/``.fcf`` file with an embedded reflection loop) paired
-            with the currently loaded structure.  ``None`` finds the data
-            automatically.
-        :param level: Isosurface contour level in e/Å³.  ``None`` contours at
-            3σ of the map, which adapts to each structure.
-            A positive-density surface is drawn at ``+level`` (green) and a
-            negative-density surface at ``-level`` (red).
-        :raises RuntimeError: If no model is loaded, or the compiled
-            ``density_cpp`` extension is missing.
-        :raises FileNotFoundError: If no reflection data could be found.
-        """
+        """Compute and display a residual (Fo−Fc) isosurface."""
         ...
 
     def set_residual_density_level(self, level: float) -> None:
-        """Re-contour the residual-density map at a new level.
-
-        The map itself is reused, so this is much cheaper than
-        :meth:`show_residual_density`.  A no-op when no map is loaded.
-
-        :param level: Contour level in e/Å³.
-        """
+        """Re-contour the cached residual-density map."""
         ...
 
     def step_residual_density_level(self, steps: int) -> bool:
-        """Raise or lower the contour level by *steps* wheel notches.
-
-        Backs Ctrl+wheel in the view.  Each notch is
-        :data:`DENSITY_LEVEL_STEP` e/Å³ and the result is clamped to
-        :data:`DENSITY_LEVEL_MIN` … :data:`DENSITY_LEVEL_MAX`.
-
-        :param steps: Number of notches; positive raises the level.
-        :returns: ``True`` when a map was loaded and the level was adjusted.
-        """
+        """Adjust the contour level by *steps* wheel notches."""
         ...
 
     def clear_residual_density(self) -> None:
@@ -350,10 +220,7 @@ class MoleculeWidgetProtocol(Protocol):
 
     @property
     def residual_density_map(self) -> object | None:
-        """The computed ``ResidualDensityMap``, or ``None`` when none is shown.
-
-        Useful for reporting the map statistics (``max``, ``min``, ``rms``).
-        """
+        """The current ``ResidualDensityMap``, or ``None``."""
         ...
 
     @property

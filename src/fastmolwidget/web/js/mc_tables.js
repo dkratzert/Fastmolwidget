@@ -1,15 +1,9 @@
 /**
  * Marching-cubes lookup tables.
  *
- * A direct port of `build_lookup_tables()` in
- * `fastmolwidget/density_cpp/density_cpp.cpp`, so the wireframe the browser
- * draws has exactly the same topology as the one the Qt renderers draw.
- *
- * The 256 cases are *derived* from the cube topology rather than pasted in as
- * literal data: it is about the same amount of code, it cannot silently
- * disagree with the C++ version, and it keeps the package free of
- * third-party table data. Building them takes well under a millisecond and
- * happens once, lazily, on the first contour.
+ * Port of `build_lookup_tables()` in `density_cpp.cpp`, so the browser and Qt
+ * wireframes use the same topology. The 256 cases are derived at runtime and
+ * cached on first use.
  */
 
 /** Corner offsets of the unit cube, in the canonical marching-cubes order. */
@@ -56,14 +50,7 @@ function connect(adjacency, a, b) {
   adjacency[b][a] = true;
 }
 
-/**
- * Walk the face-crossing graph of one case and emit its triangle fans.
- *
- * Each face cut by the isosurface contributes one (or, for an ambiguous
- * 4-cut face, two) connections between the edges it cuts. Following those
- * connections traces the closed loops the surface makes through the cube;
- * every loop is then fanned into triangles.
- */
+/** Walk one case's face-crossing graph and emit triangle fans. */
 function buildCase(caseIndex) {
   let edgeMask = 0;
   for (let edge = 0; edge < EDGE_COUNT; edge++) {
@@ -93,8 +80,7 @@ function buildCase(caseIndex) {
       const [first, second] = [0, 1, 2, 3].filter((i) => cut[i]);
       connect(adjacency, FACE_EDGES[face][first], FACE_EDGES[face][second]);
     } else if (cutCount === 4) {
-      // Ambiguous face: the two resolutions differ, pick the one that keeps
-      // the "inside" corners connected (same choice as the C++ version).
+      // Ambiguous 4-cut face: keep the "inside" corners connected.
       if (inside[0]) {
         connect(adjacency, FACE_EDGES[face][3], FACE_EDGES[face][0]);
         connect(adjacency, FACE_EDGES[face][1], FACE_EDGES[face][2]);
@@ -152,11 +138,8 @@ function buildCase(caseIndex) {
 }
 
 /**
- * The 256-case marching-cubes tables, built once and memoised.
- *
+ * Build and memoize the 256-case marching-cubes tables.
  * @returns {{edgeMasks: Int32Array, triTable: Int32Array, triWidth: number}}
- *   `edgeMasks[case]` is the bitmask of intersected edges; `triTable` holds
- *   `triWidth` entries per case, `-1`-terminated, as edge-id triples.
  */
 export function lookupTables() {
   if (cachedTables) return cachedTables;

@@ -84,15 +84,16 @@ def test_open_molecule_clear():
     assert len(widget.atoms) == 0
 
 
-def test_hydrogen_uses_adp_like_default_size():
+def test_hydrogen_uses_the_fixed_display_radius():
+    from fastmolwidget.atoms import HYDROGEN_DISPLAY_RADIUS
+
     widget = MoleculeWidget3D()
     widget.open_molecule([
         Atomtuple("H1", "H", 0.0, 0.0, 0.0, 0),
         Atomtuple("C1", "C", 1.0, 0.0, 0.0, 0),
     ])
-    assert widget.atoms[0].u_iso == pytest.approx(0.01)
-    assert widget.atoms[0].u_iso is not None
-    assert widget.atoms[0].display_radius > 0.0
+    assert widget.atoms[0].u_iso is None
+    assert widget.atoms[0].display_radius == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
 
 
 def test_open_molecule_resets_view():
@@ -2226,3 +2227,62 @@ def test_undisordered_structure_is_not_faded_at_all():
     for atom in widget.atoms:
         assert widget._atom_color(atom) == pytest.approx(atom.color_f)
         assert widget._bond_color(atom, atom) == pytest.approx(widget._bond_rgb)
+
+
+# ------------------------------------------------------------------
+# Anisotropic hydrogen atoms
+# ------------------------------------------------------------------
+
+def _load3d(path: Path) -> MoleculeWidget3D:
+    from fastmolwidget.loader import MoleculeLoader
+
+    widget = MoleculeWidget3D()
+    MoleculeLoader(widget).load_file(path)
+    return widget
+
+
+def _hydrogens3d(widget: MoleculeWidget3D) -> list:
+    return [a for a in widget.atoms if a.type_ in ("H", "D")]
+
+
+def test_anisotropic_hydrogen_keeps_tensor_3d():
+    """Hydrogens must not be excluded from ADP processing."""
+    widget = _load3d(data / "nospera2.cif")
+    hydrogens = _hydrogens3d(widget)
+    assert len(hydrogens) == 2
+    for atom in hydrogens:
+        assert atom.u_cart is not None
+        assert atom.adp_valid
+        assert atom.u_iso is not None
+
+
+def test_anisotropic_hydrogen_in_adp_draw_list_3d():
+    """With ADPs on the H is an ellipsoid; with ADPs off a fixed sphere."""
+    from fastmolwidget.atoms import HYDROGEN_DISPLAY_RADIUS
+
+    widget = _load3d(data / "nospera2.cif")
+
+    widget.show_adps(True)
+    assert {a.label for a in _hydrogens3d(widget)} <= {
+        a.label for a in widget._adp_draw_list
+    }
+
+    widget.show_adps(False)
+    assert not any(a.type_ in ("H", "D") for a in widget._adp_draw_list)
+    for atom in _hydrogens3d(widget):
+        assert atom.display_radius == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
+
+
+def test_riding_hydrogen_has_no_tensor_3d():
+    """A riding hydrogen stays isotropic and keeps the fixed radius."""
+    from fastmolwidget.atoms import HYDROGEN_DISPLAY_RADIUS
+
+    widget = _load3d(data / "1979688_small.cif")
+    riding = [a for a in _hydrogens3d(widget) if a.u_cart is None]
+    assert riding
+    for atom in riding:
+        assert atom.u_iso is None
+        assert atom.display_radius == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
+    for show in (True, False):
+        widget.show_adps(show)
+        assert not any(a.u_cart is None for a in widget._adp_draw_list)

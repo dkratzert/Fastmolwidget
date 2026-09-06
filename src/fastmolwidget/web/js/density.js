@@ -1,18 +1,12 @@
 /**
- * Residual (Fo-Fc) electron-density wireframes in the browser.
+ * Residual (Fo-Fc) density wireframes in the browser.
  *
- * The map itself is **computed in Python** (`fastmolwidget.density`) and shipped
- * inside the page by `fastmolwidget.web_export.export_density()`: one unit cell,
- * quantised to a byte per grid point, zeroed outside the region that can ever be
- * displayed, gzipped and base64-encoded. Everything downstream — decoding,
- * cutting the periodic sub-grid out around the atoms, contouring it and clipping
- * the result — happens here, so the contour level stays adjustable and growing
- * or packing in the browser still gets density around the new atoms.
+ * The map is computed in Python (`fastmolwidget.density`) and embedded by
+ * `web_export.export_density()`. Decoding, sub-grid extraction, contouring,
+ * and clipping happen here, so the level stays adjustable after grow/pack.
  *
- * `marchingCubes()` is a port of `density_cpp.cpp`, so the wireframe matches the
- * Qt renderers edge for edge (up to the quantisation of the shipped map).
- *
- * @see js/README.md for the JSON contract.
+ * `marchingCubes()` ports `density_cpp.cpp`, so the browser and Qt wireframes
+ * match apart from payload quantization.
  */
 
 import { CORNER_OFFSETS, EDGE_CORNERS, EDGE_COUNT, lookupTables } from './mc_tables.js';
@@ -48,13 +42,8 @@ function interpolateMu(level, valueA, valueB) {
 /**
  * Largest absolute corner value of every cube in the grid.
  *
- * Contouring the same block at many levels (dragging the level control) spends
- * almost all its time deciding that a cube is not crossed at all. A cube whose
- * eight corners are all smaller in magnitude than |level| cannot be crossed by
- * either lobe, so one comparison against this table replaces eight grid reads
- * and the case-index arithmetic. It pays for itself many times over on a map
- * that has been masked to zero away from the atoms, where most cubes are flat
- * zero.
+ * If `absMax[cube] < |level|`, that cube cannot be crossed by either lobe.
+ * This cheaply skips the many flat-zero cubes in masked maps.
  *
  * @returns {Float32Array} `(nx-1) * (ny-1) * (nz-1)`, C-ordered.
  */
@@ -89,21 +78,16 @@ export function cellAbsMax(values, size) {
 /**
  * Extract a wireframe isosurface from a regular 3-D scalar grid.
  *
- * Port of `density_cpp.marching_cubes`: classic Lorensen-Cline marching cubes
- * whose triangles are emitted as deduplicated undirected line segments. Vertices
- * are keyed by the identity of the grid edge they sit on, so adjacent cubes
- * re-use them and the cage has no doubled lines.
+ * Port of `density_cpp.marching_cubes`. Vertices are keyed by grid-edge
+ * identity so adjacent cubes share them and the wireframe has no doubled lines.
  *
  * @param {Float32Array} values C-ordered `(nx, ny, nz)` grid.
  * @param {number[]} size `[nx, ny, nz]`.
  * @param {number} level Contour level.
  * @param {number[]} origin Coordinates of `values[0,0,0]`.
  * @param {number[]} step Spacing along the three grid axes.
- * @param {Float32Array} [absMax] optional `cellAbsMax()` table used to skip
- *   cubes the surface cannot cross. Purely an optimisation — the output is
- *   identical with or without it.
- * @returns {{vertices: Float64Array, segments: Int32Array}} `(M, 3)` vertices
- *   and `(K, 2)` segment indices, flattened.
+ * @param {Float32Array} [absMax] Optional `cellAbsMax()` skip table.
+ * @returns {{vertices: Float64Array, segments: Int32Array}} Flattened vertices and segments.
  */
 export function marchingCubes(values, size, level, origin, step, absMax) {
   const [nx, ny, nz] = size;
@@ -198,17 +182,13 @@ export function marchingCubes(values, size, level, origin, step, absMax) {
 }
 
 /**
- * Drop every segment further than *margin* from any atom.
+ * Drop segments further than *margin* from any atom.
  *
- * Port of `density._clip_to_atoms`: the bounding box cut out of the map is
- * necessarily larger than the molecule, so this removes the blobs sitting in
- * the corners of the box. A segment survives only when **both** its endpoints
- * are close enough, which stops lines dangling into empty space.
+ * Port of `density._clip_to_atoms`. Both endpoints must be close enough, and
+ * the distance test uses a uniform spatial hash so only 27 neighbour buckets
+ * are examined per vertex.
  *
- * Distances go through a uniform spatial hash of cell size *margin*, so only
- * the 27 neighbouring buckets of a vertex are ever examined.
- *
- * @returns {{vertices: Float64Array, segments: Int32Array}} renumbered.
+ * @returns {{vertices: Float64Array, segments: Int32Array}} Renumbered result.
  */
 export function clipToAtoms(vertices, segments, atoms, margin) {
   const vertexCount = vertices.length / 3;
@@ -228,8 +208,7 @@ export function clipToAtoms(vertices, segments, atoms, margin) {
     if (atoms[i + 2] > maxZ) maxZ = atoms[i + 2];
   }
   const originX = minX - margin, originY = minY - margin, originZ = minZ - margin;
-  // Grid wide enough that any vertex worth keeping falls inside it; anything
-  // outside is trivially too far from every atom.
+  // Make the hash grid wide enough that any kept vertex must land inside it.
   const nj = Math.floor((maxY - originY) / margin) + 3;
   const nk = Math.floor((maxZ - originZ) / margin) + 3;
   const bucketOf = (i, j, k) => (i * nj + j) * nk + k;
@@ -340,11 +319,8 @@ async function gunzip(bytes) {
 }
 
 /**
- * A residual-density map covering one unit cell, as shipped to the browser.
- *
- * The map is periodic, so it can be sampled outside `[0, 1)` in fractional
- * coordinates by wrapping the grid indices — which is what `region()` does to
- * cover grown or packed molecules.
+ * Residual-density map for one unit cell, as shipped to the browser.
+ * The map is periodic, so `region()` can wrap outside `[0, 1)`.
  */
 export class DensityMap {
   constructor({ values, size, cell, rms, level, max, min, margin }) {
@@ -357,16 +333,15 @@ export class DensityMap {
     this.min = min;
     /** Level the exporter suggests, in e/A^3. */
     this.level = level;
-    /** Radius in A the shipped map was masked to. */
+    /** Mask radius in A. */
     this.margin = margin;
     this.orth = orthMatrix(cell);
     this.inverse = invert3(this.orth);
   }
 
   /**
-   * Decode the `density` object of the JSON contract.
-   *
-   * @param {object} payload as produced by `web_export.export_density()`.
+   * Decode a `density` payload from `web_export.export_density()`.
+   * @param {object} payload
    * @returns {Promise<DensityMap>}
    */
   static async fromPayload(payload) {
@@ -394,10 +369,9 @@ export class DensityMap {
   }
 
   /**
-   * Cut the periodic map down to the bounding box around *atoms*.
+   * Cut the periodic map to a padded box around *atoms*.
    *
-   * Port of `ResidualDensityMap._region`; only a cheap box pre-filter, with
-   * `clipToAtoms()` doing the per-atom trimming afterwards.
+   * Port of `ResidualDensityMap._region`; `clipToAtoms()` does the exact trim.
    *
    * @param {Float64Array} atoms flattened `(N, 3)` Cartesian positions.
    * @param {number} margin padding in A.
@@ -408,8 +382,7 @@ export class DensityMap {
     const step = [1 / nx, 1 / ny, 1 / nz];
     const inv = this.inverse;
 
-    // Fractional padding: the row norms of the inverse keep this correct for
-    // oblique cells instead of under-padding along the skewed axes.
+    // Row norms of the inverse keep the padding correct for oblique cells.
     const pad = inv.map((row) => margin * Math.hypot(row[0], row[1], row[2]));
     const lo = [Infinity, Infinity, Infinity];
     const hi = [-Infinity, -Infinity, -Infinity];
@@ -450,13 +423,8 @@ export class DensityMap {
   }
 
   /**
-   * The extracted block for *atoms*, with its cube-magnitude table, memoised.
-   *
-   * Changing only the contour level re-uses everything: cutting the block out
-   * of the periodic map and building the skip table are exactly the parts that
-   * do not depend on the level. The cache is keyed on the *identity* of the
-   * atom array, which the renderer keeps stable until the visible atoms
-   * actually change.
+   * Memoized extracted block for *atoms*, including its cube-magnitude table.
+   * The cache is keyed on atom-array identity so level-only changes reuse it.
    */
   _blockFor(atoms, margin) {
     const cache = this._blockCache;
@@ -470,13 +438,13 @@ export class DensityMap {
   /**
    * Extract a wireframe isosurface at *level*, in Cartesian coordinates.
    *
-   * Marching cubes runs in fractional-coordinate space and the vertices are
-   * transformed to Cartesian afterwards, so oblique cells come out right.
+   * Marching cubes runs in fractional space; vertices are converted afterwards
+   * so oblique cells stay correct.
    *
    * @param {number} level contour level in e/A^3; negative for the negative lobe.
    * @param {Float64Array} atoms flattened Cartesian positions to clip against.
    * @param {number} margin radius around each atom to keep, in A.
-   * @returns {{vertices: Float64Array, segments: Int32Array}} Cartesian.
+   * @returns {{vertices: Float64Array, segments: Int32Array}} Cartesian result.
    */
   isosurface(level, atoms, margin) {
     if (!atoms || atoms.length === 0) {

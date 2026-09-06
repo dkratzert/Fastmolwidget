@@ -1,8 +1,4 @@
-"""Checkable multi-select QComboBox for disorder-part filtering.
-
-Internal helper shared by :mod:`~fastmolwidget.viewer_widget` and
-:mod:`~fastmolwidget.viewer_widget3D`.  Not part of the public API.
-"""
+"""Checkable combo-box helpers for disorder-part filtering."""
 
 from __future__ import annotations
 
@@ -10,7 +6,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
 # ---------------------------------------------------------------------------
-# Qt-binding–agnostic event-type constant
+# Qt-binding-agnostic event-type constant
 # ---------------------------------------------------------------------------
 try:
     _MOUSE_PRESS: int | Qt = QtCore.QEvent.Type.MouseButtonPress  # type: ignore[attr-defined]
@@ -19,20 +15,7 @@ except AttributeError:  # PyQt5
 
 
 class _CheckableComboBox(QtWidgets.QComboBox):
-    """A :class:`~qtpy.QtWidgets.QComboBox` whose items each have a checkbox.
-
-    The popup stays open while the user ticks/unticks items.
-    The button face shows a summary text such as ``"Parts: 0, 1"`` or
-    ``"All Parts"``.
-
-    Usage::
-
-        combo = _CheckableComboBox()
-        combo.add_part(0)
-        combo.add_part(1)
-        combo.add_part(2)
-        combo.selectionChanged.connect(lambda: print(combo.checked_values()))
-    """
+    """QComboBox with checkable items that keeps its popup open while toggling."""
 
     #: Emitted whenever a checked state changes.
     selectionChanged = QtCore.Signal()
@@ -40,12 +23,11 @@ class _CheckableComboBox(QtWidgets.QComboBox):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
 
-        # Make the button text area editable but read-only so we can set
-        # arbitrary summary text without the standard "current item" logic.
+        # Use the line edit for custom summary text.
         self.setEditable(True)
         le = self.lineEdit()
         le.setReadOnly(True)
-        # Forward clicks on the line-edit to toggle popup open/closed.
+        # Clicking the line edit toggles the popup.
         le.installEventFilter(self)
 
         model = QtGui.QStandardItemModel(self)
@@ -106,12 +88,11 @@ class _CheckableComboBox(QtWidgets.QComboBox):
                         else Qt.CheckState.Checked
                     )
                     item.setCheckState(new)
-            # Always return True: prevents the default handler from
-            # activating/closing the popup on item click.
+            # Keep the popup open on item clicks.
             return True
 
         if obj is le and event.type() == _MOUSE_PRESS:
-            # Toggle popup when the read-only line-edit is clicked.
+            # Toggle the popup from the read-only line edit.
             if self.view().isVisible():
                 self.hidePopup()
             else:
@@ -144,39 +125,7 @@ class _CheckableComboBox(QtWidgets.QComboBox):
 
 
 class PartFilterWidget(QtWidgets.QWidget):
-    """A label + checkable combo box for disorder-part filtering.
-
-    Wraps :class:`_CheckableComboBox` together with a descriptive label into
-    a single :class:`~qtpy.QtWidgets.QWidget` that shows/hides itself
-    automatically depending on how many distinct parts are present.
-
-    Parameters
-    ----------
-    label:
-        Text shown to the left of the combo box. Defaults to ``"Show Parts:"``.
-    min_combo_width:
-        Minimum width (pixels) for the combo box.  When ``None`` (default)
-        the width is derived from the rendered size of the label text
-        ``"All Parts"`` plus room for the drop-down arrow, so the button
-        face never clips its content.
-    parent:
-        Optional parent widget.
-
-    Signals
-    -------
-    selectionChanged
-        Re-emitted from the inner :class:`_CheckableComboBox` whenever a
-        checked state changes.
-
-    Usage::
-
-        widget = PartFilterWidget()
-        widget.selectionChanged.connect(lambda: do_something(widget.checked_values()))
-        layout.addWidget(widget)
-
-        # When a new molecule is loaded, call:
-        widget.update_parts(frozenset({0, 1, 2}))
-    """
+    """Label plus checkable combo box for disorder-part filtering."""
 
     #: Emitted whenever a checked state changes inside the combo.
     selectionChanged = QtCore.Signal()
@@ -199,10 +148,9 @@ class PartFilterWidget(QtWidgets.QWidget):
         self._combo.selectionChanged.connect(self.selectionChanged)
 
         if min_combo_width is None:
-            # Derive the minimum width from the widest default label text
-            # ("All Parts") so the button face is never clipped.
+            # Size for the widest default label text.
             fm = self._combo.fontMetrics()
-            # Arrow-button width from the current Qt style; fall back to 28 px.
+            # Arrow width from the current style; fall back to 28 px.
             try:
                 arrow_w: int = self._combo.style().pixelMetric(
                     QtWidgets.QStyle.PixelMetric.PM_ScrollBarExtent  # type: ignore[attr-defined]
@@ -217,7 +165,7 @@ class PartFilterWidget(QtWidgets.QWidget):
         layout.addWidget(QtWidgets.QLabel(label))
         layout.addWidget(self._combo)
 
-        # Hidden until update_parts() reveals disorder.
+        # Hidden until multiple parts are present.
         self.hide()
 
     # ------------------------------------------------------------------
@@ -225,18 +173,7 @@ class PartFilterWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def update_parts(self, parts: frozenset[int]) -> None:
-        """Rebuild the combo from *parts* and show/hide the widget.
-
-        - If *parts* has **≤ 1** element the widget hides itself.
-        - Otherwise each part number is added as a checked item and the
-          widget becomes visible.
-
-        Parameters
-        ----------
-        parts:
-            The set of distinct disorder-part integers from the current
-            molecule.
-        """
+        """Rebuild the combo from *parts* and hide it for 0 or 1 part."""
         self._combo.clear_parts()
         if len(parts) <= 1:
             self.hide()
@@ -248,4 +185,3 @@ class PartFilterWidget(QtWidgets.QWidget):
     def checked_values(self) -> list[int]:
         """Return part numbers whose checkbox is currently ticked."""
         return self._combo.checked_values()
-

@@ -1,13 +1,8 @@
 /**
- * Port of `fastmolwidget.sdm.SDM` (Shortest-Distance-Matrix growing and
- * unit-cell packing). Pure JS, no native acceleration — fine for the atom
- * counts typical of a single asymmetric unit / unit cell.
+ * Port of `fastmolwidget.sdm.SDM` for growing molecules and packing a unit cell.
  *
- * Input atoms use **fractional** coordinates: `{label, type, x, y, z, part}`.
- * `part` defaults to 0. Output atoms (from `grow()` / `packUnitCell()`) use
- * **Cartesian Ångström** coordinates and match the `Atomtuple`-style shape
- * consumed by `MoleculeWidget2D.openMolecule()`:
- * `{label, type, x, y, z, part, symm_matrix}`.
+ * Input atoms are fractional `{label, type, x, y, z, part}`.
+ * `grow()` / `packUnitCell()` return Cartesian `{label, type, x, y, z, part, symm_matrix}`.
  */
 
 import { getRadiusFromElement } from './elements.js';
@@ -49,8 +44,8 @@ class UnionFind {
 export class SDM {
   /**
    * @param {Array<{label:string,type:string,x:number,y:number,z:number,part?:number}>} atoms
-   *   Fractional-coordinate asymmetric-unit atoms.
-   * @param {string[]} symmops SHELX-style symmetry-operation strings (e.g. `"X,Y,Z"`), identity excluded.
+   *   Fractional asymmetric-unit atoms.
+   * @param {string[]} symmops SHELX-style symmetry-operation strings, identity excluded.
    * @param {number[]} cell `[a,b,c,alpha,beta,gamma]`.
    * @param {boolean} [centric=false] Whether to add the inversion centre `-X,-Y,-Z`.
    */
@@ -81,7 +76,7 @@ export class SDM {
     return Math.sqrt(x * x * this.asq + y * y * this.bsq + z * z * this.csq + A);
   }
 
-  /** Compute the shortest-distance matrix and return the "needed symmetry" list. */
+  /** Compute the shortest-distance matrix and return the needed-symmetry list. */
   calcSdm() {
     const n = this.atoms.length;
     const nlen = this.symmops.length;
@@ -202,7 +197,7 @@ export class SDM {
     return needSymm;
   }
 
-  /** Expand the asymmetric unit to whole molecules (call after `calcSdm()`). */
+  /** Expand the asymmetric unit to whole molecules. Call after `calcSdm()`. */
   packer(needSymm) {
     const showAtoms = this.atoms.map((a) => ({
       label: a.label, type: a.type, x: a.x, y: a.y, z: a.z, part: a.part, matrix: null,
@@ -239,7 +234,7 @@ export class SDM {
     });
   }
 
-  /** Grow the asymmetric unit to complete molecules (runs `calcSdm()` + `packer()`). */
+  /** Grow the asymmetric unit to complete molecules. */
   grow() {
     const needSymm = this.calcSdm();
     return this.packer(needSymm);

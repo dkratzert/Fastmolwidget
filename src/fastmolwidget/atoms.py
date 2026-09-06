@@ -424,12 +424,6 @@ element2num = {
     'D' : 1,
 }
 
-"""
-'#FF1493';
-"#FFFFFF";
-"#e2e6e6";
-"""
-
 element2color = {
     'H' : "#FFFFFF",
     'He': "#FFFFFF",
@@ -757,9 +751,7 @@ element2cov = {
 
 
 def get_element_color(element: str) -> str:
-    """
-    Retruns RGB color code in Hex for the element.
-    """
+    """Return the element's hex RGB color code."""
     return element2color.get(element.capitalize())
 
 
@@ -815,17 +807,15 @@ def part_fade(part: int) -> float:
 
 
 def get_radius(atomic_number: int) -> float:
-    """
-    Get the covalent radius in pm for the element.
-    """
+    """Return the covalent radius in pm for the element."""
     return num2covradius[atomic_number]
 
 
 def get_radius_from_element(element: str) -> float:
     """
-    Returns the radius of an atom by its element name.
-    Strips trailing digits/noise (e.g. 'O2' → 'O') before lookup.
-    Falls back to carbon's radius silently for unknown elements.
+    Return the covalent radius of an atom by its element name.
+    Strips trailing digits/noise (e.g. 'O2' -> 'O') before lookup.
+    Falls back to carbon's radius for unknown elements.
     """
     try:
         cleaned = get_atomlabel(element)
@@ -835,47 +825,73 @@ def get_radius_from_element(element: str) -> float:
 
 
 def get_atomic_number(element: str) -> int:
-    """
-    returns the atomic number from the element symbol
-    """
+    """Return the atomic number from the element symbol."""
     return element2num[element]
 
 
 def get_element(atomic_number: int) -> str:
-    """
-    returns the element symbol from the atomic number
-    """
+    """Return the element symbol from the atomic number."""
     return num2element[atomic_number]
 
 
 def get_atomlabel(input_atom: str) -> str:
-    """
-    converts an atom name like C12 to the element symbol C.
-    """
+    """Convert an atom name like 'C12' to the element symbol 'C'."""
     atom = ''
-    for x in input_atom:  # iterate over characters in i
-        if re.match(r'^[A-Za-z#]', x):  # Alphabet and "#" as allowed characters in names
-            atom = atom + x.upper()  # add characters to atoms until numbers occur
-        else:  # now we have atoms like C, Ca, but also Caaa
+    for x in input_atom:
+        if re.match(r'^[A-Za-z#]', x):
+            atom = atom + x.upper()
+        else:
             break
     try:
-        if atom[0:2].capitalize() in atoms:  # fixes names like Caaa to be just Ca
-            return atom[0:2].capitalize()  # atoms first, search for all two-letter atoms
+        if atom[0:2].capitalize() in atoms:
+            return atom[0:2].capitalize()
         elif atom[0].upper() in atoms:
-            return atom[0]  # then for all one-letter atoms
+            return atom[0]
         else:
-            # print('*** {} is not a valid atom!! ***'.format(atom))
             raise KeyError
     except IndexError:
-        # print('*** {} is not a valid atom! ***'.format(atom))
         raise KeyError
 
 
-if __name__ == '__main__':
-    import doctest
+# ---------------------------------------------------------------------------
+# Display sizes
+# ---------------------------------------------------------------------------
 
-    failed, attempted = doctest.testmod()  # verbose=True)
-    if failed == 0:
-        print(f'passed all {attempted} tests!')
-    else:
-        print(f'{failed} of {attempted} tests failed')
+#: Sphere radius (Å) for a carbon atom when no ADP ellipsoid is shown.
+#: Other elements scale from this by covalent radius (see
+#: :func:`display_radius_for_element`).
+#: ``atoms_size / 2 / scale`` = ``(zoom * 70 / 2) / (zoom * 130)``.
+ATOM_DISPLAY_RADIUS: float = 35 / 130
+
+#: Element that :data:`ATOM_DISPLAY_RADIUS` refers to.
+DISPLAY_RADIUS_REFERENCE: str = 'C'
+
+#: Fixed sphere radius (Å) for hydrogen/deuterium, used by every renderer.
+#: Never scales with the covalent radius table, ADPs, or the adp_scale
+#: slider, so H/D is always the same size everywhere.
+HYDROGEN_DISPLAY_RADIUS: float = 0.123
+
+
+def display_radius_for_element(element: str) -> float:
+    """
+    Return the sphere radius in Angstrom used to draw *element* without an ADP.
+
+    H/D always return :data:`HYDROGEN_DISPLAY_RADIUS`; every other element is
+    :data:`ATOM_DISPLAY_RADIUS` scaled by its covalent radius relative to
+    :data:`DISPLAY_RADIUS_REFERENCE`.
+
+    >>> round(display_radius_for_element('H'), 3)
+    0.123
+    >>> round(display_radius_for_element('C'), 3)
+    0.269
+    >>> display_radius_for_element('S') > display_radius_for_element('O')
+    True
+    """
+    try:
+        cleaned = get_atomlabel(element)
+    except KeyError:
+        cleaned = element
+    if cleaned.capitalize() in ('H', 'D'):
+        return HYDROGEN_DISPLAY_RADIUS
+    reference = element2cov[DISPLAY_RADIUS_REFERENCE]
+    return ATOM_DISPLAY_RADIUS * get_radius_from_element(cleaned) / reference

@@ -1,24 +1,4 @@
-"""
-``QQuickPaintedItem``-based renderer for the Qt Quick viewer.
-
-:class:`MoleculeQuickItem` provides the same 2-D molecule drawing as
-:class:`~fastmolwidget.molecule2D.MoleculeWidget` but lives inside a
-Qt Quick scene graph.  It is registered as the QML type ``MoleculeItem``
-(module ``Fastmolwidget``, version 1.0) by
-:mod:`~fastmolwidget.viewer_widget_quick`.
-
-Hover tracking
---------------
-Because ``QQuickItem`` fires ``mouseMoveEvent`` **only** when a mouse button
-is pressed, hover labels require ``setAcceptHoverEvents(True)`` and overriding
-``hoverMoveEvent`` / ``hoverLeaveEvent``.  ``MoleculeRendererMixin._update_hover``
-is called from both paths.
-
-Import guard
-------------
-The entire module is guarded so that importing it on a system without Qt Quick
-does not crash the host application.
-"""
+"""Qt Quick wrapper around the shared 2-D molecule renderer."""
 
 from __future__ import annotations
 
@@ -39,42 +19,25 @@ from fastmolwidget.molecule_painter import MoleculeRendererMixin
 
 
 class MoleculeQuickItem(MoleculeRendererMixin, QQuickPaintedItem):  # type: ignore[misc]
-    """``QQuickPaintedItem`` molecule renderer.
-
-    Shares all drawing and interaction logic with
-    :class:`~fastmolwidget.molecule2D.MoleculeWidget` via
-    :class:`~fastmolwidget.molecule_painter.MoleculeRendererMixin`.
-
-    Register with QML before creating any engine::
-
-        from qtpy.QtQml import qmlRegisterType
-        qmlRegisterType(MoleculeQuickItem, "Fastmolwidget", 1, 0, "MoleculeItem")
-
-    Then in QML::
-
-        import Fastmolwidget 1.0
-        MoleculeItem { id: mol; anchors.fill: parent }
-    """
+    """``QQuickPaintedItem`` molecule renderer."""
 
     atomClicked = QtCore.Signal(str)
     bondClicked = QtCore.Signal(str, str)
-    #: Emitted after every load with the frozenset of disorder-part numbers.
+    #: Emitted after loading with the frozenset of disorder parts present.
     partsChanged = QtCore.Signal(object)
-    #: Emitted with the new contour level whenever the residual-density level
-    #: changes, so a control bar can follow a Ctrl+wheel adjustment.
+    #: Emitted when the residual-density contour level changes.
     densityLevelChanged = QtCore.Signal(float)
 
     def __init__(self, parent: QQuickPaintedItem | None = None) -> None:
         QQuickPaintedItem.__init__(self, parent)
         self._init_renderer()
 
-        # Allow mouse and keyboard interaction
         self.setAcceptedMouseButtons(Qt.MouseButton.AllButtons)
         self.setAcceptHoverEvents(True)
         self.setFlag(QQuickPaintedItem.Flag.ItemAcceptsInputMethod, True)
         self.setFlag(QQuickPaintedItem.Flag.ItemIsFocusScope, True)
 
-        # Use an FBO so the scene graph composites efficiently
+        # Prefer an FBO when Qt supports it.
         if hasattr(QQuickPaintedItem, 'RenderTarget'):
             try:
                 self.setRenderTarget(
@@ -89,7 +52,6 @@ class MoleculeQuickItem(MoleculeRendererMixin, QQuickPaintedItem):  # type: igno
 
     def paint(self, painter: QPainter) -> None:
         """Called by the Qt Quick scene graph to repaint the item."""
-        # Fill background
         painter.fillRect(
             QtCore.QRectF(0, 0, self.width(), self.height()),
             self._bg_color,
@@ -125,7 +87,7 @@ class MoleculeQuickItem(MoleculeRendererMixin, QQuickPaintedItem):  # type: igno
         super().geometryChange(new_geometry, old_geometry)
 
     # ------------------------------------------------------------------
-    # Hover events (QQuickItem fires these without a button pressed)
+    # Hover events
     # ------------------------------------------------------------------
 
     def hoverMoveEvent(self, event: QtGui.QHoverEvent) -> None:  # type: ignore[override]

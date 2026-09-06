@@ -1,16 +1,4 @@
-"""Web/HTML support: ship the JavaScript renderer to browsers and reports.
-
-Public helpers:
-
-- :func:`bundle_js` — the whole renderer as one classic ``<script>`` blob
-  exposing ``window.Fastmolwidget``.
-- :func:`structure_json` / :func:`structure_data` — a parsed structure in the
-  fractional-coordinate JSON contract consumed by the renderer.
-- :func:`render_html` / :func:`write_html` — a complete, self-contained page.
-- :func:`js_directory` — filesystem location of the shipped ES modules.
-
-Nothing in this package imports Qt.
-"""
+"""Web helpers for the bundled JS renderer and self-contained HTML pages."""
 
 from fastmolwidget.web.assets import (
     js_directory,

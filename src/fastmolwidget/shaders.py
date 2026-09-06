@@ -1,22 +1,4 @@
-"""
-GLSL shader sources for :class:`~fastmolwidget.molecule3D.MoleculeWidget3D`.
-
-Platform selection
-------------------
-* **macOS** — GLSL 1.20 / OpenGL 2.1 (compatibility profile tops out here).
-  Uses ``attribute``/``varying``/``gl_FragColor`` syntax.
-* **Other** — GLSL 1.40 / OpenGL 3.1+.
-  Uses ``in``/``out``/``fragColor`` syntax.
-
-The six public constants exported by this module are ready-to-compile strings:
-
-* :data:`SPHERE_VERT` / :data:`SPHERE_FRAG` — sphere impostor
-* :data:`CYLINDER_VERT` / :data:`CYLINDER_FRAG` — tessellated cylinder bonds
-* :data:`ELLIPSOID_BATCH_VERT` / :data:`ELLIPSOID_BATCH_FRAG` — ADP ellipsoid
-  impostor (all atoms in one draw call)
-* :data:`LINE_VERT` / :data:`LINE_FRAG` — flat coloured lines, used for the
-  residual-density isosurface wireframe
-"""
+"""GLSL source strings for the 3-D renderer."""
 
 from __future__ import annotations
 
@@ -31,10 +13,10 @@ MACOS: bool = sys.platform == "darwin"
 
 if MACOS:
     _VER   = "120"
-    _INV   = "attribute"  # vertex-shader input (from VBO)
-    _OUTV  = "varying"    # vertex-shader output → fragment stage
-    _INF   = "varying"    # fragment-shader input
-    _FDECL = ""           # no explicit output-variable declaration
+    _INV   = "attribute"  # vertex input
+    _OUTV  = "varying"    # vertex output
+    _INF   = "varying"    # fragment input
+    _FDECL = ""           # no explicit fragment output
     _FOUT  = "gl_FragColor"
 else:
     _VER   = "140"
@@ -50,7 +32,7 @@ _SUB: dict[str, str] = dict(
 
 
 def _t(src: str) -> str:
-    """Substitute platform tokens in *src* and return the final GLSL string."""
+    """Substitute platform tokens into *src*."""
     return Template(src).substitute(_SUB)
 
 
@@ -60,7 +42,7 @@ def _t(src: str) -> str:
 
 SPHERE_VERT: str = _t("""\
 #version $VER
-// Per-vertex attributes (one quad per atom)
+// One quad per atom.
 $INV vec3 a_center;
 $INV vec3 a_color;
 $INV float a_radius;
@@ -85,8 +67,8 @@ void main() {
     vec4 c_eye    = u_mv * vec4(a_center, 1.0);
     v_center_eye  = c_eye.xyz;
 
-    // Billboard: extend by sphere radius in eye-space X/Y.
-    // A 5 % safety margin ensures full sphere coverage at any view angle.
+    // Expand the quad in eye-space X/Y.
+    // 5% margin avoids clipping.
     vec4 pos = c_eye;
     pos.xy  += a_corner * a_radius * 1.05;
     gl_Position = u_proj * pos;
@@ -116,8 +98,7 @@ void main() {
     vec3 hit    = v_center_eye + local_hit;
     vec3 normal = normalize(local_hit);
 
-    // Bright, low-shadow lighting for crisp atom colours.
-    // Selected atoms are coloured via v_color upstream, so no branch needed.
+    // Bright lighting for crisp atom colours.
     vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
     float diff      = max(dot(normal, light), 0.0);
     float soft_diff = 0.25 + 0.75 * diff;
@@ -127,14 +108,14 @@ void main() {
     vec3 color      = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
     $FOUT           = vec4(clamp(color, 0.0, 1.0), 1.0);
 
-    // Write corrected depth so atoms occlude bonds and each other properly
+    // Write corrected depth.
     vec4 clip_pos = u_proj * vec4(hit, 1.0);
     gl_FragDepth  = (clip_pos.z / clip_pos.w + 1.0) * 0.5;
 }
 """)
 
 # ---------------------------------------------------------------------------
-# Cylinder mesh (tessellated, 8 sides)
+# Cylinder mesh (8 sides)
 # ---------------------------------------------------------------------------
 
 CYLINDER_VERT: str = _t("""\
@@ -174,7 +155,7 @@ ${FDECL}
 void main() {
     vec3 color;
     if (v_selected > 0.5) {
-        // Selected bonds render perfectly flat — no diffuse/specular shading
+        // Selected bonds stay flat.
         color = v_color;
     } else {
         vec3  normal = normalize(v_normal_eye);
@@ -192,11 +173,8 @@ void main() {
 # ---------------------------------------------------------------------------
 # Batched ellipsoid impostor
 # ---------------------------------------------------------------------------
-# All per-atom data (center, A-matrix, eigenvectors, …) are packed as vertex
-# attributes so that every ellipsoid can be drawn with a single glDrawElements
-# call instead of one call per atom.
-#
-# Vertex layout (28 floats = 112 bytes, stride):
+# Per-atom data is packed into vertex attributes.
+# Vertex layout (28 floats = 112 bytes):
 #   offset  0 ( 0 B) – a_corner   vec2
 #   offset  2 ( 8 B) – a_center   vec3
 #   offset  5 (20 B) – a_color    vec3
@@ -335,7 +313,7 @@ void main() {
 
 
 # ---------------------------------------------------------------------------
-# Flat coloured lines (residual-density isosurface wireframe)
+# Flat-colour line shader for residual-density wireframes
 # ---------------------------------------------------------------------------
 
 LINE_VERT: str = _t("""\

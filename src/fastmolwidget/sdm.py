@@ -25,9 +25,7 @@ Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'sy
 
 
 class SymmCards:
-    """
-    Contains the list of SYMM cards
-    """
+    """Container for SHELX ``SYMM`` cards."""
 
     def __init__(self):
         self._symmcards = [SymmetryElement(['X', 'Y', 'Z'])]
@@ -51,11 +49,7 @@ class SymmCards:
         return len(self._symmcards)
 
     def append(self, symmData: list) -> None:
-        """
-        Add the content of a Shelxl SYMM command to generate the appropriate SymmetryElement instance.
-        :param symmData: list of strings. eg.['1/2+X', '1/2+Y', '1/2+Z']
-        :return: None
-        """
+        """Add one SHELX ``SYMM`` operation."""
         newSymm = SymmetryElement(symmData)
         if newSymm not in self._symmcards:
             self._symmcards.append(newSymm)
@@ -91,12 +85,10 @@ class SDM:
 
     def __init__(self, atoms: tuple[list], symmlist: list, cell: tuple[float, float, float, float, float, float],
                  centric=False):
-        """
-        Calculates the shortest distance matrix
-                        0      1      2  3  4   5     6          7
-        :param atoms: [Name, Element, X, Y, Z, Part, ocuupancy, molindex -> (later)]
-        :param symmlist:
-        :param cell:
+        """Prepare SDM data for one asymmetric unit.
+
+        ``atoms`` are ``[label, element, x, y, z, part, occupancy, ...]`` in
+        fractional coordinates.
         """
         self.atoms = atoms
         self.symmcards = SymmCards()
@@ -130,7 +122,7 @@ class SDM:
             symm_m.append(tuple(map(tuple, s.matrix.T)))
             symm_t.append(tuple(s.trans))
 
-        # C++ Fast Path
+        # C++ fast path.
         if HAS_CPP:
             coords = [[at[2], at[3], at[4]] for at in self.atoms]
             radii = [get_radius_from_element(at[1]) for at in self.atoms]
@@ -156,7 +148,7 @@ class SDM:
                 sdm_item.covalent = covalent
                 self.sdm_list.append(sdm_item)
 
-        # Pure Python Fallback Path
+        # Pure-Python fallback.
         else:
             at2_plushalf = [(x[2] + 0.5, x[3] + 0.5, x[4] + 0.5) for x in self.atoms]
             aga, bbe, cal = self.aga, self.bbe, self.cal
@@ -251,7 +243,7 @@ class SDM:
         aga, bbe, cal = self.aga, self.bbe, self.cal
         asq, bsq, csq = self.asq, self.bsq, self.csq
 
-        # Collect needsymm list:
+        # Collect symmetry operations needed to complete molecules.
         for sdm_item in self.sdm_list:
             if sdm_item.covalent:
                 if sdm_item.atom1[-1] < 1 or sdm_item.atom1[-1] > 6:
@@ -264,7 +256,7 @@ class SDM:
                     if sdm_item.atom1[5] * sdm_item.atom2[5] != 0 and \
                         sdm_item.atom1[5] != sdm_item.atom2[5]:
                         continue
-                    # Both the same atomic number and number 0 (hydrogen)
+                    # Skip H-H contacts.
                     if sdm_item.atom1[1] == sdm_item.atom2[1] and sdm_item.atom1[1] in h:
                         continue
 
@@ -303,18 +295,17 @@ class SDM:
         return need_symm
 
     def calc_molindex(self, all_atoms):
-        """Assign a molecule index to every atom using Union-Find (path-halving +
-        union-by-rank).  Replaces the original O(K·|sdm_list|) repeated-scan loop
-        with an essentially linear O(N + M·α(N)) algorithm.
+        """Assign 1-based molecule indices with Union-Find.
 
-        The last element of each atom list is set to its molecule index (1-based),
-        matching the contract expected by collect_needed_symmetry() and packer().
+        The last element of each atom list is reserved for that index, matching
+        the contract used by :meth:`collect_needed_symmetry` and
+        :meth:`packer`.
         """
         n = len(all_atoms)
         for at in all_atoms:
             at.append(-1)  # reserve the molindex slot (keeps original API)
 
-        # ── Union-Find with path-halving and union-by-rank ────────────────────
+        # Union-Find with path halving and union by rank.
         parent = list(range(n))
         rank = [0] * n
 
@@ -338,7 +329,7 @@ class SDM:
             if sdm_item.covalent:
                 union(sdm_item.a1, sdm_item.a2)
 
-        # ── assign sequential 1-based molecule indices ────────────────────────
+        # Assign sequential 1-based molecule indices.
         root_to_mol: dict[int, int] = {}
         mol_counter = 0
         for i in range(n):
@@ -356,26 +347,11 @@ class SDM:
         *,
         cart_tolerance: float = 0.2,
     ) -> list[Atomtuple]:
-        """Pack all symmetry-equivalent positions into one unit cell.
+        """Pack all selected symmetry copies into one unit cell.
 
-        For every atom in the asymmetric unit every selected symmetry
-        operation is applied and the result is folded back into [0, 1)
-        fractional coordinates.  Positions that are already occupied within
-        *cart_tolerance* Ångström (with periodic boundary conditions) are
-        discarded as duplicates.  The threshold matches the one used by the
-        molecule-grow :meth:`packer`.
-
-        This call can be made on a fresh :class:`SDM` object before
-        :meth:`calc_sdm` — it does **not** require the SDM to have been run.
-
-        :param symmop_indices: 0-based indices into the internal
-            :class:`SymmCards` list (identity is always index 0).  ``None``
-            applies all operations including the inversion centre when the
-            structure is centrosymmetric.
-        :param cart_tolerance: Cartesian distance threshold (Å) for duplicate
-            detection with periodic boundary conditions.  Default 0.2 Å
-            matches the grow packer.
-        :returns: List of :class:`Atomtuple` in Cartesian Ångström coordinates.
+        Results are folded into ``[0, 1)`` and near-duplicates are removed with
+        periodic Cartesian distance testing. This does not require
+        :meth:`calc_sdm` to have run first.
         """
         selected: list[int] = (
             list(range(len(self.symmcards)))
@@ -391,7 +367,7 @@ class SDM:
 
         cell = self.cell[:6]
 
-        # Pre-compute metric tensor coefficients for inlined distance calc
+        # Metric-tensor coefficients for inlined distance tests.
         aga = self.aga
         bbe = self.bbe
         cal = self.cal
@@ -400,7 +376,7 @@ class SDM:
         csq = self.csq
         tol_sq = cart_tolerance * cart_tolerance
 
-        # Pre-compute the frac→cart transformation matrix once
+        # Fractional-to-Cartesian transform.
         a, b, c, alpha, beta, gamma = cell
         _alpha = radians(alpha)
         _beta = radians(beta)
@@ -411,7 +387,7 @@ class SDM:
         _sin_beta = sin(_beta)
         _cosastar = (_cos_beta * _cos_gamma - cos(_alpha)) / (_sin_beta * _sin_gamma)
         _sinastar = sqrt(1.0 - _cosastar * _cosastar)
-        # Transformation coefficients: x_cart = m00*fx + m01*fy + m02*fz, etc.
+        # x_cart = m00*fx + m01*fy + m02*fz, etc.
         m00 = a
         m01 = b * _cos_gamma
         m02 = c * _cos_beta
@@ -419,18 +395,16 @@ class SDM:
         m12 = -c * _sin_beta * _cosastar
         m22 = c * _sin_beta * _sinastar
 
-        # Spatial grid for O(1) average-case duplicate detection.
-        # Grid divides [0,1)^3 into bins; only neighbouring bins are checked.
-        # Choose grid size so each bin spans ~tolerance in each fractional axis.
-        # Minimum 3 bins per axis so the 3×3×3 neighbourhood is correct.
+        # Spatial grid for average O(1) duplicate checks. Use at least 3 bins
+        # per axis so the 3×3×3 neighbourhood stays correct.
         grid_nx = max(3, int(a / cart_tolerance))
         grid_ny = max(3, int(b / cart_tolerance))
         grid_nz = max(3, int(c / cart_tolerance))
 
-        # grid maps (ix, iy, iz) → list of (fx, fy, fz, part, packed_index)
+        # (ix, iy, iz) -> [(fx, fy, fz, part, packed_index), ...]
         grid: dict[tuple[int, int, int], list[tuple[float, float, float, int, int]]] = {}
 
-        # packed entries: (label, elem, fx, fy, fz, part, cx, cy, cz, matrix)
+        # Packed entries: (label, elem, fx, fy, fz, part, cx, cy, cz, matrix)
         packed: list[tuple] = []
         packed_append = packed.append
 
@@ -444,17 +418,17 @@ class SDM:
                 m = symm_m[idx]
                 t = symm_t[idx]
 
-                # Apply symmetry operation (column-major, matching packer())
+                # Apply the symmetry operation (column-major, matching packer()).
                 px = (x1 * m[0][0] + y1 * m[1][0] + z1 * m[2][0] + t[0]) % 1.0
                 py = (x1 * m[0][1] + y1 * m[1][1] + z1 * m[2][1] + t[1]) % 1.0
                 pz = (x1 * m[0][2] + y1 * m[1][2] + z1 * m[2][2] + t[2]) % 1.0
 
-                # Determine grid bin
+                # Grid bin.
                 ix = int(px * grid_nx) % grid_nx
                 iy = int(py * grid_ny) % grid_ny
                 iz = int(pz * grid_nz) % grid_nz
 
-                # Check only 3×3×3 neighbouring bins for duplicates
+                # Check only the 3×3×3 neighbouring bins for duplicates.
                 is_dup = False
                 for dix in (-1, 0, 1):
                     if is_dup:
@@ -472,18 +446,17 @@ class SDM:
                             if bucket is None:
                                 continue
                             for (efx, efy, efz, epart, _) in bucket:
-                                # Atoms in different (non-zero) disorder parts
-                                # cannot be duplicates of each other.
+                                # Different non-zero disorder parts cannot match.
                                 if epart != 0 and part != 0 and epart != part:
                                     continue
-                                # Fractional difference folded to [-0.5, 0.5]
+                                # Fold the fractional difference into [-0.5, 0.5].
                                 ddx = px - efx
                                 ddx = ddx - int(ddx + (0.5 if ddx >= 0.0 else -0.5))
                                 ddy = py - efy
                                 ddy = ddy - int(ddy + (0.5 if ddy >= 0.0 else -0.5))
                                 ddz = pz - efz
                                 ddz = ddz - int(ddz + (0.5 if ddz >= 0.0 else -0.5))
-                                # Inlined squared metric distance
+                                # Inlined squared metric distance.
                                 d2 = (ddx * ddx * asq + ddy * ddy * bsq
                                       + ddz * ddz * csq
                                       + 2.0 * (ddx * ddy * aga
@@ -494,13 +467,13 @@ class SDM:
                                     break
 
                 if not is_dup:
-                    # Inline frac_to_cart
+                    # Inline frac_to_cart.
                     cx = m00 * px + m01 * py + m02 * pz
                     cy = m11 * py + m12 * pz
                     cz = m22 * pz
                     idx_packed = len(packed)
                     packed_append((label, elem, px, py, pz, part, cx, cy, cz, m))
-                    # Insert into grid
+                    # Insert into the grid.
                     key = (ix, iy, iz)
                     bucket = grid.get(key)
                     if bucket is None:
@@ -518,18 +491,14 @@ class SDM:
         return cart_atoms
 
     def vector_length(self, x: float, y: float, z: float) -> float:
-        """
-        Calculates the vector length given in fractional coordinates.
-        """
+        """Return the length of a fractional vector in Å."""
         A = 2.0 * (x * y * self.aga + x * z * self.bbe + y * z * self.cal)
         return sqrt(x ** 2 * self.asq + y ** 2 * self.bsq + z ** 2 * self.csq + A)
 
     def packer(self, sdm: SDM, need_symm: list, with_qpeaks=False) -> list[Atomtuple]:
-        """
-        Packs atoms of the asymmetric unit to real molecules.
-        """
+        """Expand the asymmetric unit to complete molecules."""
         showatoms = []
-        # Append base atoms with an identity matrix
+        # Base atoms get the identity matrix.
         identity_matrix = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
         for at in self.atoms:
             showatoms.append(list(at) + ['base', identity_matrix])
@@ -559,11 +528,11 @@ class SDM:
                     py = x1 * m[0][1] + y1 * m[1][1] + z1 * m[2][1] + t[1] + k
                     pz = x1 * m[0][2] + y1 * m[1][2] + z1 * m[2][2] + t[2] + l
 
-                    # The new atom with the symmetry matrix appended:
+                    # Append the generating symmetry matrix.
                     new = [atom[0], atom[1], px, py, pz, atom[5], atom[6], atom[7], 'symmgen', m]
                     new_atoms.append(new)
                     isthere = False
-                    # Only add atom if its occupancy (new[5]) is greater zero:
+                    # Only keep atoms with non-negative occupancy.
                     if new[5] >= 0:
                         for existing in showatoms:
                             if existing[5] != new[5]:
@@ -581,7 +550,7 @@ class SDM:
         cell = self.cell[:6]
         for at in showatoms:
             x, y, z = frac_to_cart([at[2], at[3], at[4]], cell)
-            # at[-1] contains the symm_matrix
+            # ``at[-1]`` is the symmetry matrix.
             cart_atoms.append(Atomtuple(label=at[0], type=at[1], x=x, y=y, z=z, part=at[5], symm_matrix=at[-1]))
         return cart_atoms
 

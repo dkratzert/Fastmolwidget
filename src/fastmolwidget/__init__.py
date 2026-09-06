@@ -1,14 +1,12 @@
-"""Fastmolwidget — embeddable widgets for displaying crystal structures.
+"""Fastmolwidget public API.
 
-The Qt widgets are imported lazily (:pep:`562`) so that Qt-free consumers — for
-example HTML report generators using :mod:`fastmolwidget.web` — can import this
-package without a Qt binding installed.  ``from fastmolwidget import
-MoleculeWidget`` keeps working unchanged.
+Qt widgets are imported lazily (:pep:`562`) so Qt-free users, such as web
+export code, can import :mod:`fastmolwidget` without a Qt binding installed.
 """
 
 from typing import TYPE_CHECKING
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 if TYPE_CHECKING:
     from fastmolwidget.density import (
@@ -40,7 +38,7 @@ if TYPE_CHECKING:
     )
     from fastmolwidget.web import bundle_js, render_html, structure_json, write_html
 
-# public name -> module it lives in
+# Public name -> module path for lazy imports.
 _LAZY_IMPORTS = {
     "MoleculeViewerWidget": "fastmolwidget.viewer_widget",
     "MoleculeViewerQuickWidget": "fastmolwidget.viewer_widget_quick",
@@ -102,7 +100,7 @@ def __getattr__(name: str):
     import importlib
 
     value = getattr(importlib.import_module(module_name), name)
-    globals()[name] = value  # cache so later lookups skip __getattr__
+    globals()[name] = value  # Cache future lookups.
     return value
 
 

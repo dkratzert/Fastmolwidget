@@ -1,10 +1,4 @@
-/**
- * Public entry point of the JavaScript renderer.
- *
- * Everything exported here becomes a member of the `window.Fastmolwidget`
- * namespace in the single-file bundle produced by
- * `fastmolwidget.web.bundle_js()`.
- */
+/** Public JS entry point. Exports become `window.Fastmolwidget` in the bundle. */
 
 export { createViewer, createControlBar, CONTROL_ELEMENT_DEFAULTS } from './embed.js';
 export { MoleculeViewer2D } from './viewer.js';

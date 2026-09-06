@@ -1,6 +1,23 @@
 Fastmolwidget changes
 =====================
 
+v1.4.0
+------
+- Changed: atoms drawn without an ADP ellipsoid are sized by their covalent
+  radius instead of one size for every element (carbon unchanged). New in
+  atoms.py: display_radius_for_element(), ATOM_DISPLAY_RADIUS,
+  DISPLAY_RADIUS_REFERENCE, HYDROGEN_DISPLAY_RADIUS; JavaScript follows.
+- Changed: hydrogen and deuterium use one fixed radius (0.123 Å, 20 % smaller
+  than before) in all renderers and both display modes. An anisotropically
+  refined H is still an ellipsoid while "Show ADP" is on.
+- Changed: much faster residual density for twinned data - |Fc|² for the twin
+  components is calculated in one batched call and HKLF 4 detwinning no longer
+  loops per reflection.
+- Changed: faster loading of large models - _sanitise_adps() decomposes all
+  ADP tensors at once.
+- Changed: faster density_cpp.structure_factors() through a cache-friendlier
+  phase table and a leaner inner loop. Needs the extension rebuilt.
+
 v1.3.0
 ------
 - New: raw _diffrn_refln_* reflection loops in CIF files are read

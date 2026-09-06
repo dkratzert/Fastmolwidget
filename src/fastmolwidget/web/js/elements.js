@@ -1,7 +1,5 @@
 /**
- * Element metadata (colours, covalent radii) ported from
- * `fastmolwidget/atoms.py`. Kept as a standalone module so it can be reused
- * or replaced without touching the renderer.
+ * Element metadata (colours, covalent radii), ported from `atoms.py`.
  */
 
 export const ELEMENT2COLOR = {
@@ -47,8 +45,8 @@ export const ELEMENT2COV = {
 const KNOWN_ATOMS = new Set(Object.keys(ELEMENT2COV));
 
 /** Port of `atoms.get_atomlabel`: strips trailing digits/noise from a SHELX
- * style atom name, e.g. 'C12' -> 'C', 'Ca1' -> 'Ca'. Falls back to the raw
- * (capitalised) input when it cannot be resolved. */
+ * style atom name, e.g. 'C12' -> 'C'. Falls back to the raw (capitalised)
+ * input when it cannot be resolved. */
 export function getAtomLabel(inputAtom) {
   let atom = '';
   for (const ch of inputAtom) {
@@ -76,4 +74,36 @@ export function getRadiusFromElement(element) {
 export function getElementColor(element) {
   const cap = element.charAt(0) + element.slice(1).toLowerCase();
   return ELEMENT2COLOR[cap] ?? '#000000';
+}
+
+/**
+ * Sphere radius (Å) for a carbon atom when no ADP ellipsoid is shown.
+ * Other elements scale from this by covalent radius, so ball-and-stick
+ * proportions follow the periodic table.
+ *
+ * Mirrors the Python `ATOM_DISPLAY_RADIUS` (`atoms.py`).
+ * Equals `atomsSize / 2 / scale` = `(zoom * 70 / 2) / (zoom * 130)`.
+ */
+export const ATOM_DISPLAY_RADIUS = 35 / 130;
+
+/** Element `ATOM_DISPLAY_RADIUS` refers to. */
+export const DISPLAY_RADIUS_REFERENCE = 'C';
+
+/**
+ * Fixed sphere radius (Å) for hydrogen/deuterium. Never scales with the
+ * covalent-radius table, ADP tensor, or the "Show ADP" toggle / adpScale
+ * slider. Mirrors the Python `HYDROGEN_DISPLAY_RADIUS`.
+ */
+export const HYDROGEN_DISPLAY_RADIUS = 0.123;
+
+/**
+ * Return the sphere radius (Å) used to draw `element` without an ADP.
+ * H/D always return `HYDROGEN_DISPLAY_RADIUS`; everything else is
+ * `ATOM_DISPLAY_RADIUS` scaled by its covalent radius relative to carbon.
+ */
+export function displayRadiusForElement(element) {
+  const cleaned = getAtomLabel(element);
+  const cap = cleaned.charAt(0) + cleaned.slice(1).toLowerCase();
+  if (cap === 'H' || cap === 'D') return HYDROGEN_DISPLAY_RADIUS;
+  return (ATOM_DISPLAY_RADIUS * getRadiusFromElement(cap)) / ELEMENT2COV[DISPLAY_RADIUS_REFERENCE];
 }

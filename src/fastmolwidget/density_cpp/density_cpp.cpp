@@ -592,11 +592,15 @@ constexpr double kTwoPi = 6.283185307179586476925286766559;
 constexpr double kTwoPiSq = 19.739208802178717237668981999752;  // 2 pi^2
 constexpr double kUtoB = 78.956835208714868950675927999008;     // 8 pi^2
 
-// Tabulate exp(2 pi i * n * value) for n in [low, high].
-void fill_phase_table(double value, int low, int high, Complex* out) {
+// Tabulate exp(2 pi i * n * value) for n in [low, high], writing one entry
+// every `step` slots so that a whole axis can be stored index-major (all
+// site-images of one Miller index contiguous).
+void fill_phase_table(double value, int low, int high, Complex* out,
+                      std::ptrdiff_t step) {
     for (int n = low; n <= high; ++n) {
         const double angle = kTwoPi * static_cast<double>(n) * value;
-        out[n - low] = Complex(std::cos(angle), std::sin(angle));
+        out[static_cast<std::ptrdiff_t>(n - low) * step] =
+            Complex(std::cos(angle), std::sin(angle));
     }
 }
 
@@ -632,6 +636,7 @@ py::array_t<Complex> structure_factors(
     const py::ssize_t n_refl = hkl.shape(0);
     const py::ssize_t n_ops = rotations.shape(0);
     const py::ssize_t n_sites = fract.shape(0);
+    const py::ssize_t n_forms = form_factors.shape(0);
 
     if (translations.ndim() != 2 || translations.shape(0) != n_ops
             || translations.shape(1) != 3) {
@@ -675,12 +680,15 @@ py::array_t<Complex> structure_factors(
         high[0] - low[0] + 1, high[1] - low[1] + 1, high[2] - low[2] + 1,
     };
 
-    // One symmetry image of one site, with its three phase tables.
+    // One symmetry image of one site, with its three phase tables.  The tables
+    // are stored *Miller-index major*: all n_images entries for one h (or k,
+    // or l) sit next to each other.  A reflection then reads three contiguous
+    // runs instead of striding through the whole table, which is what makes
+    // the inner loop cache-resident for large models.
     const py::ssize_t n_images = n_ops * n_sites;
-    const py::ssize_t stride = span[0] + span[1] + span[2];
-    std::vector<Complex> tables(static_cast<std::size_t>(n_images * stride));
-    std::vector<double> occ_by_image(static_cast<std::size_t>(n_images));
-    std::vector<int> form_by_image(static_cast<std::size_t>(n_images));
+    std::vector<Complex> table_x(static_cast<std::size_t>(span[0] * n_images));
+    std::vector<Complex> table_y(static_cast<std::size_t>(span[1] * n_images));
+    std::vector<Complex> table_z(static_cast<std::size_t>(span[2] * n_images));
 
     for (py::ssize_t m = 0; m < n_ops; ++m) {
         const double* rot = rot_data + m * 9;
@@ -693,12 +701,9 @@ py::array_t<Complex> structure_factors(
                             + rot[axis * 3 + 2] * x[2] + tran[axis];
             }
             const py::ssize_t p = m * n_sites + s;
-            Complex* table = tables.data() + p * stride;
-            fill_phase_table(image[0], low[0], high[0], table);
-            fill_phase_table(image[1], low[1], high[1], table + span[0]);
-            fill_phase_table(image[2], low[2], high[2], table + span[0] + span[1]);
-            occ_by_image[static_cast<std::size_t>(p)] = occ_data[s];
-            form_by_image[static_cast<std::size_t>(p)] = form_index_data[s];
+            fill_phase_table(image[0], low[0], high[0], table_x.data() + p, n_images);
+            fill_phase_table(image[1], low[1], high[1], table_y.data() + p, n_images);
+            fill_phase_table(image[2], low[2], high[2], table_z.data() + p, n_images);
         }
     }
 
@@ -722,6 +727,8 @@ py::array_t<Complex> structure_factors(
 #endif
     {
         std::vector<double> weight(static_cast<std::size_t>(n_sites));
+        std::vector<double> damping(static_cast<std::size_t>(n_sites));
+        std::vector<double> form_of_reflection(static_cast<std::size_t>(n_forms));
 
 #ifdef _OPENMP
 #pragma omp for schedule(static)
@@ -730,53 +737,66 @@ py::array_t<Complex> structure_factors(
             const int h = hkl_data[n * 3 + 0];
             const int k = hkl_data[n * 3 + 1];
             const int l = hkl_data[n * 3 + 2];
-            const py::ssize_t ih = h - low[0];
-            const py::ssize_t ik = span[0] + (k - low[1]);
-            const py::ssize_t il = span[0] + span[1] + (l - low[2]);
+            const Complex* ex = table_x.data() + (h - low[0]) * n_images;
+            const Complex* ey = table_y.data() + (k - low[1]) * n_images;
+            const Complex* ez = table_z.data() + (l - low[2]) * n_images;
             const double s2 = stol2_data[n];
+
+            // The form-factor table is (F, N); read this reflection's column
+            // once instead of striding through it for every site.
+            for (py::ssize_t f = 0; f < n_forms; ++f) {
+                form_of_reflection[static_cast<std::size_t>(f)] =
+                    form_data[f * n_refl + n];
+            }
 
             // occupancy * scattering factor, and for isotropic sites also the
             // Debye-Waller factor, which does not depend on the symmetry image.
             for (py::ssize_t s = 0; s < n_sites; ++s) {
                 double value = occ_data[s]
-                    * form_data[static_cast<py::ssize_t>(form_index_data[s]) * n_refl + n];
+                    * form_of_reflection[static_cast<std::size_t>(form_index_data[s])];
                 if (!is_aniso[static_cast<std::size_t>(s)]) {
                     value *= std::exp(-kUtoB * s2 * uiso_data[s]);
                 }
                 weight[static_cast<std::size_t>(s)] = value;
             }
 
-            Complex total(0.0, 0.0);
+            double total_re = 0.0;
+            double total_im = 0.0;
             for (py::ssize_t m = 0; m < n_ops; ++m) {
-                double quad[6] = {0, 0, 0, 0, 0, 0};
+                const py::ssize_t base = m * n_sites;
                 if (any_aniso) {
                     const double* rot = rot_data + m * 9;
                     // Miller indices transform as row vectors: h' = h . R.
                     const double hx = (h * rot[0] + k * rot[3] + l * rot[6]) * reciprocal[0];
                     const double hy = (h * rot[1] + k * rot[4] + l * rot[7]) * reciprocal[1];
                     const double hz = (h * rot[2] + k * rot[5] + l * rot[8]) * reciprocal[2];
-                    quad[0] = hx * hx;
-                    quad[1] = hy * hy;
-                    quad[2] = hz * hz;
-                    quad[3] = 2.0 * hx * hy;
-                    quad[4] = 2.0 * hx * hz;
-                    quad[5] = 2.0 * hy * hz;
+                    const double quad[6] = {
+                        hx * hx, hy * hy, hz * hz,
+                        2.0 * hx * hy, 2.0 * hx * hz, 2.0 * hy * hz,
+                    };
+                    // Kept as its own countable loop so the compiler can
+                    // vectorise the transcendental; it is the hot instruction.
+                    for (py::ssize_t s = 0; s < n_sites; ++s) {
+                        const double* u = aniso_data + s * 6;
+                        damping[static_cast<std::size_t>(s)] = std::exp(
+                            -kTwoPiSq * (quad[0] * u[0] + quad[1] * u[1]
+                                       + quad[2] * u[2] + quad[3] * u[3]
+                                       + quad[4] * u[4] + quad[5] * u[5]));
+                    }
                 }
-                const Complex* base = tables.data() + m * n_sites * stride;
+
                 for (py::ssize_t s = 0; s < n_sites; ++s) {
                     double value = weight[static_cast<std::size_t>(s)];
                     if (is_aniso[static_cast<std::size_t>(s)]) {
-                        const double* u = aniso_data + s * 6;
-                        const double r_u_r = quad[0] * u[0] + quad[1] * u[1]
-                                           + quad[2] * u[2] + quad[3] * u[3]
-                                           + quad[4] * u[4] + quad[5] * u[5];
-                        value *= std::exp(-kTwoPiSq * r_u_r);
+                        value *= damping[static_cast<std::size_t>(s)];
                     }
-                    const Complex* table = base + s * stride;
-                    total += value * (table[ih] * table[ik] * table[il]);
+                    const py::ssize_t p = base + s;
+                    const Complex phase = ex[p] * ey[p] * ez[p];
+                    total_re += value * phase.real();
+                    total_im += value * phase.imag();
                 }
             }
-            out[n] = total;
+            out[n] = Complex(total_re, total_im);
         }
     }
 

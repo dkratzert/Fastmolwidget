@@ -1,29 +1,16 @@
 /**
- * Checkable multi-select dropdown for disorder-part filtering — the
- * JavaScript counterpart of `fastmolwidget.part_combo.PartFilterWidget`
- * used by the Qt viewers.
+ * Multi-select disorder-part filter, mirroring the Qt part-filter widget.
  *
- * `createPartFilter(widget)` returns a DOM element to drop into your control
- * bar. It wires itself to the widget's `partsChanged` event and forwards the
- * current selection to `widget.setVisibleParts(...)`:
- *
- * - A "Show Parts:" label plus a dropdown button whose popup lists every
- *   distinct disorder part with a checkbox. The popup stays open while
- *   ticking/unticking.
- * - All parts are checked by default. When every part is checked the widget is
- *   told to show all (`setVisibleParts(null)`); otherwise it receives the
- *   `Set` of ticked part numbers.
- * - The control hides itself automatically unless the loaded structure has
- *   more than one distinct part — exactly like the Qt widget.
+ * All parts start checked. `null` means "show all". The control hides itself
+ * unless the structure has more than one part.
  */
 
 /**
- * @param {import('./molecule2d.js').MoleculeWidget2D} widget The renderer to
- *   filter. Must dispatch `partsChanged` (detail = `Set<number>`) and expose
- *   `setVisibleParts(Set|null)`.
+ * @param {import('./molecule2d.js').MoleculeWidget2D} widget Renderer to
+ *   filter. Must dispatch `partsChanged` and expose `setVisibleParts(Set|null)`.
  * @param {object} [options]
  * @param {string} [options.label='Show Parts:'] Text shown before the button.
- * @returns {HTMLElement} Container element (hidden until >1 part is present).
+ * @returns {HTMLElement} Container element, hidden until >1 part is present.
  */
 export function createPartFilter(widget, { label = 'Show Parts:' } = {}) {
   const container = document.createElement('span');
@@ -56,7 +43,7 @@ export function createPartFilter(widget, { label = 'Show Parts:' } = {}) {
 
   const apply = () => {
     button.textContent = summaryText();
-    // Mirror the Qt viewer: all ticked → show everything (null), else the set.
+    // Match Qt: all checked => show everything (`null`).
     widget.setVisibleParts(checked.size === parts.length ? null : new Set(checked));
   };
 
@@ -81,7 +68,7 @@ export function createPartFilter(widget, { label = 'Show Parts:' } = {}) {
       popup.append(row);
     }
     button.textContent = summaryText();
-    // Hide the whole control unless disorder is actually present.
+    // Hide unless disorder is present.
     container.style.display = parts.length > 1 ? 'inline-flex' : 'none';
     if (parts.length <= 1) popup.style.display = 'none';
   };
@@ -92,7 +79,7 @@ export function createPartFilter(widget, { label = 'Show Parts:' } = {}) {
     e.stopPropagation();
     popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
   });
-  // Keep the popup open while interacting with its checkboxes.
+  // Keep the popup open while toggling checkboxes.
   popup.addEventListener('click', (e) => e.stopPropagation());
   // Close when clicking anywhere else.
   document.addEventListener('click', closePopup);
