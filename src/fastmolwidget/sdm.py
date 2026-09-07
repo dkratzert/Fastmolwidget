@@ -19,7 +19,7 @@ from fastmolwidget.dsrmath import SymmetryElement, frac_to_cart
 if TYPE_CHECKING:
     pass
 
-DEBUG = True
+DEBUG = False
 Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix', 'adp'),
                        defaults=(None, None))
 
