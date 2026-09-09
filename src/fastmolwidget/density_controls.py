@@ -33,18 +33,6 @@ else:
     _HostBase = object
 
 
-#: Checked-state styling for the residual-density button.
-_DENSITY_BUTTON_STYLE = """
-QPushButton:checked {
-    background-color: #cdebcd;
-    border: 2px inset #3c8c3c;
-    font-weight: bold;
-}
-QPushButton:checked:hover {
-    background-color: #bce0bc;
-}
-"""
-
 _DENSITY_TOOLTIP_OFF = "Show the residual Fo-Fc density map."
 
 _DENSITY_TOOLTIP_NO_DATA = ("No usable reflection data for this structure - "
@@ -139,9 +127,12 @@ class DensityControlsMixin(_HostBase):
     def _init_density_controls(self) -> None:
         """Create and connect the density controls."""
         self._residual_density_button = QtWidgets.QPushButton("Residual Density")
-        # Keep the on/off state visible on the button itself.
+        # Keep the on/off state visible on the button itself. No custom
+        # stylesheet: the native checked/pressed look (sunken bevel) already
+        # shows the state and never changes the button's size hint, unlike
+        # a custom border/background which is fragile across styles and
+        # window widths.
         self._residual_density_button.setCheckable(True)
-        self._residual_density_button.setStyleSheet(_DENSITY_BUTTON_STYLE)
 
         self._density_level_label = QtWidgets.QLabel("Level:")
         self._density_level_spinbox = QtWidgets.QDoubleSpinBox()

@@ -416,13 +416,13 @@ def test_button_pops_back_out_on_failure(monkeypatch, tmp_path):
     assert viewer.render_widget.residual_density_map is None
 
 
-def test_checked_button_has_a_distinct_appearance():
-    """Relief alone is easy to miss - the checked state is also coloured."""
+def test_checked_button_uses_the_native_look():
+    """No custom stylesheet - the native checked/pressed bevel shows state."""
     viewer = MoleculeViewer3DWidget()
-    style = viewer._residual_density_button.styleSheet()
+    button = viewer._residual_density_button
 
-    assert 'checked' in style
-    assert 'background-color' in style
+    assert button.isCheckable()
+    assert button.styleSheet() == ""
 
 
 # ------------------------------------------------------------------
