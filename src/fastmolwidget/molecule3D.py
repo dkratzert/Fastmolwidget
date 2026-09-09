@@ -1920,7 +1920,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         self._density_dirty = True
         # The dedicated flattened-ADP map used for moiety-drag snapping is
         # tied to the same model/reflections and must be recomputed too.
-        self._disorder_density_guide = None
+        self._invalidate_disorder_density_guide()
         self.update()
 
     @property

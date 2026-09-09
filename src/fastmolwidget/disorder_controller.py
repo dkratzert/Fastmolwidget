@@ -78,6 +78,13 @@ class DisorderDragMixin(_Base):
         #: Cached dedicated density map (flattened isotropic ADPs) used only
         #: for snapping a dragged moiety - separate from the displayed map.
         self._disorder_density_guide = None
+        #: The worker thread building that guide, or ``None`` when idle.  The
+        #: map is computed off the UI thread so the first frame of a drag is
+        #: not blocked on a full structure-factor summation and FFT.
+        self._disorder_density_thread = None
+        #: Bumped whenever the guide is invalidated, so a computation still in
+        #: flight for the previous model/reflections discards its stale result.
+        self._disorder_density_generation = 0
         #: Which atoms have been split into a part-2 copy, and how.
         self._disorder_split = DisorderSplit()
         #: Index of the atom being freely repositioned (Ctrl+Shift+drag), or
@@ -405,20 +412,58 @@ class DisorderDragMixin(_Base):
     # ------------------------------------------------------------------
 
     def _get_disorder_density_guide(self):
-        """Lazily compute and cache the flattened-ADP density map for snapping.
+        """Return the flattened-ADP snapping guide, computing it in the
+        background when it is not ready yet.
+
+        The guide is a full residual-density map (a structure-factor summation
+        plus an FFT) that can take a noticeable fraction of a second - far too
+        long to build on the thread that has to draw the first frame of the
+        drag.  So on the first drag this returns ``None`` immediately (the
+        moiety follows the cursor straight away, just without snapping) and
+        kicks the map off on a daemon worker thread via
+        :meth:`_start_disorder_density_guide`; density guidance switches itself
+        on a fraction of a second later, once the worker has filled in the
+        active session's ``density`` attribute.
 
         Uses the same model/reflection sources as the displayed residual
         density (``_density_sources``, from
         :class:`~fastmolwidget.molecule_base.ModelSourceMixin`), but with every
         ADP forced isotropic (see
         :func:`~fastmolwidget.density.force_isotropic_adps`) so a refined ADP
-        does not bias the shape of the alternate-site peak.  Returns ``None``
-        (dragging still works, just without guidance) when no model or
-        reflections are available or the map cannot be computed.
+        does not bias the shape of the alternate-site peak.  Stays ``None`` for
+        the whole drag when no model or reflections are available or the map
+        cannot be computed.
         """
         if self._disorder_density_guide is not None:
             return self._disorder_density_guide
+        self._start_disorder_density_guide()
+        return None
 
+    def _start_disorder_density_guide(self) -> None:
+        """Start (or leave running) the background guide computation."""
+        import threading
+
+        thread = self._disorder_density_thread
+        if thread is not None and thread.is_alive():
+            return  # already being computed
+        thread = threading.Thread(
+            target=self._compute_disorder_density_guide,
+            args=(self._disorder_density_generation,),
+            name='disorder-density-guide',
+            daemon=True,
+        )
+        self._disorder_density_thread = thread
+        thread.start()
+
+    def _compute_disorder_density_guide(self, generation: int) -> None:
+        """Worker body: build the guide and attach it to the live drag.
+
+        Runs off the UI thread.  *generation* is the invalidation token that
+        was current when the thread started; the result is thrown away if the
+        model or reflections changed meanwhile (see
+        :meth:`_invalidate_disorder_density_guide`), so a stale map is never
+        cached or wired into a session.
+        """
         from fastmolwidget.density import calculate_residual_density
         from fastmolwidget.disorder_drag import DEFAULT_ISO_U, DensityGuide
 
@@ -427,11 +472,30 @@ class DisorderDragMixin(_Base):
             density_map = calculate_residual_density(
                 model, reflections, iso_u_override=DEFAULT_ISO_U,
             )
+            guide = DensityGuide.from_map(density_map)
         except Exception:  # noqa: BLE001 - guidance is optional
-            return None
+            return
 
-        self._disorder_density_guide = DensityGuide.from_map(density_map)
-        return self._disorder_density_guide
+        if generation != self._disorder_density_generation:
+            return  # invalidated while we were computing
+        self._disorder_density_guide = guide
+        # Attach to the drag already in progress so guidance turns on without
+        # the user having to let go and grab again.  Assigning the attribute is
+        # atomic under the GIL, and MoietyDragSession.update() reads it afresh
+        # every frame, so it is safe to set from this worker thread.
+        session = self._disorder_drag_session
+        if session is not None:
+            session.density = guide
+
+    def _invalidate_disorder_density_guide(self) -> None:
+        """Drop the cached guide and abandon any computation still in flight.
+
+        Call this instead of assigning ``_disorder_density_guide = None``
+        directly whenever the model or reflections change, so a worker that is
+        mid-computation for the old data cannot overwrite the cleared guide.
+        """
+        self._disorder_density_guide = None
+        self._disorder_density_generation += 1
 
     # ------------------------------------------------------------------
     # Host contract - every renderer implements these
