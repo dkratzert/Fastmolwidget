@@ -357,9 +357,25 @@ class DisorderDragMixin(_Base):
 
     def end_drag(self) -> None:
         """Finish any drag in progress.  Positions already applied are kept."""
+        was_dragging = (self._disorder_drag_session is not None
+                        or self._single_atom_drag_index is not None)
         self._disorder_drag_session = None
         self._single_atom_drag_index = None
         self._end_drag_projection()
+        if was_dragging:
+            self._on_drag_finished()
+
+    @property
+    def drag_in_progress(self) -> bool:
+        """``True`` while a moiety or single-atom drag is being updated.
+
+        Hosts use this to skip work in :meth:`_apply_drag_positions` that only
+        has to be correct once the gesture is over - re-contouring the residual
+        density, most of all, which costs far more per frame than everything
+        else put together.
+        """
+        return (self._disorder_drag_session is not None
+                or self._single_atom_drag_index is not None)
 
     # ------------------------------------------------------------------
     # Splitting
@@ -570,8 +586,22 @@ class DisorderDragMixin(_Base):
         ``_view_rotation``/``_view_offset``) must convert here, and must keep
         their cached coordinate arrays and any residual-density geometry
         consistent - which is exactly why this is a hook and not shared code.
+
+        This runs once per mouse-move event, so anything expensive that only
+        has to be right at the end of the gesture should be skipped while
+        :attr:`drag_in_progress` is ``True`` and redone in
+        :meth:`_on_drag_finished`.
         """
         raise NotImplementedError
+
+    def _on_drag_finished(self) -> None:
+        """Called once when a drag ends, after the session has been discarded.
+
+        The place for whatever :meth:`_apply_drag_positions` deferred because
+        it was too expensive to redo on every frame.  :attr:`drag_in_progress`
+        is already ``False`` here, so that deferred work is not skipped again.
+        Optional; does nothing by default.
+        """
 
     def _on_split_parts_changed(self) -> None:
         """Called after a split added a new disorder part.

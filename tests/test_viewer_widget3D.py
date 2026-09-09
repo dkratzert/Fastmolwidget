@@ -2286,3 +2286,157 @@ def test_riding_hydrogen_has_no_tensor_3d():
     for show in (True, False):
         widget.show_adps(show)
         assert not any(a.u_cart is None for a in widget._adp_draw_list)
+
+
+# ------------------------------------------------------------------
+# Vectorised geometry builders
+# ------------------------------------------------------------------
+
+def _reference_cylinder(p1, p2, radius, color, n_seg=20, selected=False):
+    """Straightforward scalar cylinder mesh, as the builder used to do it.
+
+    Kept here purely as the reference the vectorised ``_make_cylinders`` is
+    checked against - a bond loop like this cost 0.13 ms *per bond*, which is
+    why the real implementation batches every bond into one set of array
+    operations.
+    """
+    axis = p2 - p1
+    length = float(np.linalg.norm(axis))
+    if length < 1e-6:
+        return None, None
+    u = axis / length
+    ref = np.array([1.0, 0.0, 0.0] if abs(u[0]) < 0.9 else [0.0, 1.0, 0.0],
+                   dtype=np.float32)
+    v = np.cross(u, ref)
+    v = v / np.linalg.norm(v)
+    w = np.cross(u, v)
+
+    angles = np.linspace(0.0, 2.0 * np.pi, n_seg, endpoint=False)
+    normals = (np.cos(angles)[:, None] * v[None, :]
+               + np.sin(angles)[:, None] * w[None, :])
+
+    verts = np.zeros((2 * n_seg, 10), dtype=np.float32)
+    sel_flag = 1.0 if selected else 0.0
+    for i in range(n_seg):
+        verts[i, :3] = p1 + radius * normals[i]
+        verts[i, 3:6] = normals[i]
+        verts[i, 6:9] = color
+        verts[i, 9] = sel_flag
+        verts[n_seg + i, :3] = p2 + radius * normals[i]
+        verts[n_seg + i, 3:6] = normals[i]
+        verts[n_seg + i, 6:9] = color
+        verts[n_seg + i, 9] = sel_flag
+
+    idx = []
+    for i in range(n_seg):
+        next_i = (i + 1) % n_seg
+        idx.extend([i, i + n_seg, next_i, next_i, i + n_seg, next_i + n_seg])
+    return verts, np.array(idx, dtype=np.uint32)
+
+
+def test_batched_cylinders_match_the_scalar_mesh():
+    """Batching bonds must not change a single vertex of the mesh."""
+    rng = np.random.default_rng(0)
+    for trial in range(200):
+        p1 = (rng.normal(size=3) * 5).astype(np.float32)
+        p2 = (rng.normal(size=3) * 5).astype(np.float32)
+        color = tuple(rng.random(3).astype(np.float32))
+        selected = trial % 3 == 0
+        radius = float(rng.random() * 0.2 + 0.01)
+
+        expected_v, expected_i = _reference_cylinder(
+            p1, p2, radius, color, selected=selected,
+        )
+        got_v, got_i = molecule3d._make_cylinder(
+            p1, p2, radius, color, selected=selected,
+        )
+        assert np.array_equal(got_i, expected_i)
+        # float32 round-off only; the maths itself is identical.
+        assert got_v == pytest.approx(expected_v, abs=1e-5)
+
+
+def test_batched_cylinders_handle_axis_aligned_bonds():
+    """The perpendicular-vector choice must survive axis-aligned bonds."""
+    for direction in ([1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, 0, 0]):
+        p1 = np.zeros(3, dtype=np.float32)
+        p2 = np.array(direction, dtype=np.float32)
+        expected_v, expected_i = _reference_cylinder(p1, p2, 0.1, (0.2, 0.3, 0.4))
+        got_v, got_i = molecule3d._make_cylinder(p1, p2, 0.1, (0.2, 0.3, 0.4))
+        assert np.array_equal(got_i, expected_i)
+        assert got_v == pytest.approx(expected_v, abs=1e-5)
+        assert np.isfinite(got_v).all()
+
+
+def test_batched_cylinders_drop_degenerate_bonds():
+    """A zero-length bond has no mesh and must not poison its neighbours."""
+    verts, idx, keep = molecule3d._make_cylinders(
+        np.array([[0, 0, 0], [1, 2, 3], [0, 0, 0]], dtype=np.float32),
+        np.array([[1, 0, 0], [1, 2, 3], [0, 1, 0]], dtype=np.float32),
+        0.1,
+        np.tile(np.array([0.2, 0.3, 0.4], dtype=np.float32), (3, 1)),
+    )
+    assert list(keep) == [True, False, True]
+    assert len(verts) == 2
+    assert np.isfinite(verts).all()
+    # Indices stay contiguous across the surviving bonds.
+    assert idx.max() == verts.shape[0] * verts.shape[1] - 1
+
+
+def test_sphere_and_cylinder_geometry_survive_a_real_structure():
+    """The vectorised builders produce sane buffers for a loaded file."""
+    widget = _load3d(data / "p21c.cif")
+    widget._build_geometry()
+
+    assert widget._sphere_count > 0
+    assert widget._sphere_verts.size == widget._sphere_count // 6 * 4 * 10
+    assert np.isfinite(widget._sphere_verts).all()
+
+    assert widget._cylinder_count > 0
+    assert np.isfinite(widget._cylinder_verts).all()
+    assert widget._cylinder_idx.max() < widget._cylinder_verts.size // 10
+
+
+def test_drag_frames_defer_the_density_recontour():
+    """Re-contouring the map costs ~50x a whole drag frame's geometry.
+
+    The map does not depend on the atom positions at all - only the clip
+    region around the visible atoms does - so the surface is rebuilt once on
+    release rather than on every mouse-move event.
+    """
+    widget = _load3d(data / "p21c.cif")
+    widget._density_map = object()  # only its presence is checked here
+
+    rebuilds = []
+    widget._build_density_geometry = lambda: rebuilds.append(1)  # type: ignore[method-assign]
+
+    moved = {0: np.asarray(widget.atoms[0].center, dtype=float) + 0.05}
+
+    widget._single_atom_drag_index = 0  # a drag is now in progress
+    for _ in range(4):
+        widget._apply_drag_positions(moved)
+
+    assert rebuilds == []                       # nothing re-contoured mid-drag
+    assert widget._density_needs_rebuild is True
+
+    widget.end_drag()
+    assert len(rebuilds) == 1                   # exactly once, on release
+    assert widget._density_needs_rebuild is False
+
+    # A second release with nothing pending must not rebuild again.
+    widget.end_drag()
+    assert len(rebuilds) == 1
+
+
+def test_drag_frames_rebuild_density_immediately_outside_a_drag():
+    """Outside a gesture there is nothing to defer to, so rebuild at once."""
+    widget = _load3d(data / "p21c.cif")
+    widget._density_map = object()
+
+    rebuilds = []
+    widget._build_density_geometry = lambda: rebuilds.append(1)  # type: ignore[method-assign]
+
+    widget._apply_drag_positions(
+        {0: np.asarray(widget.atoms[0].center, dtype=float) + 0.05},
+    )
+    assert len(rebuilds) == 1
+    assert widget._density_needs_rebuild is False

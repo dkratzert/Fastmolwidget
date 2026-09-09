@@ -75,6 +75,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
 from fastmolwidget import atoms as _atoms
+from fastmolwidget import shaders as _shaders
 from fastmolwidget.atoms import (
     display_radius_for_element,
     element2color,
@@ -83,6 +84,7 @@ from fastmolwidget.atoms import (
     part_fade as _part_fade,
 )
 from fastmolwidget.disorder_controller import DisorderDragMixin
+from fastmolwidget.disorder_drag import isotropic_u_for_atom_type
 from fastmolwidget.molecule2D import calc_volume
 from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
@@ -90,9 +92,7 @@ from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_STEP,
     ModelSourceMixin,
 )
-from fastmolwidget.disorder_drag import isotropic_u_for_atom_type
 from fastmolwidget.sdm import Atomtuple
-from fastmolwidget import shaders as _shaders
 
 # Backwards-compatible aliases: the disorder-part colouring now lives in the
 # Qt-free atoms module so every renderer can share it.
@@ -165,63 +165,112 @@ def _normalize_rgb_color(color: QtGui.QColor | str | tuple[float, float, float] 
     )
 
 
-def _make_cylinder(
-    p1: np.ndarray,
-    p2: np.ndarray,
-    radius: float,
-    color: tuple[float, float, float],
-    n_seg: int = 20,
-    selected: bool = False,
-) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    """Generate a cylinder mesh between *p1* and *p2*."""
+def _cylinder_index_template(n_seg: int) -> np.ndarray:
+    """Side-surface triangle indices for a single ``n_seg``-segment cylinder."""
+    i = np.arange(n_seg, dtype=np.uint32)
+    next_i = (i + 1) % n_seg
+    b0, b1 = i, next_i
+    t0, t1 = i + n_seg, next_i + n_seg
+    return np.stack([b0, t0, b1, b1, t0, t1], axis=1).ravel()
+
+
+def _make_cylinders(
+        p1: np.ndarray,
+        p2: np.ndarray,
+        radius: float,
+        colors: np.ndarray,
+        n_seg: int = 20,
+        selected: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Generate the meshes of *many* cylinders at once.
+
+    Every bond produces the same fixed number of vertices and indices, so the
+    whole bond list is one set of array operations rather than a Python loop
+    per bond - which is what the per-frame cost of a moiety drag is dominated
+    by (see :meth:`MoleculeWidget3D._build_cylinder_geometry`).
+
+    :param p1: ``(B, 3)`` start points, one row per bond.
+    :param p2: ``(B, 3)`` end points.
+    :param radius: Cylinder radius, shared by all bonds.
+    :param colors: ``(B, 3)`` RGB colour per bond.
+    :param n_seg: Number of segments around each cylinder.
+    :param selected: Optional ``(B,)`` selection flags (0.0 / 1.0).
+    :returns: ``(vertices, indices, keep)`` where *vertices* is
+        ``(K, 2*n_seg, 10)``, *indices* is ``(K, n_seg*6)`` already offset for
+        concatenation, and *keep* is the boolean mask of which input bonds were
+        long enough to be meshed at all (degenerate ones are dropped, exactly
+        as the single-cylinder path does).
+    """
+    p1 = np.asarray(p1, dtype=np.float32).reshape(-1, 3)
+    p2 = np.asarray(p2, dtype=np.float32).reshape(-1, 3)
+    colors = np.asarray(colors, dtype=np.float32).reshape(-1, 3)
+
     axis = p2 - p1
-    length = float(np.linalg.norm(axis))
-    if length < 1e-6:
-        return None, None
+    length = np.linalg.norm(axis, axis=1)
+    keep = length >= 1e-6
+    if not keep.all():
+        p1, p2, axis, length = p1[keep], p2[keep], axis[keep], length[keep]
+        colors = colors[keep]
+        if selected is not None:
+            selected = np.asarray(selected)[keep]
 
-    u = axis / length
+    n = len(p1)
+    if n == 0:
+        return (np.empty((0, 2 * n_seg, 10), dtype=np.float32),
+                np.empty((0, n_seg * 6), dtype=np.uint32), keep)
 
-    # Two vectors perpendicular to the cylinder axis.
-    if abs(u[0]) < 0.9:
-        v = np.cross(u, np.array([1.0, 0.0, 0.0], dtype=np.float32))
-    else:
-        v = np.cross(u, np.array([0.0, 1.0, 0.0], dtype=np.float32))
-    v = v / np.linalg.norm(v)
+    u = axis / length[:, None]
+    # A reference direction that is never (anti)parallel to the axis, so the
+    # cross product below cannot collapse - the same choice the scalar path
+    # makes, just selected per bond.
+    ref = np.where(
+        (np.abs(u[:, 0]) < 0.9)[:, None],
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        np.array([0.0, 1.0, 0.0], dtype=np.float32),
+    )
+    v = np.cross(u, ref)
+    v /= np.linalg.norm(v, axis=1)[:, None]
     w = np.cross(u, v)
 
     angles = np.linspace(0.0, 2.0 * np.pi, n_seg, endpoint=False)
-    cos_a = np.cos(angles)
-    sin_a = np.sin(angles)
+    cos_a = np.cos(angles)[None, :, None]
+    sin_a = np.sin(angles)[None, :, None]
+    # (n, n_seg, 3) outward segment normals.
+    normals = cos_a * v[:, None, :] + sin_a * w[:, None, :]
 
-    # Outward segment normals.
-    normals = cos_a[:, None] * v[None, :] + sin_a[:, None] * w[None, :]  # (n_seg, 3)
+    verts = np.empty((n, 2 * n_seg, 10), dtype=np.float32)
+    verts[:, :n_seg, 0:3] = p1[:, None, :] + radius * normals
+    verts[:, n_seg:, 0:3] = p2[:, None, :] + radius * normals
+    verts[:, :n_seg, 3:6] = normals
+    verts[:, n_seg:, 3:6] = normals
+    verts[:, :, 6:9] = colors[:, None, :]
+    if selected is None:
+        verts[:, :, 9] = 0.0
+    else:
+        verts[:, :, 9] = np.asarray(selected, dtype=np.float32)[:, None]
 
-    verts = np.zeros((2 * n_seg, 10), dtype=np.float32)
-    sel_flag = 1.0 if selected else 0.0
+    offsets = (np.arange(n, dtype=np.uint32) * (2 * n_seg))[:, None]
+    idx = _cylinder_index_template(n_seg)[None, :] + offsets
+    return verts, idx, keep
 
-    # Bottom ring.
-    for i in range(n_seg):
-        verts[i, :3] = p1 + radius * normals[i]
-        verts[i, 3:6] = normals[i]
-        verts[i, 6:9] = color
-        verts[i, 9] = sel_flag
 
-    # Top ring.
-    for i in range(n_seg):
-        verts[n_seg + i, :3] = p2 + radius * normals[i]
-        verts[n_seg + i, 3:6] = normals[i]
-        verts[n_seg + i, 6:9] = color
-        verts[n_seg + i, 9] = sel_flag
-
-    # Side-surface triangles.
-    idx_list = []
-    for i in range(n_seg):
-        next_i = (i + 1) % n_seg
-        b0, b1 = i, next_i
-        t0, t1 = i + n_seg, next_i + n_seg
-        idx_list.extend([b0, t0, b1, b1, t0, t1])
-
-    return verts, np.array(idx_list, dtype=np.uint32)
+def _make_cylinder(
+        p1: np.ndarray,
+        p2: np.ndarray,
+        radius: float,
+        color: tuple[float, float, float],
+        n_seg: int = 20,
+        selected: bool = False,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """Generate a cylinder mesh between *p1* and *p2*."""
+    verts, idx, keep = _make_cylinders(
+        np.asarray(p1)[None, :], np.asarray(p2)[None, :], radius,
+        np.asarray(color, dtype=np.float32)[None, :], n_seg,
+        selected=np.array([1.0 if selected else 0.0], dtype=np.float32),
+    )
+    if not keep[0]:
+        return None, None
+    return verts[0], idx[0]
 
 
 # ---------------------------------------------------------------------------
@@ -239,14 +288,14 @@ class _Atom3D:
     ]
 
     def __init__(
-        self,
-        x: float,
-        y: float,
-        z: float,
-        label: str,
-        type_: str,
-        part: int,
-        u_eq: float | None = None,
+            self,
+            x: float,
+            y: float,
+            z: float,
+            label: str,
+            type_: str,
+            part: int,
+            u_eq: float | None = None,
     ) -> None:
         self.center = np.array([x, y, z], dtype=np.float32)
         self.label = label
@@ -464,6 +513,10 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         self._density_pos_count: int = 0
         self._density_neg_count: int = 0
         self._density_dirty: bool = False
+        #: Set when a drag moved atoms while the density cage was displayed,
+        #: so the surface is re-clipped once the gesture ends instead of on
+        #: every frame (see :meth:`_apply_drag_positions`).
+        self._density_needs_rebuild: bool = False
 
         # ADP atoms for batched ellipsoid draw call
         self._adp_draw_list: list[_Atom3D] = []
@@ -767,8 +820,8 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         painter.fillRect(self.rect(), QtGui.QColor(240, 240, 240))
         painter.setPen(QtGui.QColor(80, 80, 80))
         msg = (
-            "3D OpenGL rendering unavailable.\n"
-            + self._gl_fail_reason
+                "3D OpenGL rendering unavailable.\n"
+                + self._gl_fail_reason
         )
         painter.drawText(
             self.rect(), Qt.AlignmentFlag.AlignCenter, msg
@@ -842,31 +895,35 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             return
 
         # Vertex layout: [cx, cy, cz, r, g, b, radius, corner_x, corner_y, selected]
-        # 10 floats per vertex, 4 vertices per atom, 6 indices per atom
-        verts = np.zeros((n * 4, 10), dtype=np.float32)
-        idx = np.zeros(n * 6, dtype=np.uint32)
+        # 10 floats per vertex, 4 vertices per atom, 6 indices per atom.  Built
+        # as (n, 4, 10) so every attribute is one broadcast against the four
+        # quad corners instead of a Python loop over n*4 vertices.
+        verts = np.empty((n, 4, 10), dtype=np.float32)
+        verts[:, :, 0:3] = np.array(
+            [a.center for a in sphere_atoms], dtype=np.float32,
+        )[:, None, :]
+        verts[:, :, 3:6] = np.array(
+            [self._atom_color(a) for a in sphere_atoms], dtype=np.float32,
+        )[:, None, :]
+        verts[:, :, 6] = np.array(
+            [
+                sqrt(a.u_iso) * _ADP_SCALE
+                if self._show_adps and a.u_iso is not None
+                else a.display_radius
+                for a in sphere_atoms
+            ], dtype=np.float32,
+        )[:, None]
+        verts[:, :, 7:9] = corners[None, :, :]
+        verts[:, :, 9] = np.array(
+            [1.0 if a.label in self.selected_atoms else 0.0 for a in sphere_atoms],
+            dtype=np.float32,
+        )[:, None]
 
-        for i, atom in enumerate(sphere_atoms):
-            c = atom.center
-            is_selected = atom.label in self.selected_atoms
-            col = self._atom_color(atom)
-            sel_flag = 1.0 if is_selected else 0.0
-            r = (
-                sqrt(atom.u_iso) * _ADP_SCALE
-                if self._show_adps and atom.u_iso is not None
-                else atom.display_radius
-            )
-            for j in range(4):
-                vi = i * 4 + j
-                verts[vi, 0:3] = c
-                verts[vi, 3:6] = col
-                verts[vi, 6] = r
-                verts[vi, 7:9] = corners[j]
-                verts[vi, 9] = sel_flag
-            idx[i * 6: i * 6 + 6] = quad_idx_tpl + i * 4
+        idx = (quad_idx_tpl[None, :]
+               + (np.arange(n, dtype=np.uint32) * 4)[:, None])
 
         self._sphere_verts = verts.ravel()
-        self._sphere_idx = idx
+        self._sphere_idx = idx.ravel()
         self._sphere_count = n * 6
 
     def _build_cylinder_geometry(self) -> None:
@@ -875,9 +932,13 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         # base cylinder radius, scaled by bond_width
         cyl_r = 0.016 * max(0, self.bond_width)
 
-        all_verts: list[np.ndarray] = []
-        all_idx: list[np.ndarray] = []
-        v_offset = 0
+        # Collect the visible bonds first; the meshes themselves are then built
+        # for all of them in one vectorised call, because doing it per bond is
+        # what dominates the cost of a frame while a moiety is being dragged.
+        p1: list[np.ndarray] = []
+        p2: list[np.ndarray] = []
+        colors: list[tuple[float, float, float]] = []
+        sel_flags: list[float] = []
 
         for n1, n2 in self.connections:
             at1 = self.atoms[n1]
@@ -892,30 +953,36 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
 
             bond_key: tuple[str, str] = tuple(sorted((at1.label, at2.label)))  # type: ignore[assignment]
             is_selected = bond_key in self.selected_bonds
-            if is_selected:
-                bond_color = _SEL_COLOR
-            else:
-                bond_color = self._bond_color(at1, at2)
 
-            verts, bond_idx = _make_cylinder(
-                at1.center, at2.center, cyl_r, bond_color, n_seg,
-                selected=is_selected,
-            )
-            if verts is None:
-                continue
+            p1.append(at1.center)
+            p2.append(at2.center)
+            colors.append(_SEL_COLOR if is_selected else self._bond_color(at1, at2))
+            sel_flags.append(1.0 if is_selected else 0.0)
 
-            all_verts.append(verts)
-            all_idx.append(bond_idx + v_offset)
-            v_offset += len(verts)
-
-        if all_verts:
-            self._cylinder_verts = np.concatenate(all_verts, axis=0).ravel()
-            self._cylinder_idx = np.concatenate(all_idx)
-            self._cylinder_count = int(len(self._cylinder_idx))
-        else:
+        if not p1:
             self._cylinder_verts = np.empty(0, dtype=np.float32)
             self._cylinder_idx = np.empty(0, dtype=np.uint32)
             self._cylinder_count = 0
+            return
+
+        verts, idx, _keep = _make_cylinders(
+            np.asarray(p1, dtype=np.float32),
+            np.asarray(p2, dtype=np.float32),
+            cyl_r,
+            np.asarray(colors, dtype=np.float32),
+            n_seg,
+            selected=np.asarray(sel_flags, dtype=np.float32),
+        )
+
+        if len(verts) == 0:
+            self._cylinder_verts = np.empty(0, dtype=np.float32)
+            self._cylinder_idx = np.empty(0, dtype=np.uint32)
+            self._cylinder_count = 0
+            return
+
+        self._cylinder_verts = verts.ravel()
+        self._cylinder_idx = idx.ravel()
+        self._cylinder_count = len(self._cylinder_idx)
 
     def _build_ellipsoid_geometry_batched(self) -> None:
         """Pack all ADP ellipsoids into a single VBO for one-call rendering.
@@ -1068,7 +1135,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                     verts[vi, 6:9] = color
                     verts[vi, 9] = sel_flag
                 idx[base_i + f * 6: base_i + f * 6 + 6] = (
-                    face_quad + base_v + f * 4
+                        face_quad + base_v + f * 4
                 )
 
         self._cube_verts = verts.ravel()
@@ -1374,9 +1441,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             painter.end()
 
     def _compose_overlay_image(
-        self,
-        mv: np.ndarray,
-        proj: np.ndarray,
+            self,
+            mv: np.ndarray,
+            proj: np.ndarray,
     ) -> QtGui.QImage | None:
         """Render the full 2-D overlay into a transparent QImage."""
         w = max(1, int(self.width()))
@@ -1410,10 +1477,10 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         return image
 
     def _draw_labels_with_painter(
-        self,
-        painter: QtGui.QPainter,
-        mv: np.ndarray,
-        proj: np.ndarray,
+            self,
+            painter: QtGui.QPainter,
+            mv: np.ndarray,
+            proj: np.ndarray,
     ) -> None:
         """Draw atom labels using an already-active ``QPainter``."""
         if not self.atoms:
@@ -1471,9 +1538,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                 return None
             ndc = clip[:3] / clip[3]
             if not (
-                -1.0 <= ndc[0] <= 1.0
-                and -1.0 <= ndc[1] <= 1.0
-                and -1.0 <= ndc[2] <= 1.0
+                    -1.0 <= ndc[0] <= 1.0
+                    and -1.0 <= ndc[1] <= 1.0
+                    and -1.0 <= ndc[2] <= 1.0
             ):
                 return None
             return (
@@ -1524,10 +1591,10 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
 
         # Bond-distance hover label (only when no atom is hovered).
         if (
-            hover_atom is None
-            and self._hover_bond is not None
-            and self._hover_bond_distance is not None
-            and self._hover_cursor is not None
+                hover_atom is None
+                and self._hover_bond is not None
+                and self._hover_bond_distance is not None
+                and self._hover_cursor is not None
         ):
             self._draw_hover_distance_label(
                 painter,
@@ -1596,28 +1663,28 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
     # ------------------------------------------------------------------
 
     def open_molecule(
-        self,
-        atoms: list[Atomtuple],
-        cell: tuple[float, float, float, float, float, float] | None = None,
-        keep_view: bool = False,
+            self,
+            atoms: list[Atomtuple],
+            cell: tuple[float, float, float, float, float, float] | None = None,
+            keep_view: bool = False,
     ) -> None:
         """Load a new molecule and (unless *keep_view*) reset the view."""
         self._is_packed = False
         self._load_molecule(atoms, cell, keep_view=keep_view)
 
     def grow_molecule(
-        self,
-        atoms: list[Atomtuple],
-        cell: tuple[float, float, float, float, float, float] | None = None,
+            self,
+            atoms: list[Atomtuple],
+            cell: tuple[float, float, float, float, float, float] | None = None,
     ) -> None:
         """Update the displayed molecule while preserving the current view."""
         self._load_molecule(atoms, cell, keep_view=True)
 
     def _load_molecule(
-        self,
-        atoms: list[Atomtuple],
-        cell: tuple[float, float, float, float, float, float] | None,
-        keep_view: bool,
+            self,
+            atoms: list[Atomtuple],
+            cell: tuple[float, float, float, float, float, float] | None,
+            keep_view: bool,
     ) -> None:
         self._cell = cell
 
@@ -1750,8 +1817,8 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                     b * sin(radians(gamma)),
                     c
                     * (
-                        cos(radians(alpha))
-                        - cos(radians(beta)) * cos(radians(gamma))
+                            cos(radians(alpha))
+                            - cos(radians(beta)) * cos(radians(gamma))
                     )
                     / sin(radians(gamma)),
                 ],
@@ -1761,9 +1828,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         )
 
     def _uij_to_cart(
-        self,
-        uvals: tuple[float, float, float, float, float, float],
-        symm_matrix: Optional[np.ndarray],
+            self,
+            uvals: tuple[float, float, float, float, float, float],
+            symm_matrix: Optional[np.ndarray],
     ) -> np.ndarray:
         """Convert fractional *Uij* to a Cartesian ADP tensor."""
         U11, U22, U33, U23, U13, U12 = uvals
@@ -1864,11 +1931,11 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
     # ------------------------------------------------------------------
 
     def show_residual_density(
-        self,
-        hkl_path: object | None = None,
-        level: float | None = None,
-        *,
-        model_path: object | None = None,
+            self,
+            hkl_path: object | None = None,
+            level: float | None = None,
+            *,
+            model_path: object | None = None,
     ) -> None:
         """Compute and display a residual (Fo−Fc) isosurface.
 
@@ -1918,6 +1985,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         self._density_pos_count = 0
         self._density_neg_count = 0
         self._density_dirty = True
+        self._density_needs_rebuild = False
         # The dedicated flattened-ADP map used for moiety-drag snapping is
         # tied to the same model/reflections and must be recomputed too.
         self._invalidate_disorder_density_guide()
@@ -1974,8 +2042,8 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         counts: list[int] = []
         offset = 0
         for verts, edges in self._density_map.isosurfaces(
-            (self._density_level, -self._density_level),
-            atoms=positions, margin=DENSITY_MARGIN,
+                (self._density_level, -self._density_level),
+                atoms=positions, margin=DENSITY_MARGIN,
         ):
             if len(verts) and len(edges):
                 verts_list.append(np.asarray(verts, dtype=np.float32))
@@ -2229,9 +2297,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:
         # Alt/Option + left-click emulates middle-click recentering.
         if (
-            event.button() == Qt.MouseButton.LeftButton
-            and not self._mouse_moved
-            and self._pressPos is not None
+                event.button() == Qt.MouseButton.LeftButton
+                and not self._mouse_moved
+                and self._pressPos is not None
         ):
             # Emulate middle-click recentering.
             if bool(event.modifiers() & Qt.KeyboardModifier.AltModifier):
@@ -2239,9 +2307,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             else:
                 self._handle_click(event)
         elif (
-            event.button() == Qt.MouseButton.MiddleButton
-            and not self._mouse_moved
-            and self._pressPos is not None
+                event.button() == Qt.MouseButton.MiddleButton
+                and not self._mouse_moved
+                and self._pressPos is not None
         ):
             self._handle_middle_click(event)
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2294,7 +2362,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                     if not self.show_hydrogens_flag and (at1.type_ in ("H", "D") or at2.type_ in ("H", "D")):
                         continue
                     if self._visible_parts is not None and (
-                        at1.part not in self._visible_parts or at2.part not in self._visible_parts
+                            at1.part not in self._visible_parts or at2.part not in self._visible_parts
                     ):
                         continue
                     t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
@@ -2307,9 +2375,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                     new_dist = float(np.linalg.norm(a.center - b.center))
 
         changed = (
-            new_atom != self._hover_atom_label
-            or new_bond != self._hover_bond
-            or (new_bond is not None and self._hover_cursor != pos)
+                new_atom != self._hover_atom_label
+                or new_bond != self._hover_bond
+                or (new_bond is not None and self._hover_cursor != pos)
         )
         self._hover_atom_label = new_atom
         self._hover_bond = new_bond
@@ -2637,8 +2705,27 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
 
         self._build_geometry()
         if self._density_map is not None:
-            self._build_density_geometry()
+            if self.drag_in_progress:
+                # Re-contouring the map is by far the most expensive thing in
+                # a drag frame - an order of magnitude more than all the atom
+                # and bond geometry together - and all it would achieve here
+                # is shifting the DENSITY_MARGIN clip region by a fraction of
+                # an Angstrom.  The map itself does not depend on the atom
+                # positions at all, so the cage is left as it is for the
+                # duration of the gesture and re-clipped once on release (see
+                # _on_drag_finished).
+                self._density_needs_rebuild = True
+            else:
+                self._build_density_geometry()
         self.update()
+
+    def _on_drag_finished(self) -> None:
+        """Re-clip the residual density around the atoms' final positions."""
+        if self._density_needs_rebuild:
+            self._density_needs_rebuild = False
+            if self._density_map is not None:
+                self._build_density_geometry()
+                self.update()
 
     def _on_split_parts_changed(self) -> None:
         self.available_parts = frozenset(a.part for a in self.atoms)
@@ -2659,7 +2746,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         )
 
     def _screen_to_world_at_depth(
-        self, x: float, y: float, eye_z: float, mv_inv: np.ndarray,
+            self, x: float, y: float, eye_z: float, mv_inv: np.ndarray,
     ) -> np.ndarray:
         """World-space point under cursor *(x, y)* at a fixed eye-space depth.
 
@@ -2687,11 +2774,11 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         return dx * dx + dy * dy > 25
 
     def _pick_atom_at(
-        self,
-        sx: float,
-        sy: float,
-        *,
-        mv: np.ndarray | None = None,
+            self,
+            sx: float,
+            sy: float,
+            *,
+            mv: np.ndarray | None = None,
     ) -> tuple[_Atom3D | None, float]:
         """Return the front-most atom under screen position *(sx, sy)* and
         its viewspace ray *t*, or ``(None, inf)`` if no atom is hit.  Bonds
@@ -2716,18 +2803,18 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             # Hit test against the *rendered* surface so the entire visible
             # ellipsoid / sphere is selectable.
             if (
-                self._show_adps
-                and atom.u_cart is not None
-                and atom.adp_valid
-                and atom.adp_A_matrix is not None
+                    self._show_adps
+                    and atom.u_cart is not None
+                    and atom.adp_valid
+                    and atom.adp_A_matrix is not None
             ):
                 t = self._ray_ellipsoid_hit_viewspace(
                     ray_origin, ray_dir, atom.center, atom.adp_A_matrix, mv
                 )
             elif (
-                atom.u_cart is not None
-                and not atom.adp_valid
-                and atom.npd_half_edge > 0.0
+                    atom.u_cart is not None
+                    and not atom.adp_valid
+                    and atom.npd_half_edge > 0.0
             ):
                 # Cube placeholder: pick against its bounding sphere
                 # (radius = half_edge × √3).  Slight over-pick at the
@@ -2767,12 +2854,12 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         return origin, direction
 
     def _ray_sphere_hit_viewspace(
-        self,
-        ray_origin: np.ndarray,
-        ray_dir: np.ndarray,
-        world_center: np.ndarray,
-        radius: float,
-        mv: np.ndarray,
+            self,
+            ray_origin: np.ndarray,
+            ray_dir: np.ndarray,
+            world_center: np.ndarray,
+            radius: float,
+            mv: np.ndarray,
     ) -> float | None:
         """Ray–sphere intersection in view space.  Returns parametric *t* or ``None``."""
         c4 = np.array([*world_center, 1.0], dtype=np.float32)
@@ -2793,12 +2880,12 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         return t if t >= 0.0 else None
 
     def _ray_ellipsoid_hit_viewspace(
-        self,
-        ray_origin: np.ndarray,
-        ray_dir: np.ndarray,
-        world_center: np.ndarray,
-        a_matrix: np.ndarray,
-        mv: np.ndarray,
+            self,
+            ray_origin: np.ndarray,
+            ray_dir: np.ndarray,
+            world_center: np.ndarray,
+            a_matrix: np.ndarray,
+            mv: np.ndarray,
     ) -> float | None:
         """Ray–ellipsoid intersection in view space."""
         # Transform the quadratic form into view space.
@@ -2833,13 +2920,13 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         return float(t) if t >= 0.0 else None
 
     def _ray_bond_screen(
-        self,
-        sx: float,
-        sy: float,
-        p1: np.ndarray,
-        p2: np.ndarray,
-        mv: np.ndarray,
-        proj: np.ndarray,
+            self,
+            sx: float,
+            sy: float,
+            p1: np.ndarray,
+            p2: np.ndarray,
+            mv: np.ndarray,
+            proj: np.ndarray,
     ) -> float | None:
         """Return the view-space hit distance for a bond near *(sx, sy)*."""
         w = max(1, self.width())
@@ -2936,7 +3023,7 @@ def _set_float(prog: int, name: bytes, value: float) -> None:
 
 
 def _bind_attrib(
-    prog: int, name: bytes, size: int, stride: int, offset: int
+        prog: int, name: bytes, size: int, stride: int, offset: int
 ) -> None:
     key = (prog, name)
     try:

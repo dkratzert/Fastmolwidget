@@ -1220,3 +1220,112 @@ def test_disorder_controller_imports_no_qt():
         [sys.executable, '-c', code], capture_output=True, text=True, check=True,
     )
     assert result.stdout.strip() == ''
+
+
+# ---------------------------------------------------------------------------
+# Drag responsiveness
+# ---------------------------------------------------------------------------
+
+class _DeferHost(DisorderDragMixin):
+    """Minimal host recording what a drag frame did and when."""
+
+    def __init__(self):
+        self._init_disorder_drag()
+        self.frames = 0
+        self.deferred_rebuilds = 0
+        self.finished = 0
+
+    def _apply_drag_positions(self, positions):
+        self.frames += 1
+        if not self.drag_in_progress:
+            self.deferred_rebuilds += 1
+
+    def _on_drag_finished(self):
+        self.finished += 1
+        self._apply_drag_positions({})
+
+    def _drag_target(self, x, y):
+        return np.array([float(x), float(y), 0.0])
+
+
+def test_drag_in_progress_is_true_only_between_start_and_end():
+    """The flag hosts use to skip per-frame work must track the gesture."""
+    host = _DeferHost()
+    assert host.drag_in_progress is False
+
+    host._single_atom_drag_index = 3
+    assert host.drag_in_progress is True
+
+    host.end_drag()
+    assert host.drag_in_progress is False
+
+
+def test_expensive_work_is_deferred_to_the_end_of_the_drag():
+    """Every frame sees drag_in_progress, and the end-of-drag hook fires once.
+
+    This is what keeps the residual-density re-contour - which costs far more
+    than all the atom and bond geometry together - out of the per-frame path.
+    """
+    host = _DeferHost()
+    host._single_atom_drag_index = 0
+    for step in range(5):
+        host.update_single_atom_drag(float(step), 0.0)
+
+    assert host.frames == 5
+    assert host.deferred_rebuilds == 0  # nothing rebuilt mid-drag
+    assert host.finished == 0
+
+    host.end_drag()
+    assert host.finished == 1
+    assert host.deferred_rebuilds == 1  # rebuilt exactly once, at the end
+
+
+def test_drag_finished_hook_does_not_fire_without_a_drag():
+    """A plain click releases the button too; that must not trigger the hook."""
+    host = _DeferHost()
+    host.end_drag()
+    host.end_drag()
+    assert host.finished == 0
+
+
+def test_density_guide_is_computed_off_the_ui_thread():
+    """The snapping map must not block the first frame of a drag.
+
+    ``_get_disorder_density_guide`` returns ``None`` immediately and hands the
+    (expensive) map to a worker, which then attaches it to the live session.
+    """
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+
+    class SlowHost(_DeferHost):
+        def _density_sources(self, model=None, reflections=None):
+            started.set()
+            release.wait(5)
+            return 'model', None
+
+    host = SlowHost()
+    guide = host._get_disorder_density_guide()
+
+    # Returned without waiting for the (still blocked) computation.
+    assert guide is None
+    assert started.wait(5), 'guide computation never started'
+    release.set()
+    host._disorder_density_thread.join(5)
+    assert not host._disorder_density_thread.is_alive()
+
+
+def test_invalidating_the_guide_discards_an_in_flight_result():
+    """A worker computing for superseded sources must not install its map."""
+    host = _DeferHost()
+    generation = host._disorder_density_generation
+    host._invalidate_disorder_density_guide()
+
+    assert host._disorder_density_guide is None
+    assert host._disorder_density_generation != generation
+
+    # A worker that started before the invalidation writes nothing.
+    host._compute_disorder_density_guide(generation)
+    assert host._disorder_density_guide is None
+
