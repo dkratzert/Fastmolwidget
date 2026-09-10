@@ -820,6 +820,10 @@ DISPLAY_RADIUS_REFERENCE: str = 'C'
 #: slider, so H/D is always the same size everywhere.
 HYDROGEN_DISPLAY_RADIUS: float = 0.123
 
+#: Element symbols drawn with :data:`HYDROGEN_DISPLAY_RADIUS` instead of a
+#: covalent or U-scaled radius.
+HYDROGEN_ELEMENTS: frozenset[str] = frozenset({'H', 'D'})
+
 
 def display_radius_for_element(element: str) -> float:
     """
@@ -840,7 +844,7 @@ def display_radius_for_element(element: str) -> float:
         cleaned = get_atomlabel(element)
     except KeyError:
         cleaned = element
-    if cleaned.capitalize() in ('H', 'D'):
+    if cleaned.capitalize() in HYDROGEN_ELEMENTS:
         return HYDROGEN_DISPLAY_RADIUS
     reference = element2cov[DISPLAY_RADIUS_REFERENCE]
     return ATOM_DISPLAY_RADIUS * get_radius_from_element(cleaned) / reference

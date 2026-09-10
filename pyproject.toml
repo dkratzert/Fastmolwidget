@@ -23,7 +23,7 @@ dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
     "qtpy>=2.4.3",
-    "shelxfile>=25",
+    "shelxfile>=27",
 ]
 
 [project.optional-dependencies]
@@ -63,6 +63,8 @@ dev = [
     "pyside6-stubs",
     "pybind11>=2.13",
     "pillow>=12.2.0",
+    # Embedded Duktape engine: runs the JS bundle in tests without Node.js.
+    "dukpy>=0.6.0",
 ]
 
 doc = [
@@ -72,6 +74,12 @@ doc = [
 
 [project.scripts]
 fastmolwidget = "fastmolwidget:main"
+
+# shelxfile 27 resolves the SHELXL free-variable and riding encodings of an
+# isotropic U (see loader._shelx_u_iso).  Until it is published, development
+# builds take it from the local checkout.
+[tool.uv.sources]
+shelxfile = { path = "../ShelXFile", editable = true }
 
 [build-system]
 # setuptools is used instead of uv_build because it supports C extensions

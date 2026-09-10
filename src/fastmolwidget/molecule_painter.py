@@ -15,7 +15,12 @@ from qtpy.QtGui import (
     QWheelEvent, QRadialGradient, QLinearGradient, QTransform,
 )
 
-from fastmolwidget.atoms import display_radius_for_element, get_radius_from_element, element2color
+from fastmolwidget.atoms import (
+    HYDROGEN_ELEMENTS,
+    display_radius_for_element,
+    element2color,
+    get_radius_from_element,
+)
 from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
     DENSITY_LEVEL_MIN,
@@ -201,6 +206,8 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self.bond_width = 3
         self.labels = True
         self._show_adps = True
+        # Isotropic atoms are scaled by their U value unless switched off.
+        self._scale_isotropic_u = True
         self.show_hydrogens_flag = True
 
         # Part filter
@@ -372,6 +379,24 @@ class MoleculeRendererMixin(ModelSourceMixin):
         """Toggle the display of ADP ellipsoids / isotropic spheres."""
         self._show_adps = value
         self.update()  # type: ignore[misc]
+
+    def set_isotropic_u_scaling(self, value: bool) -> None:
+        """Choose how isotropically refined atoms are sized.
+
+        ``True`` (the default) scales them by their U value, ``False`` draws
+        them at the fixed element display radius. Anisotropic atoms are not
+        affected.
+        """
+        self._scale_isotropic_u = value
+        self.update()  # type: ignore[misc]
+
+    def _sphere_u(self, atom: Atom) -> float | None:
+        """Return the U that sizes *atom*'s sphere, or ``None`` for the radius."""
+        if not self._show_adps or atom.u_iso is None:
+            return None
+        if atom.u_cart is None and not self._scale_isotropic_u:
+            return None
+        return atom.u_iso
 
     # ------------------------------------------------------------------
     # Residual (Fo-Fc) density
@@ -634,6 +659,10 @@ class MoleculeRendererMixin(ModelSourceMixin):
                 except Exception:
                     a.u_cart = None
                     a.u_iso = None
+            if a.u_cart is None:
+                # Isotropically refined atom: scale its sphere by U_iso.
+                u_iso = getattr(at, 'u_iso', None)
+                a.u_iso = float(u_iso) if u_iso else None
             self.atoms.append(a)
 
     # ------------------------------------------------------------------
@@ -826,16 +855,21 @@ class MoleculeRendererMixin(ModelSourceMixin):
         """
         return bool(self._show_adps and atom.u_cart is not None and atom.adp_valid)
 
+    def _uses_fixed_hydrogen_radius(self, atom: Atom) -> bool:
+        """Return ``True`` when *atom* is an H/D drawn at its fixed radius."""
+        return atom.type_ in HYDROGEN_ELEMENTS and not self._draws_adp_ellipsoid(atom)
+
     def get_spherical_radius(self, atom: Atom) -> float:
         """Return an approximate isotropic radius for label-offset calculations."""
         if atom.u_cart is not None and not atom.adp_valid:
             # NPD cube: bounding radius in Angstrom (atoms_size / scale is
             # zoom-invariant, so this is a constant).
             return self.atoms_size * NPD_CUBE_BOUND_FACTOR / self.scale
-        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+        if self._uses_fixed_hydrogen_radius(atom):
             return atom.display_radius
-        if self._show_adps and atom.u_iso is not None:
-            return sqrt(atom.u_iso)
+        u_iso = self._sphere_u(atom)
+        if u_iso is not None:
+            return sqrt(u_iso) * self.adp_scale
         return atom.display_radius
 
     def get_directional_radius(self, atom: Atom, v: np.ndarray) -> float:
@@ -846,7 +880,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
             return atom.display_radius
         if not atom.adp_valid:
             return atom.display_radius
-        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+        if self._uses_fixed_hydrogen_radius(atom):
             return atom.display_radius
         if self._show_adps and atom.u_inv is not None:
             inv_d = 1.0 / d
@@ -858,8 +892,9 @@ class MoleculeRendererMixin(ModelSourceMixin):
             val = ux * tx + uy * ty + uz * tz
             if val > 0:
                 return self.adp_scale / sqrt(val)
-        if self._show_adps and atom.u_iso is not None:
-            return sqrt(atom.u_iso) * self.adp_scale
+        u_iso = self._sphere_u(atom)
+        if u_iso is not None:
+            return sqrt(u_iso) * self.adp_scale
         return atom.display_radius
 
     def get_conntable_from_atoms(self, extra_param: float = 1.2) -> tuple:
@@ -925,7 +960,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         if atom.u_cart is not None and not atom.adp_valid:
             bound = self.atoms_size * NPD_CUBE_BOUND_FACTOR
             return dx ** 2 + dy ** 2 <= bound ** 2
-        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+        if self._uses_fixed_hydrogen_radius(atom):
             radius = atom.display_radius * self.scale
             return dx ** 2 + dy ** 2 <= radius ** 2
         if self._show_adps and atom.u_cart is not None:
@@ -952,8 +987,9 @@ class MoleculeRendererMixin(ModelSourceMixin):
                     local_y = -dx * sin_a + dy * cos_a
                     return (local_x ** 2 / r1 ** 2) + (local_y ** 2 / r2 ** 2) <= 1.0
         circle_size = atom.display_radius * self.scale * 2
-        if self._show_adps and atom.u_iso is not None:
-            circle_size = sqrt(atom.u_iso) * self.scale * self.adp_scale * 2
+        u_iso = self._sphere_u(atom)
+        if u_iso is not None:
+            circle_size = sqrt(u_iso) * self.scale * self.adp_scale * 2
         return dx ** 2 + dy ** 2 <= (circle_size / 2) ** 2
 
     def is_point_near_bond(self, at1: Atom, at2: Atom, px: float, py: float) -> bool:
@@ -1391,7 +1427,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
             # Keep NPD atoms visible in both display modes.
             self._draw_invalid_adp(atom)
             return
-        if atom.type_ in ('H', 'D') and not self._draws_adp_ellipsoid(atom):
+        if self._uses_fixed_hydrogen_radius(atom):
             # H/D without a drawn ellipsoid uses a fixed-size sphere.
             circle_size = atom.display_radius * self.scale * 2
             radius = circle_size / 2
@@ -1449,8 +1485,9 @@ class MoleculeRendererMixin(ModelSourceMixin):
                     return
 
         circle_size = atom.display_radius * self.scale * 2
-        if self._show_adps and atom.u_iso is not None:
-            circle_size = sqrt(atom.u_iso) * self.scale * self.adp_scale * 2
+        u_iso = self._sphere_u(atom)
+        if u_iso is not None:
+            circle_size = sqrt(u_iso) * self.scale * self.adp_scale * 2
         radius = circle_size / 2
         self._painter.save()  # type: ignore[union-attr]
         self._painter.translate(cx, cy)  # type: ignore[union-attr]

@@ -11,7 +11,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
-from fastmolwidget.atoms import display_radius_for_element, element2color
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS, display_radius_for_element, element2color
 from fastmolwidget.molecule2D import calc_volume
 from fastmolwidget.molecule_base import (
     DENSITY_LEVEL_MAX,
@@ -191,7 +191,7 @@ class _Atom3D:
 
         self.u_cart: np.ndarray | None = None
         # Isotropic U (Å²); H/D keeps None unless refined anisotropically.
-        self.u_iso: float | None = u_eq if type_ not in ('H', 'D') else None
+        self.u_iso: float | None = u_eq if type_ not in HYDROGEN_ELEMENTS else None
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
         self.u_eigvecs: np.ndarray | None = None
@@ -299,6 +299,8 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         self._visible_parts: set[int] | None = None
 
         self._show_adps: bool = True
+        # Isotropic atoms are scaled by their U value unless switched off.
+        self._scale_isotropic_u: bool = True
 
         # ---- 3-D view state -----------------------------------------------
         self._rot_matrix: np.ndarray = np.eye(3, dtype=np.float32)
@@ -716,11 +718,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             is_selected = atom.label in self.selected_atoms
             col = _SEL_COLOR if is_selected else atom.color_f
             sel_flag = 1.0 if is_selected else 0.0
-            r = (
-                sqrt(atom.u_iso) * _ADP_SCALE
-                if self._show_adps and atom.u_iso is not None
-                else atom.display_radius
-            )
+            r = self._sphere_radius(atom)
             for j in range(4):
                 vi = i * 4 + j
                 verts[vi, 0:3] = c
@@ -1319,14 +1317,12 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 C_view = R_view @ C_world @ R_view.T
                 C2 = C_view[:2, :2]
                 quad = float(_label_dir2 @ C2 @ _label_dir2)
-                r = sqrt(max(quad, 0.0))
+                r = sqrt(max(quad, 0.0)) * _ADP_SCALE
             elif atom.u_cart is not None and not atom.adp_valid and atom.npd_half_edge > 0.0:
                 # ``u_iso`` may be negative here, so use the cube bound radius.
                 r = _npd_bound_radius(atom)
-            elif self._show_adps and atom.u_iso is not None:
-                r = sqrt(atom.u_iso)
             else:
-                r = atom.display_radius
+                r = self._sphere_radius(atom)
             return r * px_per_angstrom
 
         def project(atom: _Atom3D) -> tuple[int, int] | None:
@@ -1500,7 +1496,8 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             internal_name = base_name if count == 0 else f"{base_name}>>{count}"
             name_counts[base_name] = count + 1
 
-            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part)
+            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part,
+                          u_eq=getattr(at, "u_iso", None))
             symm = getattr(at, "symm_matrix", None)
             if symm is not None:
                 symm_np = np.array(symm, dtype=float)
@@ -1715,6 +1712,33 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         if self.atoms:
             self._build_geometry()
         self.update()
+
+    def set_isotropic_u_scaling(self, value: bool) -> None:
+        """Choose how isotropically refined atoms are sized.
+
+        ``True`` (the default) scales them by their U value, ``False`` draws
+        them at the fixed element display radius. Anisotropic atoms are not
+        affected.
+        """
+        self._scale_isotropic_u = value
+        if self.atoms:
+            self._build_geometry()
+        self.update()
+
+    def _sphere_u(self, atom: _Atom3D) -> float | None:
+        """Return the U that sizes *atom*'s sphere, or ``None`` for the radius."""
+        if not self._show_adps or atom.u_iso is None:
+            return None
+        if atom.u_cart is None and not self._scale_isotropic_u:
+            return None
+        return atom.u_iso
+
+    def _sphere_radius(self, atom: _Atom3D) -> float:
+        """World-space radius of the sphere drawn for *atom*."""
+        u_iso = self._sphere_u(atom)
+        if u_iso is None:
+            return atom.display_radius
+        return sqrt(u_iso) * _ADP_SCALE
 
     def setLabelFont(self, font_size: int) -> None:
         """Set atom label pixel size."""
@@ -2414,11 +2438,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                     ray_origin, ray_dir, atom.center, radius, mv
                 )
             else:
-                radius = (
-                    sqrt(float(atom.u_iso)) * _ADP_SCALE
-                    if self._show_adps and atom.u_iso is not None
-                    else atom.display_radius
-                )
+                radius = self._sphere_radius(atom)
                 t = self._ray_sphere_hit_viewspace(
                     ray_origin, ray_dir, atom.center, radius, mv
                 )

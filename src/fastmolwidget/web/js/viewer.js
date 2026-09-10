@@ -20,6 +20,7 @@ export class MoleculeViewer2D {
     this.widget = new MoleculeWidget2D(canvas, options);
     this._structure = null; // last loaded JSON (fractional, asymmetric unit)
     this._adpByLabel = new Map();
+    this._uIsoByLabel = new Map();
     this._growEnabled = false;
     this._packEnabled = false;
     this._packSymmopIndices = null;
@@ -31,6 +32,7 @@ export class MoleculeViewer2D {
   loadStructure(data) {
     this._structure = data;
     this._adpByLabel = new Map(data.atoms.filter((a) => a.adp).map((a) => [a.label, a.adp]));
+    this._uIsoByLabel = new Map(data.atoms.filter((a) => a.u_iso).map((a) => [a.label, a.u_iso]));
     this.widget.clearResidualDensity();
     // Decode early so toggling density later is immediate.
     this._densityPromise = data.density
@@ -114,7 +116,11 @@ export class MoleculeViewer2D {
         return { label: a.label, type: a.type, x, y, z, part: a.part ?? 0, symm_matrix: null };
       });
     }
-    const withAdp = cartAtoms.map((a) => ({ ...a, adp: this._adpByLabel.get(a.label) ?? null }));
+    const withAdp = cartAtoms.map((a) => ({
+      ...a,
+      adp: this._adpByLabel.get(a.label) ?? null,
+      u_iso: this._uIsoByLabel.get(a.label) ?? null,
+    }));
     this.widget.isPacked = this._packEnabled;
     if (keepView) {
       this.widget.growMolecule({ atoms: withAdp, cell });

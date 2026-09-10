@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from fastmolwidget.tools import to_float
+from fastmolwidget.tools import display_u_iso, to_float
 
 __all__ = [
     'DEFAULT_WEB_GRID_SPACING',
@@ -46,8 +46,9 @@ def export_cif(path: str | Path) -> dict[str, Any]:
             'x': x, 'y': y, 'z': z,
             'part': part or 0,
             'adp': adp_by_label.get(label),
+            'u_iso': display_u_iso(type_, u_iso),
         }
-        for label, type_, x, y, z, part, _occ, _u_iso in cif.atoms_fract
+        for label, type_, x, y, z, part, _occ, u_iso in cif.atoms_fract
     ]
     return {
         'cell': list(cif.cell[:6]),
@@ -88,6 +89,7 @@ def export_shelx(path: str | Path) -> dict[str, Any]:
             'x': x, 'y': y, 'z': z,
             'part': part,
             'adp': adp_by_lp.get((label, part)),
+            'u_iso': display_u_iso(at.element, at.Uiso),
         })
 
     return {

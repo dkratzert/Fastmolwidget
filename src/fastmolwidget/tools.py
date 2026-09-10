@@ -5,7 +5,29 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from fastmolwidget.atoms import get_radius_from_element
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS, get_radius_from_element
+
+#: A U above this is not a displacement parameter but an unresolved SHELX code.
+_MAX_PLAUSIBLE_U_ISO = 5.0
+
+
+def display_u_iso(element: str | None, u_iso: float | None) -> float | None:
+    """Return the isotropic U used to scale an atom's sphere, or ``None``.
+
+    Hydrogen and deuterium keep their fixed display radius, and a non-positive
+    or implausibly large value (an unresolved SHELX encoding) is unusable.
+    """
+    if element and element.capitalize() in HYDROGEN_ELEMENTS:
+        return None
+    if u_iso is None:
+        return None
+    try:
+        value = float(u_iso)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 < value < _MAX_PLAUSIBLE_U_ISO:
+        return None
+    return value
 
 
 def to_float(st: str) -> float | None:
