@@ -7,7 +7,7 @@ from typing import Any, Generator
 
 import gemmi
 
-from fastmolwidget.atoms import atoms
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS, atoms
 from fastmolwidget.tools import grouper, isnumeric
 
 if hasattr(gemmi, 'set_leak_warnings'):
@@ -525,7 +525,7 @@ class CifReader:
     @property
     def hydrogen_atoms_present(self) -> bool:
         for at in self.atomic_struct.sites:
-            if at.type_symbol in ('H', 'D'):
+            if at.type_symbol in HYDROGEN_ELEMENTS:
                 return True
         return False
 
@@ -544,11 +544,7 @@ class CifReader:
 
     def ishydrogen(self, label: str) -> bool:
         """True if ``label`` names H or D."""
-        hydrogen = ('H', 'D')
-        if self._iselement(label) in hydrogen:
-            return True
-        else:
-            return False
+        return self._iselement(label) in HYDROGEN_ELEMENTS
 
     def checksymm(self, symm):
         """Add ``_555`` to symmetry codes without an explicit translation."""

@@ -245,7 +245,9 @@ widget.openMolecule({
       "label": "C1", "type": "C",
       "x": 0.1234, "y": 0.5678, "z": 0.9012,   // FRACTIONAL coordinates
       "part": 0,
-      "adp": [U11, U22, U33, U23, U13, U12]     // or null (isotropic/no ADP)
+      "adp": [U11, U22, U33, U23, U13, U12],    // or null (isotropic/no ADP)
+      "u_iso": 0.0412                           // or null; isotropic U in A^2,
+                                                // only used when "adp" is null
     }
   ],
 
@@ -273,7 +275,7 @@ runs `SDM` in the browser to grow/pack it before handing Cartesian atoms to
 plain XYZ file, or you've already computed Cartesian atoms in Python), skip
 `structure_json`/`viewer.js` and call `MoleculeWidget2D.openMolecule()` directly
 with atoms in the same shape as `Atomtuple` (`label, type, x, y, z, part,
-symm_matrix, adp`), Cartesian Å coordinates.
+symm_matrix, adp, u_iso`), Cartesian Å coordinates.
 
 ## API mapping to `MoleculeWidgetProtocol`
 
@@ -282,6 +284,7 @@ symm_matrix, adp`), Cartesian Å coordinates.
 | `open_molecule(atoms, cell, keep_view)` | `openMolecule({atoms, cell, keepView})` |
 | `clear()`                       | `clear()` |
 | `show_adps(bool)`                | `showAdps(bool)` |
+| `set_isotropic_u_scaling(bool)`  | `setIsotropicUScaling(bool)` |
 | `show_labels(bool)`               | `showLabels(bool)` |
 | `show_hydrogens(bool)`            | `showHydrogens(bool)` |
 | `set_visible_parts(set\|None)`     | `setVisibleParts(Set\|null)` |

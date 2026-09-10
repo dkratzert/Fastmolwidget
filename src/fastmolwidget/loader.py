@@ -9,7 +9,7 @@ from shelxfile import Shelxfile
 from fastmolwidget.cif.cif_file_io import CifReader
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.sdm import Atomtuple
-from fastmolwidget.tools import to_float
+from fastmolwidget.tools import display_u_iso, to_float
 
 
 class MoleculeLoader:
@@ -114,7 +114,8 @@ class MoleculeLoader:
         else:
             atoms = [
                 Atomtuple(label=at.label, type=at.type, x=at.x, y=at.y, z=at.z,
-                          part=at.part, adp=adp_by_label.get(at.label))
+                          part=at.part, adp=adp_by_label.get(at.label),
+                          u_iso=display_u_iso(at.type, at.u_eq))
                 for at in cif.atoms_orth
             ]
         self._widget.open_molecule(
@@ -144,9 +145,16 @@ class MoleculeLoader:
             for dp in cif.displacement_parameters()
         }
         fract_atoms = list(cif.atoms_fract)
+        u_iso_by_label: dict[str, float | None] = {
+            at[0]: display_u_iso(at[1], at[7]) for at in fract_atoms
+        }
         sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
         cart_atoms = sdm.pack_unit_cell(symmop_indices=symmop_indices)
-        return [at._replace(adp=adp_by_label.get(at.label)) for at in cart_atoms]
+        return [
+            at._replace(adp=adp_by_label.get(at.label),
+                        u_iso=u_iso_by_label.get(at.label))
+            for at in cart_atoms
+        ]
 
     @staticmethod
     def _compute_grown_atoms(cif: CifReader) -> list:
@@ -162,10 +170,17 @@ class MoleculeLoader:
         }
         # SDM mutates the atom lists in place.
         fract_atoms = list(cif.atoms_fract)
+        u_iso_by_label: dict[str, float | None] = {
+            at[0]: display_u_iso(at[1], at[7]) for at in fract_atoms
+        }
         sdm = SDM(fract_atoms, cif.symmops, cif.cell, centric=cif.is_centrosymm)
         need_symm = sdm.calc_sdm()
         cart_atoms = sdm.packer(sdm, need_symm)
-        return [at._replace(adp=adp_by_label.get(at.label)) for at in cart_atoms]
+        return [
+            at._replace(adp=adp_by_label.get(at.label),
+                        u_iso=u_iso_by_label.get(at.label))
+            for at in cart_atoms
+        ]
 
     # ------------------------------------------------------------------
     # SHELX .res / .ins loading
@@ -196,6 +211,7 @@ class MoleculeLoader:
         )
 
         adp_by_lp: dict[tuple, tuple] = {}
+        u_iso_by_lp: dict[tuple, float | None] = {}
         # SDM mutates these fractional-coordinate atom lists.
         fract_atoms: list[list] = []
         for at in shx.atoms:
@@ -206,6 +222,7 @@ class MoleculeLoader:
             fract_atoms.append(
                 [label, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
+            u_iso_by_lp[(label, at.part.n)] = display_u_iso(at.element, at.Uiso)
             if not at.is_isotropic:
                 u11, u22, u33, u23, u13, u12 = at.uvals
                 adp_by_lp[(label, at.part.n)] = (u11, u22, u33, u23, u13, u12)
@@ -218,7 +235,8 @@ class MoleculeLoader:
         need_symm = sdm.calc_sdm()
         cart_atoms = sdm.packer(sdm, need_symm)
         return [
-            at._replace(adp=adp_by_lp.get((at.label, at.part)))
+            at._replace(adp=adp_by_lp.get((at.label, at.part)),
+                        u_iso=u_iso_by_lp.get((at.label, at.part)))
             for at in cart_atoms
         ]
 
@@ -244,6 +262,7 @@ class MoleculeLoader:
         )
 
         adp_by_lp: dict[tuple, tuple] = {}
+        u_iso_by_lp: dict[tuple, float | None] = {}
         fract_atoms: list[list] = []
         for at in shx.atoms:
             if at.qpeak:
@@ -253,6 +272,7 @@ class MoleculeLoader:
             fract_atoms.append(
                 [label, at.element, x, y, z, at.part.n, at.occupancy, at.ueq]
             )
+            u_iso_by_lp[(label, at.part.n)] = display_u_iso(at.element, at.Uiso)
             if not at.is_isotropic:
                 u11, u22, u33, u23, u13, u12 = at.uvals
                 adp_by_lp[(label, at.part.n)] = (u11, u22, u33, u23, u13, u12)
@@ -263,7 +283,8 @@ class MoleculeLoader:
         sdm = SDM(fract_atoms, symmops, cell_params, centric=centric)
         cart_atoms = sdm.pack_unit_cell(symmop_indices=symmop_indices)
         return [
-            at._replace(adp=adp_by_lp.get((at.label, at.part)))
+            at._replace(adp=adp_by_lp.get((at.label, at.part)),
+                        u_iso=u_iso_by_lp.get((at.label, at.part)))
             for at in cart_atoms
         ]
 
@@ -326,6 +347,7 @@ class MoleculeLoader:
                 z=z,
                 part=at.part.n,
                 adp=adp_vals,
+                u_iso=display_u_iso(at.element, at.Uiso),
             ))
 
         return atoms, cell_params

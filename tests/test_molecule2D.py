@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from qtpy import QtGui, QtWidgets
 
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS
 from fastmolwidget.cif.cif_file_io import CifReader
 from fastmolwidget.molecule2D import calc_volume, RenderItem, MoleculeWidget
 from fastmolwidget.sdm import Atomtuple
@@ -1032,7 +1033,7 @@ def _load(path: Path) -> MoleculeWidget:
 
 
 def _hydrogens(widget: MoleculeWidget) -> list:
-    return [a for a in widget.atoms if a.type_ in ('H', 'D')]
+    return [a for a in widget.atoms if a.type_ in HYDROGEN_ELEMENTS]
 
 
 def test_anisotropic_hydrogen_keeps_its_tensor():

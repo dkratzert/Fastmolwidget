@@ -7,7 +7,7 @@
  * alignment. Parsing and SDM grow/pack live elsewhere.
  */
 
-import { getElementColor, getRadiusFromElement, displayRadiusForElement } from './elements.js';
+import { HYDROGENS, getElementColor, getRadiusFromElement, displayRadiusForElement } from './elements.js';
 import {
   cross, eigSym3, identity3, inv3, matMul, matVec, norm, normalize, orthonormalize3, transpose, vecAdd, vecScale, vecSub,
 } from './linalg.js';
@@ -15,7 +15,6 @@ import { darker, lighter } from './color.js';
 import { buildConnTable } from './conntable.js';
 import { calcVolume } from './symmetry.js';
 
-const HYDROGENS = new Set(['H', 'D']);
 const AUTO_ZOOM_PADDING = 1.1;
 
 /** Half-edge of the NPD placeholder cube, as a fraction of `atomsSize`. */
@@ -161,6 +160,8 @@ export class MoleculeWidget2D extends EventTarget {
     this.bondWidth = 3;
     this.labels = false;
     this.showAdpsFlag = true;
+    // Isotropic atoms are scaled by their U value unless switched off.
+    this.scaleIsotropicUFlag = true;
     this.showHydrogensFlag = true;
 
     this.availableParts = new Set();
@@ -263,6 +264,28 @@ export class MoleculeWidget2D extends EventTarget {
   showAdps(value) {
     this.showAdpsFlag = value;
     this.update();
+  }
+
+  /**
+   * Scale isotropically refined atoms by their U value (`true`, the default)
+   * or draw them at the fixed element display radius (`false`).
+   * Anisotropic atoms are not affected.
+   * @param {boolean} value
+   */
+  setIsotropicUScaling(value) {
+    this.scaleIsotropicUFlag = value;
+    this.update();
+  }
+
+  /**
+   * The U that sizes an atom's sphere, or `null` for the element radius.
+   * @param {Atom} atom
+   * @returns {number|null}
+   */
+  _sphereU(atom) {
+    if (!this.showAdpsFlag || atom.uIso == null) return null;
+    if (!atom.uCart && !this.scaleIsotropicUFlag) return null;
+    return atom.uIso;
   }
 
   setVisibleParts(parts) {
@@ -436,6 +459,10 @@ export class MoleculeWidget2D extends EventTarget {
           a.uCart = null;
           a.uIso = null;
         }
+      }
+      if (!a.uCart) {
+        // Isotropically refined atom: scale its sphere by U_iso.
+        a.uIso = at.u_iso ? Number(at.u_iso) : null;
       }
       this.atoms.push(a);
     }
@@ -765,7 +792,7 @@ export class MoleculeWidget2D extends EventTarget {
       return (this.atomsSize * NPD_CUBE_BOUND_FACTOR) / this.scale;
     }
     if (HYDROGENS.has(atom.type) && !this._drawsAdpEllipsoid(atom)) return atom.displayRadius;
-    if (this.showAdpsFlag && atom.uIso != null) return Math.sqrt(atom.uIso);
+    { const u = this._sphereU(atom); if (u != null) return Math.sqrt(u) * this.adpScale; }
     return atom.displayRadius;
   }
 
@@ -780,7 +807,7 @@ export class MoleculeWidget2D extends EventTarget {
       const val = u[0] * t[0] + u[1] * t[1] + u[2] * t[2];
       if (val > 0) return this.adpScale / Math.sqrt(val);
     }
-    if (this.showAdpsFlag && atom.uIso != null) return Math.sqrt(atom.uIso) * this.adpScale;
+    { const u = this._sphereU(atom); if (u != null) return Math.sqrt(u) * this.adpScale; }
     return atom.displayRadius;
   }
 
@@ -816,7 +843,7 @@ export class MoleculeWidget2D extends EventTarget {
       }
     }
     let circleSize = atom.displayRadius * this.scale * 2;
-    if (this.showAdpsFlag && atom.uIso != null) circleSize = Math.sqrt(atom.uIso) * this.scale * this.adpScale * 2;
+    { const u = this._sphereU(atom); if (u != null) circleSize = Math.sqrt(u) * this.scale * this.adpScale * 2; }
     return dx * dx + dy * dy <= (circleSize / 2) ** 2;
   }
 
@@ -1321,7 +1348,7 @@ export class MoleculeWidget2D extends EventTarget {
     }
 
     let circleSize = atom.displayRadius * this.scale * 2;
-    if (this.showAdpsFlag && atom.uIso != null) circleSize = Math.sqrt(atom.uIso) * this.scale * this.adpScale * 2;
+    { const u = this._sphereU(atom); if (u != null) circleSize = Math.sqrt(u) * this.scale * this.adpScale * 2; }
     const radius = circleSize / 2;
     if (this.selectedAtoms.has(atom.name)) this._drawSelection(ctx, cx, cy, radius, radius, 0);
     ctx.save();

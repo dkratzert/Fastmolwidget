@@ -77,6 +77,7 @@ from qtpy.QtCore import Qt
 from fastmolwidget import atoms as _atoms
 from fastmolwidget import shaders as _shaders
 from fastmolwidget.atoms import (
+    HYDROGEN_ELEMENTS,
     display_radius_for_element,
     element2color,
     fade_towards_white as _fade_towards_white,
@@ -313,7 +314,7 @@ class _Atom3D:
         # Isotropic U (Å²); H/D keeps None unless refined anisotropically, so
         # hydrogen always draws at the fixed HYDROGEN_DISPLAY_RADIUS like in the
         # 2-D and JS renderers.
-        self.u_iso: float | None = u_eq if type_ not in ('H', 'D') else None
+        self.u_iso: float | None = u_eq if type_ not in HYDROGEN_ELEMENTS else None
         self.adp_valid: bool = True
         self.u_eigvals: np.ndarray | None = None
         self.u_eigvecs: np.ndarray | None = None
@@ -444,6 +445,8 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         self._visible_parts: set[int] | None = None
 
         self._show_adps: bool = True
+        # Isotropic atoms are scaled by their U value unless switched off.
+        self._scale_isotropic_u: bool = True
 
         # ---- 3-D view state -----------------------------------------------
         self._rot_matrix: np.ndarray = np.eye(3, dtype=np.float32)
@@ -876,7 +879,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         sphere_atoms: list[_Atom3D] = []
 
         for atom in self.atoms:
-            if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
+            if not self.show_hydrogens_flag and atom.type_ in HYDROGEN_ELEMENTS:
                 continue
             if self._visible_parts is not None and atom.part not in self._visible_parts:
                 continue
@@ -906,12 +909,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             [self._atom_color(a) for a in sphere_atoms], dtype=np.float32,
         )[:, None, :]
         verts[:, :, 6] = np.array(
-            [
-                sqrt(a.u_iso) * _ADP_SCALE
-                if self._show_adps and a.u_iso is not None
-                else a.display_radius
-                for a in sphere_atoms
-            ], dtype=np.float32,
+            [self._sphere_radius(a) for a in sphere_atoms], dtype=np.float32,
         )[:, None]
         verts[:, :, 7:9] = corners[None, :, :]
         verts[:, :, 9] = np.array(
@@ -945,7 +943,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             at2 = self.atoms[n2]
 
             if not self.show_hydrogens_flag:
-                if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                if at1.type_ in HYDROGEN_ELEMENTS or at2.type_ in HYDROGEN_ELEMENTS:
                     continue
             if self._visible_parts is not None:
                 if at1.part not in self._visible_parts or at2.part not in self._visible_parts:
@@ -1488,7 +1486,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
 
         w = max(1, self.width())
         h = max(1, self.height())
-        hydrogens = ("H", "D")
+        hydrogens = HYDROGEN_ELEMENTS
 
         base_size = max(1, int(self.fontsize))
         hover_size = base_size + 4  # enlarge hovered label
@@ -1520,14 +1518,12 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                 C_view = R_view @ C_world @ R_view.T
                 C2 = C_view[:2, :2]
                 quad = float(_label_dir2 @ C2 @ _label_dir2)
-                r = sqrt(max(quad, 0.0))
+                r = sqrt(max(quad, 0.0)) * _ADP_SCALE
             elif atom.u_cart is not None and not atom.adp_valid and atom.npd_half_edge > 0.0:
                 # ``u_iso`` may be negative here, so use the cube bound radius.
                 r = _npd_bound_radius(atom)
-            elif self._show_adps and atom.u_iso is not None:
-                r = sqrt(atom.u_iso)
             else:
-                r = atom.display_radius
+                r = self._sphere_radius(atom)
             return r * px_per_angstrom
 
         def project(atom: _Atom3D) -> tuple[int, int] | None:
@@ -1705,7 +1701,8 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             internal_name = base_name if count == 0 else f"{base_name}>>{count}"
             name_counts[base_name] = count + 1
 
-            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part)
+            a3d = _Atom3D(at.x, at.y, at.z, internal_name, at.type, at.part,
+                          u_eq=getattr(at, "u_iso", None))
             symm = getattr(at, "symm_matrix", None)
             if symm is not None:
                 symm_np = np.array(symm, dtype=float)
@@ -1921,6 +1918,33 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             self._build_geometry()
         self.update()
 
+    def set_isotropic_u_scaling(self, value: bool) -> None:
+        """Choose how isotropically refined atoms are sized.
+
+        ``True`` (the default) scales them by their U value, ``False`` draws
+        them at the fixed element display radius. Anisotropic atoms are not
+        affected.
+        """
+        self._scale_isotropic_u = value
+        if self.atoms:
+            self._build_geometry()
+        self.update()
+
+    def _sphere_u(self, atom: _Atom3D) -> float | None:
+        """Return the U that sizes *atom*'s sphere, or ``None`` for the radius."""
+        if not self._show_adps or atom.u_iso is None:
+            return None
+        if atom.u_cart is None and not self._scale_isotropic_u:
+            return None
+        return atom.u_iso
+
+    def _sphere_radius(self, atom: _Atom3D) -> float:
+        """World-space radius of the sphere drawn for *atom*."""
+        u_iso = self._sphere_u(atom)
+        if u_iso is None:
+            return atom.display_radius
+        return sqrt(u_iso) * _ADP_SCALE
+
     def setLabelFont(self, font_size: int) -> None:
         """Set atom label pixel size."""
         self.fontsize = max(1, font_size)
@@ -2015,7 +2039,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         """
         positions = [
             atom.center for atom in self.atoms
-            if (self.show_hydrogens_flag or atom.type_ not in ("H", "D"))
+            if (self.show_hydrogens_flag or atom.type_ not in HYDROGEN_ELEMENTS)
                and (self._visible_parts is None
                     or atom.part in self._visible_parts)
         ]
@@ -2129,7 +2153,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             visible_coords = np.array([a.center for a in self.atoms], dtype=np.float64)
         else:
             visible_coords = np.array(
-                [a.center for a in self.atoms if a.type_ not in ('H', 'D')],
+                [a.center for a in self.atoms if a.type_ not in HYDROGEN_ELEMENTS],
                 dtype=np.float64,
             )
         if len(visible_coords) < 2:
@@ -2359,7 +2383,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                 best_pair: tuple[_Atom3D, _Atom3D] | None = None
                 for n1, n2 in self.connections:
                     at1, at2 = self.atoms[n1], self.atoms[n2]
-                    if not self.show_hydrogens_flag and (at1.type_ in ("H", "D") or at2.type_ in ("H", "D")):
+                    if not self.show_hydrogens_flag and (at1.type_ in HYDROGEN_ELEMENTS or at2.type_ in HYDROGEN_ELEMENTS):
                         continue
                     if self._visible_parts is not None and (
                             at1.part not in self._visible_parts or at2.part not in self._visible_parts
@@ -2539,7 +2563,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         for n1, n2 in self.connections:
             at1, at2 = self.atoms[n1], self.atoms[n2]
             if not self.show_hydrogens_flag:
-                if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                if at1.type_ in HYDROGEN_ELEMENTS or at2.type_ in HYDROGEN_ELEMENTS:
                     continue
             t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
             if t is not None and t < best_t:
@@ -2796,7 +2820,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
         best_t = float("inf")
 
         for atom in self.atoms:
-            if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
+            if not self.show_hydrogens_flag and atom.type_ in HYDROGEN_ELEMENTS:
                 continue
             if self._visible_parts is not None and atom.part not in self._visible_parts:
                 continue
@@ -2824,11 +2848,7 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
                     ray_origin, ray_dir, atom.center, radius, mv
                 )
             else:
-                radius = (
-                    sqrt(float(atom.u_iso)) * _ADP_SCALE
-                    if self._show_adps and atom.u_iso is not None
-                    else atom.display_radius
-                )
+                radius = self._sphere_radius(atom)
                 t = self._ray_sphere_hit_viewspace(
                     ray_origin, ray_dir, atom.center, radius, mv
                 )

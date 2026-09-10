@@ -129,6 +129,11 @@ class MoleculeWidgetProtocol(Protocol):
         """Toggle ADP ellipsoids / isotropic spheres."""
         ...
 
+    def set_isotropic_u_scaling(self, value: bool) -> None:
+        """Scale isotropic atoms by their U value (``True``) or by the fixed
+        element display radius (``False``)."""
+        ...
+
     def show_labels(self, value: bool) -> None:
         """Toggle atom-label display."""
         ...

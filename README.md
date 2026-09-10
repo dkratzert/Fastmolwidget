@@ -265,7 +265,7 @@ import Fastmolwidget 1.0
 MoleculeItem { id: mol; anchors.fill: parent }
 ```
 
-The item exposes the same data and display methods as `MoleculeWidget` (see below): `open_molecule`, `clear`, `show_adps`, `show_labels`, `show_hydrogens`, `set_visible_parts`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `setLabelFont`, `set_background_color`, `reset_view`, `align_best_view`, `save_image`.
+The item exposes the same data and display methods as `MoleculeWidget` (see below): `open_molecule`, `clear`, `show_adps`, `set_isotropic_u_scaling`, `show_labels`, `show_hydrogens`, `set_visible_parts`, `set_bond_width`, `set_bond_color`, `set_labels_visible`, `setLabelFont`, `set_background_color`, `reset_view`, `align_best_view`, `save_image`.
 
 ### `MoleculeWidget3D(parent=None)`
 
@@ -293,7 +293,7 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 
 - **`open_molecule(atoms, cell=None, keep_view=False)`**  
   Load a new set of atoms and redraw.
-    - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` directly in the tuple for anisotropic atoms
+    - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None, u_iso=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` directly in the tuple for anisotropic atoms, or `u_iso=U` (Å²) for isotropically refined ones
     - `cell` — optional `(a, b, c, α, β, γ)` tuple; required for ADP rendering
     - `keep_view` — preserve current zoom, rotation, and pan when `True`
 
@@ -305,7 +305,8 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 
 #### Display Methods
 
-- **`show_adps(value: bool)`** — toggle ADP ellipsoid rendering; falls back to isotropic spheres when `False`
+- **`show_adps(value: bool)`** — toggle ADP ellipsoid rendering; atoms with only an isotropic `u_iso` are drawn as spheres of radius `1.5382 · √U_iso` (50 % probability, the same convention as the ellipsoids), and atoms without a usable U keep their element display radius. When `False`, every atom uses its element display radius
+- **`set_isotropic_u_scaling(value: bool)`** — choose how isotropically refined atoms are sized while ADPs are shown: `True` (default) scales them by their U value, `False` draws them at the fixed element display radius. Anisotropic atoms are unaffected
 - **`show_labels(value: bool)`** — show / hide atom labels
 - **`show_hydrogens(value: bool)`** — show / hide hydrogen atoms and bonds
 - **`set_visible_parts(parts: set[int] | None)`** — filter by disorder part; `None` shows all atoms; an empty set hides all atoms; e.g. `set_visible_parts({0, 1})` shows only Part 0 and Part 1
@@ -381,7 +382,7 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 
 - **`open_molecule(atoms, cell=None, keep_view=False)`**  
   Load a new set of atoms and reset (or optionally preserve) the view.
-    - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` for anisotropic atoms
+    - `atoms` — list of `Atomtuple(label, type, x, y, z, part, adp=None, u_iso=None)` in Cartesian coordinates (Å); embed `adp=(U11,U22,U33,U23,U13,U12)` for anisotropic atoms, or `u_iso=U` (Å²) for isotropically refined ones
     - `cell` — optional `(a, b, c, α, β, γ)` tuple of unit-cell parameters (Å / °); required for ADP rendering
     - `keep_view` — when `True`, the current zoom, pan, and rotation are preserved (useful for live updates)
 
@@ -395,7 +396,16 @@ The 2D QPainter renderer. A plain `QWidget` subclass you can drop into any layou
 #### Display Methods
 
 - **`show_adps(value: bool)`**  
-  Toggle ORTEP-style ADP ellipsoid rendering. When `False`, atoms are drawn as isotropic spheres.
+  Toggle ORTEP-style ADP ellipsoid rendering. Atoms with only an isotropic
+  `u_iso` are drawn as spheres of radius `1.5382 · √U_iso` (50 % probability,
+  the same convention as the ellipsoids); atoms without a usable U keep their
+  element display radius. When `False`, every atom uses its element display
+  radius.
+
+- **`set_isotropic_u_scaling(value: bool)`**  
+  Choose how isotropically refined atoms are sized while ADPs are shown:
+  `True` (the default) scales them by their U value, `False` draws them at the
+  fixed element display radius. Anisotropic atoms are unaffected.
 
 - **`show_labels(value: bool)`**  
   Show or hide non-hydrogen atom labels.

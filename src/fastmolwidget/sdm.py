@@ -13,15 +13,16 @@ try:
 except ImportError:
     HAS_CPP = False
 
-from fastmolwidget.atoms import get_radius_from_element
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS, get_radius_from_element
 from fastmolwidget.dsrmath import SymmetryElement, frac_to_cart
 
 if TYPE_CHECKING:
     pass
 
 DEBUG = False
-Atomtuple = namedtuple('Atomtuple', ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix', 'adp'),
-                       defaults=(None, None))
+Atomtuple = namedtuple('Atomtuple',
+                       ('label', 'type', 'x', 'y', 'z', 'part', 'symm_matrix', 'adp', 'u_iso'),
+                       defaults=(None, None, None))
 
 
 class SymmCards:
@@ -113,7 +114,7 @@ class SDM:
 
     def calc_sdm(self) -> list:
         t1 = time.perf_counter()
-        h = {'H', 'D'}
+        h = HYDROGEN_ELEMENTS
         nlen = len(self.symmcards)
 
         symm_m = []
@@ -232,7 +233,7 @@ class SDM:
 
     def collect_needed_symmetry(self) -> list:
         need_symm = []
-        h = ('H', 'D')
+        h = HYDROGEN_ELEMENTS
 
         symm_m = []
         symm_t = []
