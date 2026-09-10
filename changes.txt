@@ -1,6 +1,30 @@
 Fastmolwidget changes
 =====================
 
+v1.5.0
+------
+- New: Atomtuple has a u_iso field (isotropic U in Å², used only when adp is
+  None). While "Show ADP" is on, isotropically refined atoms are drawn as
+  spheres of radius 1.5382·sqrt(U_iso) - the same 50 % probability convention
+  as the ellipsoids - in all three Qt renderers and in JavaScript. Filled in
+  by loader.py/web_export.py through the new tools.display_u_iso(), which
+  skips H/D and any U that is non-positive or >= 5 Å² (an unresolved SHELX
+  code).
+- New: set_isotropic_u_scaling(value) on MoleculeWidget, MoleculeWidget3D,
+  MoleculeQuickItem and MoleculeWidgetProtocol switches that scaling back off
+  (fixed element display radius). Anisotropic atoms are unaffected.
+- Changed: shelxfile >= 27 is now required - v27 is the first release whose
+  atom.Uiso resolves both SHELXL U encodings (the riding code -T and the
+  free-variable form 10*m + p).
+- Changed: hydrogen/deuterium detection goes through the new HYDROGEN_ELEMENTS
+  constant (atoms.py and web/js/elements.js) instead of hardcoded element
+  lists.
+- Changed: the JavaScript bundle tests run in the embedded Duktape engine
+  (dukpy, a dev dependency), so they no longer skip without Node.js; only
+  "node --check" and the public-API surface test still need Node.js.
+- Changed: the dev dependency group self-references the gl3d extra, so
+  "uv sync" installs PyOpenGL and the 3D tests run without an extra flag.
+
 v1.4.0
 ------
 - Changed: atoms drawn without an ADP ellipsoid are sized by their covalent
