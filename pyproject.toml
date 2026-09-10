@@ -75,11 +75,6 @@ doc = [
 [project.scripts]
 fastmolwidget = "fastmolwidget:main"
 
-# shelxfile 27 resolves the SHELXL free-variable and riding encodings of an
-# isotropic U (see loader._shelx_u_iso).  Until it is published, development
-# builds take it from the local checkout.
-[tool.uv.sources]
-shelxfile = { path = "../ShelXFile", editable = true }
 
 [build-system]
 # setuptools is used instead of uv_build because it supports C extensions
