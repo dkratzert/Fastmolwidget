@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from qtpy import QtWidgets
 
-from fastmolwidget.atoms import display_radius_for_element
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS, display_radius_for_element
 from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.molecule3D import _ADP_SCALE, MoleculeWidget3D
@@ -215,7 +215,7 @@ def test_3d_isotropic_atom_is_scaled_by_u_iso():
 def test_cif_isotropic_atoms_carry_u_iso():
     widget = MoleculeWidget()
     MoleculeLoader(widget).load_file(data / 'p21c.cif')
-    isotropic = [a for a in widget.atoms if a.u_cart is None and a.type_ not in ('H', 'D')]
+    isotropic = [a for a in widget.atoms if a.u_cart is None and a.type_ not in HYDROGEN_ELEMENTS]
     assert isotropic, 'p21c.cif should contain isotropically refined non-H atoms'
     assert all(a.u_iso is not None and a.u_iso > 0 for a in isotropic)
     # Hydrogens keep their fixed sphere.
@@ -258,5 +258,5 @@ def test_web_export_contains_u_iso():
     by_label = {atom['label']: atom for atom in exported['atoms']}
     assert any(atom['u_iso'] for atom in exported['atoms'])
     assert all(atom['u_iso'] is None
-               for atom in exported['atoms'] if atom['type'] in ('H', 'D'))
+               for atom in exported['atoms'] if atom['type'] in HYDROGEN_ELEMENTS)
     assert by_label['Ga1']['u_iso'] == pytest.approx(0.02486, abs=1e-5)

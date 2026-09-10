@@ -476,7 +476,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
             return None
         visible = [
             index for index, atom in enumerate(self.atoms)
-            if (self.show_hydrogens_flag or atom.type_ not in ('H', 'D'))
+            if (self.show_hydrogens_flag or atom.type_ not in HYDROGEN_ELEMENTS)
             and (self._visible_parts is None or atom.part in self._visible_parts)
         ]
         if not visible:
@@ -719,7 +719,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
             visible = np.arange(len(self.atoms))
         else:
             visible = np.array(
-                [i for i, at in enumerate(self.atoms) if at.type_ not in ('H', 'D')],
+                [i for i, at in enumerate(self.atoms) if at.type_ not in HYDROGEN_ELEMENTS],
                 dtype=np.intp,
             )
         if len(visible) < 2:
@@ -1044,8 +1044,8 @@ class MoleculeRendererMixin(ModelSourceMixin):
                 front_z = float('inf')
                 for item in self.objects:
                     if not self.show_hydrogens_flag:
-                        if (item.atom1.type_ in ('H', 'D')
-                                or (item.is_bond and item.atom2.type_ in ('H', 'D'))):
+                        if (item.atom1.type_ in HYDROGEN_ELEMENTS
+                                or (item.is_bond and item.atom2.type_ in HYDROGEN_ELEMENTS)):
                             continue
                     if item.is_bond:
                         if self.is_point_near_bond(item.atom1, item.atom2, x, y):
@@ -1183,7 +1183,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         for item in self.objects:
             if item.is_bond:
                 continue
-            if not self.show_hydrogens_flag and item.atom1.type_ in ('H', 'D'):
+            if not self.show_hydrogens_flag and item.atom1.type_ in HYDROGEN_ELEMENTS:
                 continue
             if self.is_point_inside_atom(item.atom1, px, py):
                 if item.z_order < front_z:
@@ -1203,7 +1203,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
     def _update_hover(self, px: float, py: float) -> None:
         if not self.atoms:
             return
-        hydrogens = ('H', 'D')
+        hydrogens = HYDROGEN_ELEMENTS
         new_atom: str | None = None
         new_bond: tuple[str, str] | None = None
         new_dist: float | None = None
@@ -1263,7 +1263,7 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self.cy_global = self.screen_center[1] - self.molecule_center[1] * self.scale
         self._cached_adp_line_width = self._adp_intersection_line_width()
 
-        hydrogens = ('H', 'D')
+        hydrogens = HYDROGEN_ELEMENTS
         margin = self.scale * self.adp_scale * 2.0 + 40.0
         vp_left = -margin
         vp_top = -margin

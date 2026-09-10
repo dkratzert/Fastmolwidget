@@ -2,6 +2,13 @@
  * Element metadata (colours, covalent radii), ported from `atoms.py`.
  */
 
+/**
+ * Element symbols drawn with the fixed hydrogen display radius instead of a
+ * covalent or U-scaled one. Mirrors `atoms.HYDROGEN_ELEMENTS`.
+ * @type {Set<string>}
+ */
+export const HYDROGENS = new Set(['H', 'D']);
+
 export const ELEMENT2COLOR = {
   H: '#FFFFFF', He: '#FFFFFF', Li: '#CC80FF', Be: '#c9d5e9', B: '#FFB5B5',
   C: '#797979', N: '#3050F8', O: '#FF0D0D', F: '#90e001', Ne: '#B3E3F5',

@@ -7,7 +7,7 @@
  * alignment. Parsing and SDM grow/pack live elsewhere.
  */
 
-import { getElementColor, getRadiusFromElement, displayRadiusForElement } from './elements.js';
+import { HYDROGENS, getElementColor, getRadiusFromElement, displayRadiusForElement } from './elements.js';
 import {
   cross, eigSym3, identity3, inv3, matMul, matVec, norm, normalize, orthonormalize3, transpose, vecAdd, vecScale, vecSub,
 } from './linalg.js';
@@ -15,7 +15,6 @@ import { darker, lighter } from './color.js';
 import { buildConnTable } from './conntable.js';
 import { calcVolume } from './symmetry.js';
 
-const HYDROGENS = new Set(['H', 'D']);
 const AUTO_ZOOM_PADDING = 1.1;
 
 /** Half-edge of the NPD placeholder cube, as a fraction of `atomsSize`. */

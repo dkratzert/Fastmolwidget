@@ -15,6 +15,7 @@ import pytest
 from qtpy import QtGui, QtWidgets
 
 import fastmolwidget.molecule3D as molecule3d
+from fastmolwidget.atoms import HYDROGEN_ELEMENTS
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
 from fastmolwidget.sdm import Atomtuple
@@ -1538,7 +1539,7 @@ def _load3d(path: Path) -> MoleculeWidget3D:
 
 
 def _hydrogens3d(widget: MoleculeWidget3D) -> list:
-    return [a for a in widget.atoms if a.type_ in ("H", "D")]
+    return [a for a in widget.atoms if a.type_ in HYDROGEN_ELEMENTS]
 
 
 def test_anisotropic_hydrogen_keeps_tensor_3d():
@@ -1564,7 +1565,7 @@ def test_anisotropic_hydrogen_in_adp_draw_list_3d():
     }
 
     widget.show_adps(False)
-    assert not any(a.type_ in ("H", "D") for a in widget._adp_draw_list)
+    assert not any(a.type_ in HYDROGEN_ELEMENTS for a in widget._adp_draw_list)
     for atom in _hydrogens3d(widget):
         assert atom.display_radius == pytest.approx(HYDROGEN_DISPLAY_RADIUS)
 

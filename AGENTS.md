@@ -41,6 +41,7 @@ Embeddable PyQt/PySide6 widget for crystal-structure display. Three parallel ren
 ## Conventions
 
 - **Qt binding-agnostic**: always `from qtpy import ...`; never import `PySide6` / `PyQt6` directly. Stubs use `pyside6-stubs`.
+- **Hydrogen test**: there is exactly one definition per language — `atoms.HYDROGEN_ELEMENTS` (a `frozenset`) and its JS mirror `elements.js` `HYDROGENS`. Never re-introduce a local `('H', 'D')` literal; import the constant (hot draw loops may alias it to a local first, e.g. `hydrogens = HYDROGEN_ELEMENTS`). `MoleculeRendererMixin._uses_fixed_hydrogen_radius()` wraps the "H/D that is not drawn as an ellipsoid" test the sizing paths need.
 - **3D fallback path**: any code path in `molecule3D.py` that touches `gl.*` must be guarded so the widget reverts to a `QWidget` text overlay instead of raising.
 - **Growing structures**: enabled via `MoleculeLoader.set_grow(True)`; reloads the last file in-place with `keep_view=True`. XYZ has no symmetry → grow is a no-op.
 - **Packing structures**: enabled via `MoleculeLoader.set_pack(True)`; applies all (or selected) symmetry operations and folds atoms into one unit cell. Pack takes priority over grow when both are active.

@@ -142,7 +142,7 @@ def build_conntable(
         bond_mask &= ~(either_neg & cross_boundary)
 
     # Skip H-H bonds.
-    is_h = np.array([t in ("H", "D") for t in types], dtype=bool)
+    is_h = np.array([t in HYDROGEN_ELEMENTS for t in types], dtype=bool)
     bond_mask &= ~(is_h[:, None] & is_h[None, :])
 
     rows, cols = np.where(bond_mask)

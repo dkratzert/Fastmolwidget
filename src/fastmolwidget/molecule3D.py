@@ -690,7 +690,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         sphere_atoms: list[_Atom3D] = []
 
         for atom in self.atoms:
-            if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
+            if not self.show_hydrogens_flag and atom.type_ in HYDROGEN_ELEMENTS:
                 continue
             if self._visible_parts is not None and atom.part not in self._visible_parts:
                 continue
@@ -747,7 +747,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             at2 = self.atoms[n2]
 
             if not self.show_hydrogens_flag:
-                if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                if at1.type_ in HYDROGEN_ELEMENTS or at2.type_ in HYDROGEN_ELEMENTS:
                     continue
             if self._visible_parts is not None:
                 if at1.part not in self._visible_parts or at2.part not in self._visible_parts:
@@ -1285,7 +1285,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
 
         w = max(1, self.width())
         h = max(1, self.height())
-        hydrogens = ("H", "D")
+        hydrogens = HYDROGEN_ELEMENTS
 
         base_size = max(1, int(self.fontsize))
         hover_size = base_size + 4  # enlarge hovered label
@@ -1830,7 +1830,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         """
         positions = [
             atom.center for atom in self.atoms
-            if (self.show_hydrogens_flag or atom.type_ not in ("H", "D"))
+            if (self.show_hydrogens_flag or atom.type_ not in HYDROGEN_ELEMENTS)
             and (self._visible_parts is None
                  or atom.part in self._visible_parts)
         ]
@@ -1944,7 +1944,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
             visible_coords = np.array([a.center for a in self.atoms], dtype=np.float64)
         else:
             visible_coords = np.array(
-                [a.center for a in self.atoms if a.type_ not in ('H', 'D')],
+                [a.center for a in self.atoms if a.type_ not in HYDROGEN_ELEMENTS],
                 dtype=np.float64,
             )
         if len(visible_coords) < 2:
@@ -2134,7 +2134,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
                 best_pair: tuple[_Atom3D, _Atom3D] | None = None
                 for n1, n2 in self.connections:
                     at1, at2 = self.atoms[n1], self.atoms[n2]
-                    if not self.show_hydrogens_flag and (at1.type_ in ("H", "D") or at2.type_ in ("H", "D")):
+                    if not self.show_hydrogens_flag and (at1.type_ in HYDROGEN_ELEMENTS or at2.type_ in HYDROGEN_ELEMENTS):
                         continue
                     if self._visible_parts is not None and (
                         at1.part not in self._visible_parts or at2.part not in self._visible_parts
@@ -2314,7 +2314,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         for n1, n2 in self.connections:
             at1, at2 = self.atoms[n1], self.atoms[n2]
             if not self.show_hydrogens_flag:
-                if at1.type_ in ("H", "D") or at2.type_ in ("H", "D"):
+                if at1.type_ in HYDROGEN_ELEMENTS or at2.type_ in HYDROGEN_ELEMENTS:
                     continue
             t = self._ray_bond_screen(sx, sy, at1.center, at2.center, mv, proj)
             if t is not None and t < best_t:
@@ -2410,7 +2410,7 @@ class MoleculeWidget3D(ModelSourceMixin, _WidgetBase):  # type: ignore[valid-typ
         best_t = float("inf")
 
         for atom in self.atoms:
-            if not self.show_hydrogens_flag and atom.type_ in ("H", "D"):
+            if not self.show_hydrogens_flag and atom.type_ in HYDROGEN_ELEMENTS:
                 continue
             if self._visible_parts is not None and atom.part not in self._visible_parts:
                 continue

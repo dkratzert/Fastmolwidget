@@ -5,11 +5,9 @@
  * `grow()` / `packUnitCell()` return Cartesian `{label, type, x, y, z, part, symm_matrix}`.
  */
 
-import { getRadiusFromElement } from './elements.js';
+import { HYDROGENS, getRadiusFromElement } from './elements.js';
 import { transpose } from './linalg.js';
 import { applySymmOp, fracToCart, identitySymmOp, matEquals, parseSymmOp, transEquivalent } from './symmetry.js';
-
-const HYDROGENS = new Set(['H', 'D']);
 
 class UnionFind {
   constructor(n) {
