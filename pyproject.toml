@@ -57,6 +57,9 @@ Issues = "https://github.com/dkratzert/Fastmolwidget/issues"
 
 [dependency-groups]
 dev = [
+    # Self-reference: keeps the 3D (OpenGL) tests runnable without repeating
+    # the PyOpenGL pins from the gl3d extra.
+    "fastmolwidget[gl3d]",
     "pytest",
     "ruff",
     "ty",
