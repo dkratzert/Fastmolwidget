@@ -6,7 +6,7 @@ export code, can import :mod:`fastmolwidget` without a Qt binding installed.
 
 from typing import TYPE_CHECKING
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 if TYPE_CHECKING:
     from fastmolwidget.density import (

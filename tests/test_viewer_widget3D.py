@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from gl_probe import skip_without_real_gl
 from qtpy import QtGui, QtWidgets
 
 import fastmolwidget.molecule3D as molecule3d
@@ -515,6 +516,7 @@ def test_label_overlay_does_not_blacken_background():
     """
     if not molecule3d._HAS_PYOPENGL or not molecule3d._IS_GL_WIDGET:
         pytest.skip("requires real OpenGL context")
+    skip_without_real_gl()
 
     widget = MoleculeWidget3D()
     bg = QtGui.QColor(50, 150, 200)  # distinctive teal, far from black
@@ -1105,6 +1107,7 @@ def test_save_image_3d_labels_appear_in_file(tmp_path):
 
     if not molecule3d._HAS_PYOPENGL or not molecule3d._IS_GL_WIDGET:
         pytest.skip("requires real OpenGL context")
+    skip_without_real_gl()
 
     widget = MoleculeWidget3D()
     widget.resize(400, 300)
@@ -1179,6 +1182,7 @@ def test_atom_labels_render_readable_glyphs_3d():
     """
     if not molecule3d._HAS_PYOPENGL or not molecule3d._IS_GL_WIDGET:
         pytest.skip("requires real OpenGL context")
+    skip_without_real_gl()
 
     widget = MoleculeWidget3D()
     bg = QtGui.QColor(255, 255, 255)
