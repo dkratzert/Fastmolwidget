@@ -16,6 +16,7 @@ from gl_probe import skip_without_real_gl
 from qtpy import QtGui, QtWidgets
 
 import fastmolwidget.molecule3D as molecule3d
+from fastmolwidget import shaders
 from fastmolwidget.atoms import HYDROGEN_ELEMENTS
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.molecule_base import MoleculeWidgetProtocol
@@ -342,15 +343,25 @@ def test_compile_program_disables_validate(monkeypatch):
 def test_atom_shader_uses_brighter_low_shadow_lighting():
     assert "Orthographic projection: all rays are parallel to -Z." in molecule3d._SPHERE_FRAG
     assert "vec2 local_xy = v_corner * v_radius * 1.05" in molecule3d._SPHERE_FRAG
-    assert "base_color = clamp(v_color * 1.08, 0.0, 1.0)" in molecule3d._SPHERE_FRAG
-    assert "vec3(0.16) * spec" in molecule3d._SPHERE_FRAG
+    # Highlight above and to the left, as in the 2-D radial gradient.
+    assert "normalize(vec3(-1.0, 1.5, 2.0))" in molecule3d._SPHERE_FRAG
+    # The ramp brightens past the plain colour instead of only darkening it.
+    assert float(shaders._ATOM_PEAK) > 1.0 > float(shaders._ATOM_RIM)
+    assert "vec3(0.12) * spec" in molecule3d._SPHERE_FRAG
 
 
 def test_ellipsoid_shader_matches_brighter_atom_lighting_profile():
     assert "Orthographic projection: solve the local +Z intersection." in molecule3d._ELLIPSOID_BATCH_FRAG
     assert "vec3 q0 = vec3(local_xy, 0.0)" in molecule3d._ELLIPSOID_BATCH_FRAG
-    assert "base_color = clamp(v_color * 1.08, 0.0, 1.0)" in molecule3d._ELLIPSOID_BATCH_FRAG
-    assert "vec3(0.14) * spec" in molecule3d._ELLIPSOID_BATCH_FRAG
+    assert "normalize(vec3(-1.0, 1.5, 2.0))" in molecule3d._ELLIPSOID_BATCH_FRAG
+    assert "vec3(0.12) * spec" in molecule3d._ELLIPSOID_BATCH_FRAG
+    # Principal-axis bands match the 2-D arcs drawn as QColor(0, 0, 0, 120).
+    assert f"color *= {shaders._ADP_LINE_SHADE}" in molecule3d._ELLIPSOID_BATCH_FRAG
+
+
+def test_bond_shader_shares_the_atom_light_direction():
+    assert "normalize(vec3(-1.0, 1.5, 2.0))" in molecule3d._CYLINDER_FRAG
+    assert float(shaders._BOND_PEAK) > 1.0 > float(shaders._BOND_RIM)
 
 
 def test_bond_geometry_uses_single_uniform_color():
