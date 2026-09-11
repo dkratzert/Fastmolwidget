@@ -37,6 +37,44 @@ def _t(src: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shading constants
+# ---------------------------------------------------------------------------
+# The 2-D QPainter renderer shades atoms with a radial gradient running from
+# ``QColor.lighter(160)`` at the highlight through the plain colour to
+# ``QColor.darker(180)`` at the rim, and bonds with a linear gradient whose
+# darkest stop is ``darker(280)``.  Qt scales the HSV *value* by those
+# percentages, so the equivalent multipliers on the base colour are
+# 1.60 / 1.00 / 0.556 and 0.357.
+#
+# The 3-D shaders follow the same idea but with the peak pulled back: a Lambert
+# term spreads the highlight over a far larger part of the surface than Qt's
+# radial gradient does, so the literal 1.60 washes light colours out.
+#
+# The 2-D highlight sits at 35 % / 35 % of the atom's bounding box, i.e. above
+# and to the *left* of the centre, hence the negative X in the light vector.
+
+_LIGHT = "normalize(vec3(-1.0, 1.5, 2.0))"
+_LIGHT_SELECTED = "normalize(vec3(-2.0, 1.5, 2.0))"
+_ATOM_RIM = "0.60"    # ~QColor.darker(170)
+_ATOM_PEAK = "1.28"
+_BOND_RIM = "0.45"
+_BOND_PEAK = "1.22"
+# Principal-axis bands: the 2-D renderer draws them as QColor(0, 0, 0, 120)
+# arcs over the finished gradient, which multiplies the colour by 1 - 120/255.
+_ADP_LINE_SHADE = "0.43"
+
+_SUB.update(
+    LIGHT=_LIGHT,
+    LIGHT_SELECTED=_LIGHT_SELECTED,
+    ATOM_RIM=_ATOM_RIM,
+    ATOM_PEAK=_ATOM_PEAK,
+    BOND_RIM=_BOND_RIM,
+    BOND_PEAK=_BOND_PEAK,
+    ADP_LINE_SHADE=_ADP_LINE_SHADE,
+)
+
+
+# ---------------------------------------------------------------------------
 # Sphere impostor
 # ---------------------------------------------------------------------------
 
@@ -98,15 +136,14 @@ void main() {
     vec3 hit    = v_center_eye + local_hit;
     vec3 normal = normalize(local_hit);
 
-    // Bright lighting for crisp atom colours.
-    vec3  light     = normalize(vec3(1.0, 1.5, 2.0));
-    float diff      = max(dot(normal, light), 0.0);
-    float soft_diff = 0.25 + 0.75 * diff;
-    float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
+    // Bright shading matching the 2-D renderer's radial gradient.
+    vec3  light = $LIGHT;
+    float diff  = max(dot(normal, light), 0.0);
+    float shade = $ATOM_RIM + ($ATOM_PEAK - $ATOM_RIM) * pow(diff, 1.0);
+    float spec  = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-    vec3 color      = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.16) * spec;
-    $FOUT           = vec4(clamp(color, 0.0, 1.0), 1.0);
+    vec3 color = v_color * shade + vec3(0.12) * spec;
+    $FOUT      = vec4(clamp(color, 0.0, 1.0), 1.0);
 
     // Write corrected depth.
     vec4 clip_pos = u_proj * vec4(hit, 1.0);
@@ -159,12 +196,13 @@ void main() {
         color = v_color;
     } else {
         vec3  normal = normalize(v_normal_eye);
-        vec3  light  = normalize(vec3(1.0, 1.5, 2.0));
+        vec3  light  = $LIGHT;
         float diff   = max(dot(normal, light), 0.0);
         float spec   = pow(max(dot(reflect(-light, normal),
                                    normalize(-v_pos_eye)), 0.0), 32.0);
 
-        color = v_color * (0.45 + 0.55 * diff) + vec3(0.30) * spec;
+        float shade = $BOND_RIM + ($BOND_PEAK - $BOND_RIM) * pow(diff, 1.0);
+        color = v_color * shade + vec3(0.18) * spec;
     }
     $FOUT = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
@@ -286,21 +324,18 @@ void main() {
     vec3 normal_world = normalize(A * hit_world);
     vec3 normal       = normalize(mat3(u_mv) * normal_world);
 
-    vec3  light     = v_selected > 0.5
-                        ? normalize(vec3(2.0, 1.5, 2.0))
-                        : normalize(vec3(1.0, 1.5, 2.0));
+    vec3  light     = v_selected > 0.5 ? $LIGHT_SELECTED : $LIGHT;
     float diff      = max(dot(normal, light), 0.0);
-    float soft_diff = 0.25 + 0.75 * diff;
+    float shade     = $ATOM_RIM + ($ATOM_PEAK - $ATOM_RIM) * pow(diff, 1.0);
     float spec      = pow(max(dot(reflect(-light, normal), vec3(0.0, 0.0, 1.0)), 0.0), 72.0);
 
-    vec3 base_color = clamp(v_color * 1.08, 0.0, 1.0);
-    vec3 color = base_color * (0.50 + 0.35 * soft_diff) + vec3(0.14) * spec;
+    vec3 color = v_color * shade + vec3(0.12) * spec;
 
     float lw = v_radius * 0.04;
     if (abs(dot(hit_world, evecs[0])) < lw ||
         abs(dot(hit_world, evecs[1])) < lw ||
         abs(dot(hit_world, evecs[2])) < lw) {
-        color *= 0.15;
+        color *= $ADP_LINE_SHADE;
     }
 
     $FOUT = vec4(clamp(color, 0.0, 1.0), 1.0);
