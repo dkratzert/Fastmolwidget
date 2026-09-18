@@ -1,10 +1,8 @@
 ![Latest Release](https://img.shields.io/github/v/tag/dkratzert/Fastmolwidget?label=Release)
 [![Unit Tests](https://github.com/dkratzert/Fastmolwidget/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/dkratzert/Fastmolwidget/actions/workflows/tests.yml)
 ![Contributions](https://img.shields.io/badge/contributions-welcome-blue)
-[![PyPI package](https://repology.org/badge/version-for-repo/pypi/python:fastmolwidget.svg)](https://repology.org/project/python:fastmolwidget/versions)
-<a href="https://repology.org/project/fastmolwidget/versions">
-<img src="https://repology.org/badge/vertical-allrepos/fastmolwidget.svg" alt="Packaging status" align="right">
-</a>
+[![PyPI version](https://img.shields.io/pypi/v/fastmolwidget.svg)](https://pypi.org/project/fastmolwidget/)
+
 
 # fastmolwidget
 
