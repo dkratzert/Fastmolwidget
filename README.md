@@ -190,8 +190,8 @@ The widget must have keyboard focus (click on it once) for these shortcuts to wo
 | F1  | Align the view so that the reciprocal axis **a\*** points towards the viewer (requires a unit cell) |
 | F2  | Align the view so that the reciprocal axis **b\*** points towards the viewer (requires a unit cell) |
 | F3  | Align the view so that the reciprocal axis **c\*** points towards the viewer (requires a unit cell) |
-| Ctrl+Z | 3D viewer: undo the last model edit (see [Writing dragged disorder back](#writing-dragged-disorder-back-to-a-shelx-file)) |
-| Ctrl+Y / Ctrl+Shift+Z | 3D viewer: redo |
+| Ctrl+Z | 3D viewer: undo the last model edit (see [Writing dragged disorder back](#writing-dragged-disorder-back-to-a-shelx-file)); text undo while the SHELX editor has focus |
+| Ctrl+Y / Ctrl+Shift+Z | 3D viewer: redo (likewise text redo in the editor) |
 
 > **Note:** The F-key shortcuts are available in both the 2D (`MoleculeWidget`) and 3D (`MoleculeWidget3D`) renderers. They have no effect when no unit cell is loaded (e.g. plain XYZ files).
 
@@ -229,6 +229,10 @@ Both viewers expose the same two-row control bar:
 
 > When **Pack Unit Cell** is active, a unit-cell axis indicator (a = red, b = green, c = blue) is drawn in the bottom-left corner of the widget and rotates with the view.
 
+**Row 3 — SHELX editor actions (3D viewer only)**
+
+The embedded SHELX editor's own toolbar (see [The embedded SHELX editor](#the-embedded-shelx-editor)) forms a third row: Apply, Add atom…, Delete selected atom(s), Add restraint…, Delete selected restraint and Refine (SHELXL). It sits in the control bar rather than in the editor pane because a row of buttons is much wider than the 80 columns a SHELX file needs, and inside the splitter its minimum width would stop the pane from ever being that narrow. Every button is disabled while no `.res`/`.ins` file is loaded.
+
 ### `MoleculeViewerQuickWidget` (Qt Quick)
 
 The Qt Quick viewer provides the same two-row control bar as the widget viewers, but implemented in QML (`qml/MoleculeViewer.qml`). All controls and features are identical, **Residual Density** and **Level** included; the Parts filter uses a QML `Popup` (opens upward) with checkable items instead of the `QComboBox`-based `PartFilterWidget`, and the level control is `qml/DensityLevelSpinBox.qml` (QtQuick's `SpinBox` is integer-only, so it holds hundredths of an e/Å³ internally).
@@ -237,15 +241,17 @@ The Qt Quick viewer provides the same two-row control bar as the widget viewers,
 
 ### `MoleculeViewer3DWidget(parent=None)`
 
-A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
+A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar and, in the right-hand pane of a resizable splitter, a SHELX text editor (see [The embedded SHELX editor](#the-embedded-shelx-editor)).
 
 - `load_file(path)` — load a structure file (format auto-detected from extension: `.cif`, `.res`, `.ins`, `.xyz`)
 - `grow()` — expand the asymmetric unit to complete molecules using crystal symmetry; deactivates Pack Unit Cell if active; no-op for XYZ files or when no file is loaded
 - `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget3D`
+- `editor` — read-only property exposing the `ShelxEditorWidget`; bound to the same document as the 3D view for `.res`/`.ins`, unbound and disabled otherwise
 - `edit_session` — the editable SHELX model (`ModelEditSession`); `None` unless a `.res`/`.ins` file is loaded
 - `undo()` / `redo()` — step through the model edits; return the step's label, or `None`
-- `save_model(path=None)` — write the edited model (default `<basename>.ins`; an existing file is kept as `<name>.bak`)
+- `flush_editor_text()` — apply a pending text edit now instead of waiting for the idle timer; returns `False` when the text does not parse
+- `save_model(path=None)` — write the edited model (default `<basename>.ins`; an existing file is kept as `<name>.bak`). Applies any pending editor text first
 
 ### `MoleculeViewerQuickWidget(parent=None)`
 
@@ -811,7 +817,8 @@ whose occupancy is already refined, is refused with a message, and the drag
 is discarded.
 
 Undo and redo (**Ctrl+Z**, **Ctrl+Y** / **Ctrl+Shift+Z**, or the buttons)
-restore the complete file text of each step, which the history stores. Without
+restore the complete file text of each step, which the history stores. With
+the text editor focused, Ctrl+Z is the editor's own text undo instead. Without
 Qt:
 
 ```python
@@ -824,6 +831,47 @@ session.save()                         # structure.ins, previous file -> structu
 ```
 
 This needs the editing layer of *shelxfile* 30 (`shelxfile.edit.ShelxDocument`).
+
+## The Embedded SHELX Editor
+
+`MoleculeViewer3DWidget` shows a `.res`/`.ins` file twice: as atoms in the 3D
+view, and as text in a `ShelxEditorWidget` (from *shelxfile* 31) in the
+right-hand pane of a resizable splitter. **Both are views of one
+`ShelxDocument`** — the one owned by the viewer's `ModelEditSession` — so
+neither can drift away from the other:
+
+- **Typing updates the 3D view**, without pressing Apply. The text is applied
+  after 300 ms of idleness (`LIVE_APPLY_DELAY_MS`), as one coalesced undo step
+  per burst of typing, and is deliberately **not** reformatted while that
+  happens. Text that does not parse leaves the last good model on screen and
+  shows the editor's inline error.
+- **Dragging an atom rewrites the text.** A pending text edit is applied first,
+  so the drag is never committed against a model the user has already moved on
+  from; if that text does not parse, the drag is refused rather than applied to
+  a stale model.
+- **Undo spans both.** A text edit no longer buries the drags underneath it:
+  undo steps back through `Edit text`, `Split C4`, `Move N1`, … in order.
+- **Selection is shared.** Clicking an atom scrolls the editor to its line;
+  moving the text cursor onto an atom highlights it in 3D.
+- **Refine (SHELXL)** runs on the current text and loads the refined `.res`
+  back into both views. Any residual-density map is dropped, because it was
+  computed from the pre-refinement *F*c.
+
+The editor pane opens 84 characters wide — SHELXL's 80-column limit plus a
+little — and can be resized or collapsed by dragging the splitter. Its toolbar
+is a widget of its own, placed in the viewer's control bar (see [Row 3](#control-bar-options)).
+
+CIF and XYZ files cannot be represented as SHELX text, so the pane is unbound
+and disabled for them.
+
+```python
+viewer = MoleculeViewer3DWidget()
+viewer.load_file("structure.res")
+
+viewer.editor.document is viewer.edit_session.document   # True: one model
+viewer.editor.editor.setPlainText(new_text)              # as if typed
+viewer.flush_editor_text()                               # don't wait for the timer
+```
 
 ## Running the Examples
 

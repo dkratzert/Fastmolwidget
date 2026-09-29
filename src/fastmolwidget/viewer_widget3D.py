@@ -13,6 +13,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
+from shelxfile.gui.editor_widget import ShelxEditorWidget
 
 from fastmolwidget.density_controls import DensityControlsMixin
 from fastmolwidget.loader import MoleculeLoader
@@ -20,9 +21,37 @@ from fastmolwidget.model_edit import CommitReport, ModelEditError
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.part_combo import PartFilterWidget
 
+#: How long the editor has to be idle before its text is applied to the
+#: model, in milliseconds.  Long enough not to re-parse mid-word, short
+#: enough that the 3-D view feels like it is following along.
+LIVE_APPLY_DELAY_MS = 300
+
+#: Width of the editor pane, in characters of its own font.  SHELXL writes
+#: at most 80 columns, so this is that plus a little.
+EDITOR_COLUMNS = 84
+
 
 class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
-    """3-D :class:`MoleculeWidget3D` plus its control bar."""
+    """3-D :class:`MoleculeWidget3D` plus its control bar and a SHELX editor.
+
+    A ``.res``/``.ins`` file is shown twice: as atoms in the 3-D view, and
+    as text in a :class:`~shelxfile.gui.editor_widget.ShelxEditorWidget` in
+    the right-hand pane of a resizable splitter.  **Both are views of one
+    :class:`~shelxfile.edit.ShelxDocument`**, the one owned by this
+    viewer's :class:`~fastmolwidget.model_edit.ModelEditSession`, so a drag
+    in 3-D shows up in the text and an edit in the text shows up in 3-D.
+    The 3-D side is refreshed by subscribing to that document, not by
+    calling :meth:`MoleculeLoader.reload` after each kind of edit.
+
+    Typed text reaches the model without pressing Apply: it is applied
+    after :data:`LIVE_APPLY_DELAY_MS` of idleness, as one coalesced undo
+    step per burst, and the text is deliberately *not* reformatted while
+    that happens.  Text that does not parse leaves the last good model on
+    screen and shows the editor's inline error.
+
+    CIF and XYZ files cannot be represented as SHELX text, so the editor
+    pane is unbound and disabled for them.
+    """
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -31,6 +60,25 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._render_widget = MoleculeWidget3D()
         # MoleculeLoader only needs the open_molecule() API.
         self._loader = MoleculeLoader(self._render_widget)  # type: ignore[arg-type]
+
+        # ── SHELX text editor ────────────────────────────────────────────────
+        self._editor = ShelxEditorWidget()
+        # Nothing is loaded yet, so there is no document to edit.
+        self._editor.setEnabled(False)
+        #: The document both views are bound to, or ``None``.
+        self._bound_document = None
+        #: Set while a document change is being turned into a redisplay, so
+        #: the two paths into it cannot reload twice for one edit.
+        self._reloading = False
+        #: Whether the current edit already caused a redisplay.
+        self._reloaded_for_edit = False
+        self._sized_splitter = False
+
+        self._apply_timer = QtCore.QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.setInterval(LIVE_APPLY_DELAY_MS)
+        self._apply_timer.timeout.connect(self._apply_editor_text)
+        self._editor.editor.textChanged.connect(self._on_editor_text_changed)
 
         # ── control bar ──────────────────────────────────────────────────────
         self._grow_checkbox = QtWidgets.QCheckBox("Grow")
@@ -80,8 +128,9 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         #: What the last committed edit reported (restraints, messages).
         self.last_commit_report: CommitReport | None = None
         self._shortcuts = []
-        for keys, slot in (('Ctrl+Z', self.undo), ('Ctrl+Y', self.redo),
-                           ('Ctrl+Shift+Z', self.redo)):
+        for keys, slot in (('Ctrl+Z', self._undo_shortcut),
+                           ('Ctrl+Y', self._redo_shortcut),
+                           ('Ctrl+Shift+Z', self._redo_shortcut)):
             shortcut = QtGui.QShortcut(QtGui.QKeySequence(keys), self)
             # This is an embeddable widget: a window-wide binding would
             # collide with the host's own undo and disable both.
@@ -89,6 +138,17 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
             shortcut.activated.connect(slot)
             self._shortcuts.append(shortcut)
         self._update_edit_controls()
+
+        # Selection is shared: clicking an atom scrolls the editor to its
+        # line, and moving the text cursor onto an atom highlights it in 3-D.
+        # Neither direction echoes back (jump_to_atom suppresses
+        # atom_selected, select_atoms emits nothing).
+        self._render_widget.atomClicked.connect(self._editor.jump_to_atom)
+        self._editor.atom_selected.connect(self._on_editor_atom_selected)
+        # Connected after the editor's own handler, so it runs once the
+        # refinement is over: the residual-density map was computed from
+        # the pre-refinement Fc and means nothing afterwards.
+        self._editor.refine_button.clicked.connect(self._on_refine_clicked)
 
         # Apply initial defaults.
         self._render_widget.set_bond_width(3)
@@ -102,6 +162,20 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._render_widget.partsChanged.connect(self._update_part_controls)
 
         # ── layout ───────────────────────────────────────────────────────────
+        # The 3-D view and the editor text side by side; every control row
+        # underneath, spanning both.  The editor's toolbar is one of those
+        # rows rather than part of the editor pane: a row of buttons is far
+        # wider than 80 columns, and inside the splitter its minimum width
+        # would stop the pane from ever being as narrow as a SHELX file.
+        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self._splitter.addWidget(self._render_widget)
+        self._splitter.addWidget(self._editor)
+        self._splitter.setCollapsible(0, False)
+        self._splitter.setCollapsible(1, True)
+        # Resizing the window grows the 3-D view; the editor keeps its width.
+        self._splitter.setStretchFactor(0, 1)
+        self._splitter.setStretchFactor(1, 0)
+
         # Row 1: structure toggles.
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._open_file_button)
@@ -130,9 +204,13 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         control_bar2.addStretch()
 
         vl = QtWidgets.QVBoxLayout(self)
-        vl.addWidget(self._render_widget)
+        # The splitter takes every bit of leftover height; the control rows
+        # are only as tall as their widgets.
+        vl.addWidget(self._splitter, 1)
         vl.addLayout(control_bar)
         vl.addLayout(control_bar2)
+        # Row 3: the SHELX editor's own actions.
+        vl.addWidget(self._editor.toolbar)
 
     # ------------------------------------------------------------------
     # Public API
@@ -143,13 +221,120 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         """Underlying :class:`MoleculeWidget3D`."""
         return self._render_widget
 
+    @property
+    def editor(self) -> ShelxEditorWidget:
+        """The SHELX text editor in the right-hand pane.
+
+        Bound to the same document as the 3-D view for ``.res``/``.ins``
+        files, and unbound (and disabled) for everything else.  Its
+        toolbar lives in this widget's control bar, not in the pane.
+        """
+        return self._editor
+
     def load_file(self, filename: str | Path) -> None:
         """Load and display a structure file.  Unsaved model edits are lost."""
+        self._apply_timer.stop()
         self._loader.load_file(filename)
         self.setWindowTitle(str(Path(filename).resolve()))
+        self._bind_editor()
         # Keep the controls in sync if a new model cleared density.
         self._sync_density_controls()
         self._update_edit_controls()
+
+    # ------------------------------------------------------------------
+    # The shared document
+    # ------------------------------------------------------------------
+
+    def _bind_editor(self) -> None:
+        """Point the editor at the document the 3-D view is showing.
+
+        Also what subscribes this widget to that document, so every later
+        change -- from either side -- redisplays the structure.
+        """
+        session = self._loader.edit_session
+        document = None if session is None else session.document
+        if document is self._bound_document:
+            return
+        if self._bound_document is not None:
+            self._bound_document.unsubscribe(self._on_document_changed)
+        self._bound_document = document
+        if document is None:
+            self._editor.clear()
+            self._editor.setEnabled(False)
+            return
+        self._editor.setEnabled(True)
+        self._editor.set_shelxfile(document)
+        document.subscribe(self._on_document_changed)
+
+    def _on_document_changed(self, _document) -> None:
+        """Redisplay the structure after anything changed the model."""
+        self._reloaded_for_edit = True
+        self._reload_display()
+
+    def _reload_display(self) -> None:
+        """Rebuild the 3-D view from the current model, once."""
+        if self._reloading:
+            return
+        self._reloading = True
+        try:
+            self._loader.reload()
+        finally:
+            self._reloading = False
+        self._update_edit_controls()
+
+    # ------------------------------------------------------------------
+    # Live text editing
+    # ------------------------------------------------------------------
+
+    def _on_editor_text_changed(self) -> None:
+        if self._bound_document is not None:
+            self._apply_timer.start()
+
+    def _apply_editor_text(self) -> bool:
+        """Apply whatever is in the editor right now.
+
+        The text is applied without being reformatted -- the user may
+        still be typing in it -- and as a coalescing undo step, so a burst
+        of edits does not bury the drags and splits underneath it.
+        """
+        self._apply_timer.stop()
+        if self._bound_document is None or not self._editor.is_dirty:
+            return True
+        return self._editor.apply(normalise=False, coalesce=True)
+
+    def flush_editor_text(self) -> bool:
+        """Apply any pending text edit now, ahead of something that needs it.
+
+        :returns: ``False`` when the text does not parse, in which case the
+            model is unchanged and the editor shows why.
+        """
+        return self._apply_editor_text()
+
+    def _undo_shortcut(self) -> None:
+        """Ctrl+Z means text undo in the editor, model undo everywhere else."""
+        if self._editor.editor.hasFocus():
+            self._editor.editor.undo()
+        else:
+            self.undo()
+
+    def _redo_shortcut(self) -> None:
+        if self._editor.editor.hasFocus():
+            self._editor.editor.redo()
+        else:
+            self.redo()
+
+    def _on_editor_atom_selected(self, name: str) -> None:
+        self._render_widget.select_atoms({name})
+
+    def _on_refine_clicked(self) -> None:
+        """A refinement replaced the coordinates, so the density map is stale.
+
+        It was computed from the pre-refinement ``Fc``, and the model's
+        path has not changed, so nothing else would drop it.
+        """
+        if self._render_widget.residual_density_map is not None:
+            self.clear_residual_density()
+            self._sync_density_controls()
 
     # ------------------------------------------------------------------
     # Model editing
@@ -179,17 +364,31 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         session = self._loader.edit_session
         if session is None:
             raise RuntimeError('Only SHELX .res/.ins models can be saved')
+        # What is on screen in the editor is what the user means to save.
+        self._apply_editor_text()
         written = session.save(path)
         self._update_edit_controls()
         return written
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:
+        """Give the editor pane its 84-column width, the first time only."""
+        super().showEvent(event)
+        if self._sized_splitter:
+            return
+        self._sized_splitter = True
+        editor_width = self._editor.character_width(EDITOR_COLUMNS)
+        total = max(self._splitter.width(), editor_width + 200)
+        self._splitter.setSizes([total - editor_width, editor_width])
 
     def _step_history(self, *, redo: bool) -> str | None:
         session = self._loader.edit_session
         if session is None or self._render_widget.drag_in_progress:
             return None
+        self._apply_timer.stop()
+        self._reloaded_for_edit = False
         label = session.redo() if redo else session.undo()
-        if label is not None:
-            self._loader.reload()
+        if label is not None and not self._reloaded_for_edit:
+            self._reload_display()
         self._update_edit_controls()
         return label
 
@@ -200,8 +399,21 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
             return  # not an editable format: the drag stays visual only
         from fastmolwidget.atoms import HYDROGEN_ELEMENTS
 
+        # A pending text edit has to reach the model before the drag does,
+        # or the drag is committed against a model the user has already
+        # moved on from.
+        if not self._apply_editor_text():
+            self.last_commit_report = None
+            QtWidgets.QMessageBox.warning(
+                self, 'Cannot change the model',
+                'The text in the editor does not parse, so the drag cannot '
+                'be written to the model.\n\nThe drag was discarded.')
+            self._reload_display()
+            return
+
         hydrogens = [i for i, atom in enumerate(self._render_widget.atoms)
                      if atom.type_ in HYDROGEN_ELEMENTS]
+        self._reloaded_for_edit = False
         try:
             self.last_commit_report = session.commit(
                 edit, self._loader.atom_sources, hydrogens=hydrogens)
@@ -212,8 +424,9 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
                 f'{error}\n\nThe drag was discarded.')
         finally:
             # The model was rolled back, so the display has to follow it
-            # even when the commit failed.
-            self._loader.reload()
+            # even when the commit failed and left the model untouched.
+            if not self._reloaded_for_edit:
+                self._reload_display()
             self._update_edit_controls()
 
     def _update_edit_controls(self) -> None:
@@ -245,7 +458,9 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
     def _confirm_discard_edits(self) -> bool:
         """Ask before unsaved model edits are thrown away."""
         session = self._loader.edit_session
-        if session is None or not session.is_modified:
+        if session is None:
+            return True
+        if not (session.is_modified or self._editor.is_dirty):
             return True
         answer = QtWidgets.QMessageBox.question(
             self, 'Unsaved model changes',

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import sqrt, cos, sin, dist, radians, atan2, degrees, pi
 from pathlib import Path
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -343,6 +344,25 @@ class MoleculeRendererMixin(ModelSourceMixin):
         self.show_hydrogens_flag = value
         if self._density_map is not None:
             self._build_density_geometry()
+        self.update()  # type: ignore[misc]
+
+    def select_atoms(self, labels: Iterable[str] | None) -> None:
+        """Highlight exactly the atoms named in *labels*.
+
+        The same highlight a left click produces, but driven from outside
+        -- a text editor showing the same structure, say.  Labels that no
+        longer exist are kept, so a reload which brings them back restores
+        the highlight; they simply have no visible effect meanwhile.
+        Passing ``None`` clears the selection.
+
+        Bond selection is cleared, exactly as clicking an atom does.  No
+        ``atomClicked`` signal is emitted: this *is* the answer to one.
+        """
+        wanted = set() if labels is None else set(labels)
+        if wanted == self.selected_atoms and not self.selected_bonds:
+            return
+        self.selected_atoms = wanted
+        self.selected_bonds.clear()
         self.update()  # type: ignore[misc]
 
     def set_visible_parts(self, parts: set[int] | None) -> None:

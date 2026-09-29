@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -145,6 +146,10 @@ class MoleculeWidgetProtocol(Protocol):
 
     def set_visible_parts(self, parts: set[int] | None) -> None:
         """Set the visible disorder parts."""
+        ...
+
+    def select_atoms(self, labels: Iterable[str] | None) -> None:
+        """Highlight exactly the atoms named in *labels* (``None`` clears)."""
         ...
 
     @property

@@ -23,7 +23,7 @@ dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
     "qtpy>=2.4.3",
-    "shelxfile>=30",
+    "shelxfile>=31",
 ]
 
 [project.optional-dependencies]
@@ -78,10 +78,13 @@ doc = [
 [project.scripts]
 fastmolwidget = "fastmolwidget:main"
 
-# shelxfile 30 brings the editing layer (ShelxDocument.move_atoms,
+# shelxfile 30 brought the editing layer (ShelxDocument.move_atoms,
 # assign_part, duplicate_atoms, undo/redo) that writing dragged disorder
-# back needs.  Until it is published, development builds take it from the
-# local checkout of the 'editor' branch.
+# back needs.  31 adds ShelxDocument.apply_text(), which replaces the model
+# in place so the embedded ShelxEditorWidget and the 3-D view can share one
+# document, plus that widget's clear() and its detachable toolbar.  Until it
+# is published, development builds take it from the local checkout of the
+# 'editor' branch.
 [tool.uv.sources]
 shelxfile = { path = "../ShelXFile", editable = true }
 

@@ -66,6 +66,7 @@ Mouse controls
 from __future__ import annotations
 
 import ctypes
+from collections.abc import Iterable
 from math import cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
@@ -1897,6 +1898,28 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
             self._build_geometry()
         if self._density_map is not None:
             self._build_density_geometry()
+        self.update()
+
+    def select_atoms(self, labels: Iterable[str] | None) -> None:
+        """Highlight exactly the atoms named in *labels*.
+
+        The same highlight a left click produces, but driven from outside
+        -- a text editor showing the same structure, say.  Labels that no
+        longer exist (an atom the user just renamed) are kept, so that a
+        reload which brings them back restores the highlight; they simply
+        have no visible effect meanwhile.  Passing ``None`` clears the
+        selection.
+
+        Bond selection is cleared, exactly as clicking an atom does.  No
+        ``atomClicked`` signal is emitted: this *is* the answer to one.
+        """
+        wanted = set() if labels is None else set(labels)
+        if wanted == self.selected_atoms and not self.selected_bonds:
+            return
+        self.selected_atoms = wanted
+        self.selected_bonds.clear()
+        if self.atoms:
+            self._build_geometry()
         self.update()
 
     def set_visible_parts(self, parts: set[int] | None) -> None:
