@@ -367,3 +367,25 @@ def test_a_failed_commit_leaves_no_trace_of_the_split(monkeypatch):
     assert session.document.text == before_text
     assert session._pairs == before_pairs
     assert not session.can_undo
+
+
+def test_a_moiety_whose_afix_is_closed_after_a_comment_can_be_split():
+    """REM lines between the last riding H and its AFIX 0 are comments.
+
+    ``BB_LJ45_a.res`` carries an embedded ``REM <hkl>`` block right there,
+    which used to push the duplicated block inside the AFIX 23 bracket and
+    made the whole CHCl2 moiety un-splittable.
+    """
+    host, loader = load(DATA / 'BB_LJ45_a.res')
+    host.drag(host.index('C1X'), (0.4, 0.3, 0.0), anchors=set())
+    report = commit_last(host, loader)
+    assert report.label.endswith('(5 atoms)')
+
+    shx = reparse(loader)
+    for name in ('CL3A', 'CL2A', 'C1XA', 'H1AA', 'H1BA'):
+        assert by_name(shx, name).part.n == 1, name
+    for name in ('CL3B', 'CL2B', 'C1XB', 'H1AB', 'H1BB'):
+        assert by_name(shx, name).part.n != 0, name
+    # Both AFIX 23 groups survived intact, riders next to their pivot.
+    assert by_name(shx, 'H1AA').afix.mn == 23
+    assert by_name(shx, 'H1AB').afix.mn == 23
