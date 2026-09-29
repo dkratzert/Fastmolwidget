@@ -407,6 +407,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
     partsChanged = QtCore.Signal(object)
     #: Emitted when the residual-density contour level changes.
     densityLevelChanged = QtCore.Signal(float)
+    #: Emitted once per finished drag that changed the model, with a
+    #: :class:`~fastmolwidget.disorder_drag.DragEdit` describing the change.
+    modelEdited = QtCore.Signal(object)
 
     # Vertical half-extent multiplier used for orthographic framing.
     _ORTHO_VIEW_MARGIN: float = 1.6
@@ -2754,6 +2757,9 @@ class MoleculeWidget3D(DisorderDragMixin, ModelSourceMixin, _WidgetBase):  # typ
     def _on_split_parts_changed(self) -> None:
         self.available_parts = frozenset(a.part for a in self.atoms)
         self.partsChanged.emit(self.available_parts)
+
+    def _on_model_edited(self, edit) -> None:
+        self.modelEdited.emit(edit)
 
     def _compute_riding_atoms(self) -> dict[int, int]:
         """Map every bonded hydrogen to the atom it rides on.

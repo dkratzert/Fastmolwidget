@@ -12,10 +12,11 @@ TODO:
 from argparse import ArgumentParser
 from pathlib import Path
 
-from qtpy import QtGui, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from fastmolwidget.density_controls import DensityControlsMixin
 from fastmolwidget.loader import MoleculeLoader
+from fastmolwidget.model_edit import CommitReport, ModelEditError
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.part_combo import PartFilterWidget
 
@@ -47,6 +48,9 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._best_view_button = QtWidgets.QPushButton("Best View")
         self._open_file_button = QtWidgets.QPushButton("Open File…")
         self._save_image_button = QtWidgets.QPushButton("Save Image…")
+        self._undo_button = QtWidgets.QPushButton("Undo")
+        self._redo_button = QtWidgets.QPushButton("Redo")
+        self._save_model_button = QtWidgets.QPushButton("Save Model…")
         self._init_density_controls()
 
         # "Hide Hydrogens" unchecked -> visible by default.
@@ -68,6 +72,24 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._grow_checkbox.toggled.connect(self._on_grow_toggled)
         self._pack_checkbox.toggled.connect(self._on_pack_toggled)
 
+        # Model editing: every finished drag is written into the SHELX model.
+        self._render_widget.modelEdited.connect(self._on_model_edited)
+        self._undo_button.clicked.connect(self.undo)
+        self._redo_button.clicked.connect(self.redo)
+        self._save_model_button.clicked.connect(self._save_model_dialog)
+        #: What the last committed edit reported (restraints, messages).
+        self.last_commit_report: CommitReport | None = None
+        self._shortcuts = []
+        for keys, slot in (('Ctrl+Z', self.undo), ('Ctrl+Y', self.redo),
+                           ('Ctrl+Shift+Z', self.redo)):
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(keys), self)
+            # This is an embeddable widget: a window-wide binding would
+            # collide with the host's own undo and disable both.
+            shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+            self._shortcuts.append(shortcut)
+        self._update_edit_controls()
+
         # Apply initial defaults.
         self._render_widget.set_bond_width(3)
         self._render_widget.show_labels(False)
@@ -83,6 +105,8 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         # Row 1: structure toggles.
         control_bar = QtWidgets.QHBoxLayout()
         control_bar.addWidget(self._open_file_button)
+        control_bar.addWidget(self._undo_button)
+        control_bar.addWidget(self._redo_button)
         control_bar.addWidget(self._grow_checkbox)
         control_bar.addWidget(self._pack_checkbox)
         control_bar.addWidget(self._adp_checkbox)
@@ -98,6 +122,7 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         control_bar2.addWidget(self._reset_center_button)
         control_bar2.addWidget(self._best_view_button)
         control_bar2.addWidget(self._save_image_button)
+        control_bar2.addWidget(self._save_model_button)
         control_bar2.addWidget(self._residual_density_button)
         control_bar2.addWidget(self._density_level_label)
         control_bar2.addWidget(self._density_level_spinbox)
@@ -119,11 +144,116 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         return self._render_widget
 
     def load_file(self, filename: str | Path) -> None:
-        """Load and display a structure file."""
+        """Load and display a structure file.  Unsaved model edits are lost."""
         self._loader.load_file(filename)
         self.setWindowTitle(str(Path(filename).resolve()))
         # Keep the controls in sync if a new model cleared density.
         self._sync_density_controls()
+        self._update_edit_controls()
+
+    # ------------------------------------------------------------------
+    # Model editing
+    # ------------------------------------------------------------------
+
+    @property
+    def edit_session(self):
+        """The editable SHELX model (:class:`~fastmolwidget.model_edit.ModelEditSession`),
+        or ``None`` when the loaded file is not a ``.res``/``.ins``."""
+        return self._loader.edit_session
+
+    def undo(self) -> str | None:
+        """Undo the last model edit; returns its label, or ``None``."""
+        return self._step_history(redo=False)
+
+    def redo(self) -> str | None:
+        """Redo the last undone model edit; returns its label, or ``None``."""
+        return self._step_history(redo=True)
+
+    def save_model(self, path: str | Path | None = None) -> Path:
+        """Write the edited model (default ``<basename>.ins``).
+
+        An existing file is backed up to ``<name>.bak`` first.
+
+        :raises RuntimeError: when no SHELX model is loaded.
+        """
+        session = self._loader.edit_session
+        if session is None:
+            raise RuntimeError('Only SHELX .res/.ins models can be saved')
+        written = session.save(path)
+        self._update_edit_controls()
+        return written
+
+    def _step_history(self, *, redo: bool) -> str | None:
+        session = self._loader.edit_session
+        if session is None or self._render_widget.drag_in_progress:
+            return None
+        label = session.redo() if redo else session.undo()
+        if label is not None:
+            self._loader.reload()
+        self._update_edit_controls()
+        return label
+
+    def _on_model_edited(self, edit) -> None:
+        """Write a finished drag into the SHELX model and redisplay it."""
+        session = self._loader.edit_session
+        if session is None:
+            return  # not an editable format: the drag stays visual only
+        from fastmolwidget.atoms import HYDROGEN_ELEMENTS
+
+        hydrogens = [i for i, atom in enumerate(self._render_widget.atoms)
+                     if atom.type_ in HYDROGEN_ELEMENTS]
+        try:
+            self.last_commit_report = session.commit(
+                edit, self._loader.atom_sources, hydrogens=hydrogens)
+        except ModelEditError as error:
+            self.last_commit_report = None
+            QtWidgets.QMessageBox.warning(
+                self, 'Cannot change the model',
+                f'{error}\n\nThe drag was discarded.')
+        finally:
+            # The model was rolled back, so the display has to follow it
+            # even when the commit failed.
+            self._loader.reload()
+            self._update_edit_controls()
+
+    def _update_edit_controls(self) -> None:
+        session = self._loader.edit_session
+        can_undo = session is not None and session.can_undo
+        can_redo = session is not None and session.can_redo
+        self._undo_button.setEnabled(can_undo)
+        self._redo_button.setEnabled(can_redo)
+        self._undo_button.setToolTip(
+            f'Undo {session.undo_label} (Ctrl+Z)' if can_undo else 'Nothing to undo')
+        self._redo_button.setToolTip(
+            f'Redo {session.redo_label} (Ctrl+Y)' if can_redo else 'Nothing to redo')
+        self._save_model_button.setEnabled(session is not None)
+        self._save_model_button.setToolTip(
+            'Write the edited model as a SHELX .ins file' if session is not None
+            else 'Only SHELX .res/.ins models can be edited and saved')
+
+    def _save_model_dialog(self) -> None:
+        session = self._loader.edit_session
+        if session is None:
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, 'Save Model', str(session.default_save_path()),
+            'SHELX Instruction File (*.ins);;SHELX Result File (*.res);;All Files (*)',
+        )
+        if path:
+            self.save_model(path)
+
+    def _confirm_discard_edits(self) -> bool:
+        """Ask before unsaved model edits are thrown away."""
+        session = self._loader.edit_session
+        if session is None or not session.is_modified:
+            return True
+        answer = QtWidgets.QMessageBox.question(
+            self, 'Unsaved model changes',
+            'The model has unsaved changes. Discard them?',
+            QtWidgets.QMessageBox.StandardButton.Discard
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QtWidgets.QMessageBox.StandardButton.Discard
 
     def grow(self) -> None:
         """Grow the current structure to full molecules."""
@@ -195,6 +325,8 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
 
     def _open_file_dialog(self) -> None:
         """Open a file dialog and load the chosen structure."""
+        if not self._confirm_discard_edits():
+            return
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Open Structure File",
@@ -235,7 +367,7 @@ if __name__ == "__main__":
     # w.load_file('tests/test-data/1548072_many_atoms.cif')
     # w.load_file(Path('tests/test-data/4060314.cif'))
     # w.load_file(Path('tests/test-data/1979688_small.cif'))
-    w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1367_ESM.cif'))
+    # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1367_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1368_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1369_ESM.cif'))
     # w.load_file(Path('tests/test-data/41467_2015_BFncomms9288_MOESM1370_ESM.cif'))

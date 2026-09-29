@@ -7,13 +7,31 @@ from pathlib import Path
 from shelxfile import Shelxfile
 
 from fastmolwidget.cif.cif_file_io import CifReader
+from fastmolwidget.model_edit import AtomSource, ModelEditSession
 from fastmolwidget.molecule2D import MoleculeWidget
 from fastmolwidget.sdm import Atomtuple
 from fastmolwidget.tools import display_u_iso, to_float
 
 
+def _read_shelx(source: str | Path | Shelxfile) -> Shelxfile:
+    """*source* itself when it is already a model, otherwise the parsed file."""
+    if isinstance(source, Shelxfile):
+        return source
+    shx = Shelxfile()
+    shx.read_file(Path(source))
+    return shx
+
+
 class MoleculeLoader:
-    """Load CIF, SHELX and XYZ files into a :class:`MoleculeWidget`."""
+    """Load CIF, SHELX and XYZ files into a :class:`MoleculeWidget`.
+
+    A SHELX ``.res``/``.ins`` file is held as an editable
+    :class:`~fastmolwidget.model_edit.ModelEditSession` (see
+    :attr:`edit_session`): every internal reload - Grow, Pack, and
+    :meth:`reload` after an edit or undo - reads the *edited* model, so
+    changes survive those toggles.  :meth:`load_file` always starts again
+    from the file on disk.
+    """
 
     _FORMAT_MAP: dict[str, str] = {
         '.cif': '_load_cif',
@@ -28,16 +46,36 @@ class MoleculeLoader:
         self._pack_enabled: bool = False
         self._pack_symmop_indices: list[int] | None = None
         self._last_path: Path | None = None
+        self._edit_session: ModelEditSession | None = None
+        self._atom_sources: list[AtomSource | None] = []
 
     @property
     def widget(self) -> MoleculeWidget:
         """The :class:`MoleculeWidget` this loader populates."""
         return self._widget
 
+    @property
+    def edit_session(self) -> ModelEditSession | None:
+        """The editable model of the loaded SHELX file, or ``None``.
+
+        Only ``.res``/``.ins`` files are editable.
+        """
+        return self._edit_session
+
+    @property
+    def atom_sources(self) -> list[AtomSource | None]:
+        """Where each displayed atom comes from in :attr:`edit_session`.
+
+        Parallel to the atoms last handed to the widget; empty for formats
+        that cannot be edited.
+        """
+        return self._atom_sources
+
     def load_file(self, path: str | Path, *, keep_view: bool = False) -> None:
         """Load a molecular structure from *path*.
 
-        The file format is determined from the file extension.
+        The file format is determined from the file extension.  Any edits
+        to a previously loaded model are discarded.
 
         :param path: Path to the file.
         :param keep_view: If ``True``, preserve the current zoom / rotation.
@@ -45,7 +83,6 @@ class MoleculeLoader:
         :raises FileNotFoundError: If the file does not exist.
         """
         path = Path(path)
-        self._last_path = path
         suffix = path.suffix.lower()
         loader_name = self._FORMAT_MAP.get(suffix)
         if loader_name is None:
@@ -57,10 +94,25 @@ class MoleculeLoader:
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
+        self._last_path = path
+        self._edit_session = None
+        self._load(path, keep_view=keep_view)
+
+    def reload(self, *, keep_view: bool = True) -> None:
+        """Redisplay the current model, edits included.
+
+        Used after committing, undoing or redoing an edit and by the Grow
+        and Pack toggles.  Does nothing before a file was loaded.
+        """
+        if self._last_path is not None:
+            self._load(self._last_path, keep_view=keep_view)
+
+    def _load(self, path: Path, *, keep_view: bool) -> None:
         # A new model invalidates the old density map. Reloading the same path
         # keeps it, which is what grow/pack rely on.
         self._widget.set_model_source(path)
-        loader = getattr(self, loader_name)
+        self._atom_sources = []
+        loader = getattr(self, self._FORMAT_MAP[path.suffix.lower()])
         loader(path, keep_view=keep_view)
 
     _GROWABLE_FORMATS: frozenset[str] = frozenset({'.cif', '.res', '.ins'})
@@ -75,7 +127,7 @@ class MoleculeLoader:
         if (self._last_path is not None
                 and self._last_path.suffix.lower() in self._GROWABLE_FORMATS
                 and not self._pack_enabled):
-            self.load_file(self._last_path, keep_view=True)
+            self.reload()
 
     def set_pack(
         self,
@@ -91,7 +143,7 @@ class MoleculeLoader:
         self._pack_symmop_indices = symmop_indices
         if (self._last_path is not None
                 and self._last_path.suffix.lower() in self._GROWABLE_FORMATS):
-            self.load_file(self._last_path, keep_view=True)
+            self.reload()
 
     # ------------------------------------------------------------------
     # CIF loading
@@ -188,22 +240,35 @@ class MoleculeLoader:
 
     def _load_shelx(self, path: Path, *, keep_view: bool = False) -> None:
         """Load a SHELX instruction (.res / .ins) file using the
-        :mod:`shelxfile` library."""
-        atoms, cell = self._parse_shelx(path)
+        :mod:`shelxfile` library.
+
+        The model comes from :attr:`edit_session`, created from *path* the
+        first time, so reloads show the edited model.  ``load_file`` drops
+        the session before it dispatches here, so a session that survives is
+        always the one built from *path*.
+        """
+        if self._edit_session is None:
+            self._edit_session = ModelEditSession.from_file(path)
+        session = self._edit_session
+        shx = session.shelxfile
+        atoms, cell = self._parse_shelx(shx)
         if self._pack_enabled:
-            atoms = self._compute_packed_atoms_shelx(path, self._pack_symmop_indices)
+            atoms = self._compute_packed_atoms_shelx(shx, self._pack_symmop_indices)
         elif self._grow_enabled:
-            atoms = self._compute_grown_atoms_shelx(path)
+            atoms = self._compute_grown_atoms_shelx(shx)
+        self._atom_sources = session.sources_for(atoms)
         self._widget.open_molecule(atoms=atoms, cell=cell, keep_view=keep_view)
         self._widget._is_packed = self._pack_enabled
+        register = getattr(self._widget, 'register_disorder_pairs', None)
+        if register is not None:
+            register(session.pairs_in(self._atom_sources))
 
     @staticmethod
-    def _compute_grown_atoms_shelx(path: Path) -> list:
+    def _compute_grown_atoms_shelx(path: Path | Shelxfile) -> list:
         """Expand a SHELX asymmetric unit to complete molecules via the SDM."""
         from fastmolwidget.sdm import SDM
 
-        shx = Shelxfile()
-        shx.read_file(path)
+        shx = _read_shelx(path)
 
         cell_params: tuple[float, float, float, float, float, float] = (
             shx.cell.a, shx.cell.b, shx.cell.c,
@@ -242,7 +307,7 @@ class MoleculeLoader:
 
     @staticmethod
     def _compute_packed_atoms_shelx(
-        path: Path,
+        path: Path | Shelxfile,
         symmop_indices: list[int] | None = None,
     ) -> list:
         """Pack one SHELX unit cell.
@@ -253,8 +318,7 @@ class MoleculeLoader:
         """
         from fastmolwidget.sdm import SDM
 
-        shx = Shelxfile()
-        shx.read_file(path)
+        shx = _read_shelx(path)
 
         cell_params: tuple[float, float, float, float, float, float] = (
             shx.cell.a, shx.cell.b, shx.cell.c,
@@ -306,7 +370,7 @@ class MoleculeLoader:
 
     @staticmethod
     def _parse_shelx(
-        path: Path,
+        path: Path | Shelxfile,
     ) -> tuple[
         list[Atomtuple],
         tuple[float, float, float, float, float, float],
@@ -316,8 +380,7 @@ class MoleculeLoader:
         Returns Cartesian atoms with embedded ADPs and the unit cell. Q-peaks
         are skipped.
         """
-        shx = Shelxfile()
-        shx.read_file(path)
+        shx = _read_shelx(path)
 
         if shx.cell is None:
             raise ValueError(f"No CELL instruction found in SHELX file: {path}")

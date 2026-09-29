@@ -176,6 +176,8 @@ mol.bondClicked.connect(lambda a, b: print(f"Clicked bond: {a}–{b}"))
 | Ctrl + Scroll wheel     | Raise / lower the residual-density contour level by 0.02 e/Å³ per notch (passed through when no density map is shown)                     |
 | Left-click              | Select a single atom or bond                                                                                                              |
 | Ctrl + Left-click       | Toggle multi-selection                                                                                                                    |
+| Ctrl + Left-drag        | 3D: drag a disorder moiety - split it into a second part the first time (selected atoms or one selected bond are the fixed border)        |
+| Ctrl + Shift + Left-drag | 3D: move a single atom freely                                                                                                             |
 | Hover over atom         | Show the atom label (enlarged when persistent labels are on)                                                                              |
 | Hover over bond         | Show the bond distance (Å) in a rounded tooltip near the cursor                                                                           |
 
@@ -188,6 +190,8 @@ The widget must have keyboard focus (click on it once) for these shortcuts to wo
 | F1  | Align the view so that the reciprocal axis **a\*** points towards the viewer (requires a unit cell) |
 | F2  | Align the view so that the reciprocal axis **b\*** points towards the viewer (requires a unit cell) |
 | F3  | Align the view so that the reciprocal axis **c\*** points towards the viewer (requires a unit cell) |
+| Ctrl+Z | 3D viewer: undo the last model edit (see [Writing dragged disorder back](#writing-dragged-disorder-back-to-a-shelx-file)) |
+| Ctrl+Y / Ctrl+Shift+Z | 3D viewer: redo |
 
 > **Note:** The F-key shortcuts are available in both the 2D (`MoleculeWidget`) and 3D (`MoleculeWidget3D`) renderers. They have no effect when no unit cell is loaded (e.g. plain XYZ files).
 
@@ -201,7 +205,8 @@ Both viewers expose the same two-row control bar:
 
 | Control               | Default | Description                                                                                    |
 |-----------------------|---------|------------------------------------------------------------------------------------------------|
-| Open File…            | —       | Opens a file dialog to load a structure file                                                   |
+| Open File…            | —       | Opens a file dialog to load a structure file (asks first when the model has unsaved edits)     |
+| Undo / Redo           | —       | 3D viewer only: step through the model edits made by dragging (tooltips name the step)         |
 | Grow                  | ✗       | Expand the asymmetric unit to complete molecules (mutually exclusive with Pack Unit Cell)       |
 | Pack Unit Cell        | ✗       | Generate all symmetry-equivalent positions within one unit cell (mutually exclusive with Grow) |
 | Show ADP              | ✓       | Toggle ORTEP ellipsoid / isotropic sphere rendering                                            |
@@ -217,6 +222,7 @@ Both viewers expose the same two-row control bar:
 | Reset Rotation Center | —       | Restores the rotation pivot to the molecule's geometric centre (both 2D and 3D)               |
 | Best View             | —       | Rotates the current structure to a visibility-optimized orientation (PCA on visible atoms)     |
 | Save Image…           | —       | Opens a file-save dialog and writes the current view to a PNG or JPEG file                    |
+| Save Model…           | —       | 3D viewer only: writes the edited SHELX model, default `<basename>.ins`; an existing file is kept as `.bak`. Disabled for CIF/XYZ |
 | Residual Density      | off     | Checkable — pressed (sunken, green) while the Fo−Fc isosurface is shown; click again to hide it. Uses reflections embedded in the model file directly, and opens a file dialog when a separate reflection file is needed |
 | Level                 | 3σ      | Contour level of the residual-density isosurface in e/Å³; defaults to 3× the map RMS and is enabled only while density is shown. **Ctrl + mouse wheel** over the structure changes it too, in 0.02 e/Å³ steps |
 | Parts                 | All     | Filter displayed disorder parts; shown when multiple part values are present                   |
@@ -237,6 +243,9 @@ A self-contained 3D viewer combining `MoleculeWidget3D` with the control bar.
 - `grow()` — expand the asymmetric unit to complete molecules using crystal symmetry; deactivates Pack Unit Cell if active; no-op for XYZ files or when no file is loaded
 - `set_bond_color(color)` — set the default color for non-selected bonds
 - `render_widget` — read-only property exposing the underlying `MoleculeWidget3D`
+- `edit_session` — the editable SHELX model (`ModelEditSession`); `None` unless a `.res`/`.ins` file is loaded
+- `undo()` / `redo()` — step through the model edits; return the step's label, or `None`
+- `save_model(path=None)` — write the edited model (default `<basename>.ins`; an existing file is kept as `<name>.bak`)
 
 ### `MoleculeViewerQuickWidget(parent=None)`
 
@@ -288,6 +297,7 @@ GLSL shader targets are platform-aware: `#version 120` on macOS (OpenGL 2.1 / GL
 |---------------|------------------------------|----------------------------|
 | `atomClicked` | `(label: str)`               | The user clicks on an atom |
 | `bondClicked` | `(label1: str, label2: str)` | The user clicks on a bond  |
+| `modelEdited` | `(edit: DragEdit)`           | A disorder or single-atom drag finished and changed the model |
 
 #### Data Methods
 
@@ -763,6 +773,57 @@ vertices, edges = m.isosurface(0.3)   # Cartesian wireframe
 # only made once, which is what the widgets use to re-contour.
 (pos, neg) = m.isosurfaces((0.3, -0.3), atoms=coordinates, margin=1.5)
 ```
+
+## Writing dragged disorder back to a SHELX file
+
+In the 3D viewer, a **Ctrl + drag** splits a moiety into a second disorder
+part and moves the copy; **Ctrl + Shift + drag** moves one atom. For a SHELX
+`.res`/`.ins` file, every finished drag is written into an in-memory model as
+one undo step. That model is what the viewer shows from then on, so the edits
+survive **Grow** and **Pack Unit Cell**. **Save Model…** writes it as
+`<basename>.ins`. CIF and XYZ files can still be dragged, but only visually.
+
+A split writes:
+
+| What | SHELXL |
+|---|---|
+| Originals | `PART 1`, renamed `C1` → `C1A` (kept when that exceeds 4 characters), sof `10·fv + p` on a new free variable (`FVAR … 0.5`) |
+| Copies | `PART 2`, named `C1B` (or the next free letter, `H10A` → `H10D`), sof `−(10·fv + p)`; `AFIX` groups are copied, so riding hydrogens stay riding |
+| Bonds (full-stiffness springs) | `SADI 0.02` comparing each bond in part 1 with its counterpart in part 2 |
+| 1,3 pairs (loose springs) | `SADI 0.04` |
+| Planar groups | one `FLAT` per group and part |
+| ADPs | `RIGU` and `SIMU` over both parts and the anchors; with isotropic splitting, U = 0.035 Å² |
+
+*p* is the atom's own fixed occupancy. Moieties on a special position get a
+**negative** `PART -2` for the copy, so SHELXL no longer applies
+special-position constraints to it:
+
+- Atoms with a reduced site occupancy keep it. An acetonitrile on a
+  three-fold axis at `10.33333` becomes `20.33333` / `−20.33333`.
+- A molecule grown across the special position (Grow, then dragging both
+  halves) is written out whole, as explicit atoms, each with occupancy
+  `(1 − fv)/k` for *k* images. Restraints across the symmetry use `EQIV`
+  names such as `C1A_$1`.
+
+A dragged symmetry image is mapped back into the asymmetric unit with the
+inverse operation. Splitting atoms that are already in a disorder part, or
+whose occupancy is already refined, is refused with a message, and the drag
+is discarded.
+
+Undo and redo (**Ctrl+Z**, **Ctrl+Y** / **Ctrl+Shift+Z**, or the buttons)
+restore the complete file text of each step, which the history stores. Without
+Qt:
+
+```python
+from fastmolwidget import ModelEditSession
+
+session = ModelEditSession.from_file("structure.res")
+session.commit(drag_edit, sources)     # DragEdit from MoleculeWidget3D.modelEdited
+session.undo(); session.redo()
+session.save()                         # structure.ins, previous file -> structure.ins.bak
+```
+
+This needs the editing layer of *shelxfile* 30 (`shelxfile.edit.ShelxDocument`).
 
 ## Running the Examples
 

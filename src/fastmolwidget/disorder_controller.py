@@ -91,6 +91,11 @@ class DisorderDragMixin(_Base):
         #: ``None`` between drags.  No moiety, no anchors, no duplication -
         #: just that one atom's position changes.
         self._single_atom_drag_index: int | None = None
+        #: Positions when the current gesture started, compared on release to
+        #: report which atoms actually moved (see :meth:`_on_model_edited`).
+        self._drag_start_positions: dict[int, np.ndarray] | None = None
+        #: The split made at the start of the current gesture, if any.
+        self._pending_split = None
 
     @property
     def dragged_atoms_are_isotropic(self) -> bool:
@@ -120,6 +125,20 @@ class DisorderDragMixin(_Base):
     def _reset_disorder_split(self) -> None:
         """Forget every split - a reloaded atom list invalidates all indices."""
         self._disorder_split.clear()
+        self._drag_start_positions = None
+        self._pending_split = None
+
+    def register_disorder_pairs(self, pairs) -> None:
+        """Declare existing ``(part-1 index, part-2 index)`` split pairs.
+
+        After a model is reloaded from a file that already contains a split
+        made earlier, the renderer no longer knows which atom is whose copy.
+        Registering the pairs restores that, so dragging either half moves
+        it instead of splitting it a second time.
+        """
+        mapping = {int(first): int(second) for first, second in pairs}
+        if mapping:
+            self._disorder_split.register(mapping)
 
     def _make_atom_isotropic(self, index: int) -> None:
         """Permanently flatten one atom's ADP to an isotropic equivalent.
@@ -195,6 +214,7 @@ class DisorderDragMixin(_Base):
         :returns: ``True`` when a session was started.
         """
         from fastmolwidget.disorder_drag import (
+            DragSplit,
             atomic_mass,
             bond_split_ends,
             build_drag_session,
@@ -262,10 +282,15 @@ class DisorderDragMixin(_Base):
             moiety = find_moiety(connections, anchor_indices, grabbed_index)
             if grabbed_index not in moiety:
                 return False
+            springs = self._describe_split_springs(connections, moiety, anchor_indices)
             duplicate_map = self._create_disorder_duplicate(moiety, anchor_indices)
             if not duplicate_map:
                 return False
             self._disorder_split.register(duplicate_map)
+            self._pending_split = DragSplit(
+                duplicates=dict(duplicate_map), isotropic=self.dragged_atoms_are_isotropic,
+                **springs,
+            )
             drag_grabbed_index = duplicate_map[grabbed_index]
             connections = self._drag_connections()
 
@@ -297,11 +322,14 @@ class DisorderDragMixin(_Base):
             planar_groups=planar_groups,
             planar_excluded=hydrogen_indices,
         )
-        if session is None:
-            return False
-        if not self._begin_drag_projection(drag_grabbed_index, x, y):
+        if session is None or not self._begin_drag_projection(drag_grabbed_index, x, y):
+            # A split made above is real even though no drag follows it, so
+            # it is still reported to the model.
+            self._drag_start_positions = positions
+            self._report_model_edit()
             return False
 
+        self._drag_start_positions = positions
         self._disorder_drag_session = session
         return True
 
@@ -339,6 +367,7 @@ class DisorderDragMixin(_Base):
             return False
 
         self._single_atom_drag_index = index
+        self._drag_start_positions = {index: self._drag_atom_position(index)}
         return True
 
     def update_single_atom_drag(self, x: float, y: float) -> None:
@@ -356,7 +385,11 @@ class DisorderDragMixin(_Base):
         self._apply_drag_positions({index: target})
 
     def end_drag(self) -> None:
-        """Finish any drag in progress.  Positions already applied are kept."""
+        """Finish any drag in progress.  Positions already applied are kept.
+
+        The resulting model change, if any, is reported through
+        :meth:`_on_model_edited` after :meth:`_on_drag_finished`.
+        """
         was_dragging = (self._disorder_drag_session is not None
                         or self._single_atom_drag_index is not None)
         self._disorder_drag_session = None
@@ -364,6 +397,56 @@ class DisorderDragMixin(_Base):
         self._end_drag_projection()
         if was_dragging:
             self._on_drag_finished()
+            self._report_model_edit()
+
+    def _describe_split_springs(self, connections, moiety: set[int],
+                                anchors: set[int]) -> dict:
+        """The drag springs of *moiety*, recorded for restraint generation."""
+        from fastmolwidget.atoms import HYDROGEN_ELEMENTS
+        from fastmolwidget.disorder_drag import (
+            detect_planar_groups,
+            moiety_angle_pairs,
+            moiety_edges,
+        )
+
+        count = self._drag_atom_count()
+        hydrogens = {i for i in range(count) if self._drag_atom_type(i) in HYDROGEN_ELEMENTS}
+        positions = {i: self._drag_atom_position(i) for i in moiety | anchors}
+        groups = detect_planar_groups(connections, positions, moiety, anchors, exclude=hydrogens)
+        return {
+            'anchors': tuple(sorted(anchors)),
+            'bonds': tuple(moiety_edges(connections, moiety, anchors)),
+            'angle_pairs': tuple(moiety_angle_pairs(connections, moiety, anchors)),
+            'planar_groups': tuple(tuple(group) for group in groups),
+        }
+
+    def _collect_model_edit(self):
+        """Build the :class:`~fastmolwidget.disorder_drag.DragEdit` of the
+        gesture that just ended, or ``None`` when nothing changed."""
+        from fastmolwidget.disorder_drag import DragEdit
+
+        start = self._drag_start_positions
+        split = self._pending_split
+        self._drag_start_positions = None
+        self._pending_split = None
+        if start is None and split is None:
+            return None
+        positions: dict[int, np.ndarray] = {}
+        for index, previous in (start or {}).items():
+            current = np.asarray(self._drag_atom_position(index), dtype=float)
+            if float(np.linalg.norm(current - previous)) > 1e-4:
+                positions[index] = current
+        if split is not None:
+            # A copy is reported whether or not it ended up where it started.
+            for index in split.duplicates.values():
+                positions[index] = np.asarray(self._drag_atom_position(index), dtype=float)
+        edit = DragEdit(positions=positions, split=split)
+        return None if edit.is_empty else edit
+
+    def _report_model_edit(self) -> None:
+        edit = self._collect_model_edit()
+        if edit is not None:
+            self._on_model_edited(edit)
 
     @property
     def drag_in_progress(self) -> bool:
@@ -609,4 +692,13 @@ class DisorderDragMixin(_Base):
         Hosts update whatever they expose as the available parts and notify
         their viewer (``available_parts`` / ``partsChanged`` in the Qt
         renderers).
+        """
+
+    def _on_model_edited(self, edit) -> None:
+        """Called once per finished gesture that changed the model.
+
+        *edit* is a :class:`~fastmolwidget.disorder_drag.DragEdit`.  Qt hosts
+        emit it as a signal so a model owner (the viewer and its
+        :class:`~fastmolwidget.model_edit.ModelEditSession`) can write it
+        back.  Runs after :meth:`_on_drag_finished`.  Does nothing by default.
         """

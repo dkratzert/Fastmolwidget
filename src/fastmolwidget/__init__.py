@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         read_shelx_parameters,
     )
     from fastmolwidget.loader import MoleculeLoader
+    from fastmolwidget.model_edit import ModelEditError, ModelEditSession
     from fastmolwidget.molecule2D import MoleculeWidget
     from fastmolwidget.molecule3D import MoleculeWidget3D
     from fastmolwidget.molecule_base import (
@@ -46,6 +47,8 @@ _LAZY_IMPORTS = {
     "MoleculeQuickItem": "fastmolwidget.molecule_quick",
     "MoleculeWidget": "fastmolwidget.molecule2D",
     "MoleculeLoader": "fastmolwidget.loader",
+    "ModelEditSession": "fastmolwidget.model_edit",
+    "ModelEditError": "fastmolwidget.model_edit",
     "MoleculeWidget3D": "fastmolwidget.molecule3D",
     "MoleculeViewer3DWidget": "fastmolwidget.viewer_widget3D",
     "MoleculeWidgetProtocol": "fastmolwidget.molecule_base",
@@ -67,6 +70,8 @@ _LAZY_IMPORTS = {
 
 __all__ = [
     "Atomtuple",
+    "ModelEditError",
+    "ModelEditSession",
     "ModelSourceMixin",
     "MoleculeLoader",
     "MoleculeQuickItem",

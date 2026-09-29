@@ -111,6 +111,8 @@ __all__ = [
     'TORSION_FLEXIBILITY',
     'DensityGuide',
     'DisorderSplit',
+    'DragEdit',
+    'DragSplit',
     'ElasticDrag',
     'MoietyDragSession',
     'RigidPivotDrag',
@@ -637,6 +639,54 @@ class DisorderSplit:
             if duplicate == index:
                 return original
         return index
+
+
+@dataclass(frozen=True)
+class DragSplit:
+    """How a moiety was split into a new disorder part during one drag.
+
+    Everything is expressed as renderer atom indices, valid until the next
+    reload of the atom list.  The spring set is recorded exactly as the drag
+    solver used it (see :func:`moiety_edges`, :func:`moiety_angle_pairs`,
+    :func:`detect_planar_groups`), so it can be turned into the matching
+    refinement restraints.
+
+    :ivar duplicates: ``{original_index: copy_index}`` for every split atom.
+    :ivar anchors: The fixed border atoms shared by both parts.
+    :ivar bonds: Real bonds (full-stiffness springs) among the originals and
+        to the anchors.
+    :ivar angle_pairs: 1,3 pairs (loose springs), same index space.
+    :ivar planar_groups: Planar groups of the originals (hydrogens excluded).
+    :ivar isotropic: Whether the split was flattened to isotropic ADPs.
+    """
+
+    duplicates: dict[int, int]
+    anchors: tuple[int, ...] = ()
+    bonds: tuple[tuple[int, int], ...] = ()
+    angle_pairs: tuple[tuple[int, int], ...] = ()
+    planar_groups: tuple[tuple[int, ...], ...] = ()
+    isotropic: bool = True
+
+
+@dataclass(frozen=True)
+class DragEdit:
+    """The model change produced by one finished drag gesture.
+
+    Handed to whoever keeps the underlying model (see
+    :class:`fastmolwidget.model_edit.ModelEditSession`) so the change can be
+    written back.  Qt-free plain data.
+
+    :ivar positions: Final Cartesian position of every atom that moved, and
+        of every copy made by :attr:`split` (moved or not), by atom index.
+    :ivar split: The split made at the start of the drag, if any.
+    """
+
+    positions: dict[int, np.ndarray]
+    split: DragSplit | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.positions and self.split is None
 
 
 def plan_disorder_duplicate(

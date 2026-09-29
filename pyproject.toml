@@ -23,7 +23,7 @@ dependencies = [
     "gemmi>=0.7.5",
     "numpy>=2.2.0",
     "qtpy>=2.4.3",
-    "shelxfile>=27",
+    "shelxfile>=30",
 ]
 
 [project.optional-dependencies]
@@ -77,6 +77,13 @@ doc = [
 
 [project.scripts]
 fastmolwidget = "fastmolwidget:main"
+
+# shelxfile 30 brings the editing layer (ShelxDocument.move_atoms,
+# assign_part, duplicate_atoms, undo/redo) that writing dragged disorder
+# back needs.  Until it is published, development builds take it from the
+# local checkout of the 'editor' branch.
+[tool.uv.sources]
+shelxfile = { path = "../ShelXFile", editable = true }
 
 
 [build-system]
