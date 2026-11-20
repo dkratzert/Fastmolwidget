@@ -356,7 +356,7 @@ class MoleculeLoader:
     def _parse_xyz(path: Path) -> list[Atomtuple]:
         """Parse a standard XYZ file and return a list of
         :class:`Atomtuple`."""
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
         if len(lines) < 3:
             raise ValueError(f"XYZ file too short: {path}")
 

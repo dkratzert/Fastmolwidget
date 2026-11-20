@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [ "3.12", "3.13", "3.14" ]
+        python-version: [ "3.12", "3.13", "3.14", "3.15" ]
         os: [ windows-latest , ubuntu-latest ]
         include:
           - os: ubuntu-latest
@@ -53,6 +53,11 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install libomp
+
+      # gemmi 0.7.5 has no cp315 wheels; its bundled zlib needs a C23 mode with MSVC.
+      - name: Allow building gemmi from source (Windows)
+        if: runner.os == 'Windows'
+        run: echo "CFLAGS=/std:clatest" >> "$GITHUB_ENV"
 
       - name: Install the project
         # run: uv sync --extra pyside6 --extra gl3d --dev

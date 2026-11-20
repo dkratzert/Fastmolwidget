@@ -1128,7 +1128,10 @@ def test_save_image_3d_labels_appear_in_file(tmp_path):
     fb = widget.grabFramebuffer()
     if fb.isNull() or fb.bits() is None:
         pytest.skip("grabFramebuffer returned a null image — GL not rendering")
-    fb_arr = np.frombuffer(fb.bits(), dtype=np.uint8).reshape(fb.height(), fb.width(), 4)
+    bits = fb.bits()
+    if hasattr(bits, "setsize"):  # PyQt returns an unsized sip.voidptr
+        bits.setsize(fb.sizeInBytes())
+    fb_arr = np.frombuffer(bits, dtype=np.uint8).reshape(fb.height(), fb.width(), 4)
     if fb_arr.max() < 10:
         pytest.skip("grabFramebuffer returned a blank image — GL not rendering")
 

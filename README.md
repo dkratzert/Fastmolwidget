@@ -73,7 +73,7 @@ uv pip install -e . --no-build-isolation
 brew install libomp
 ```
 
-**Requirements**: Python ≥ 3.12, NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
+**Requirements**: Python ≥ 3.12 (tested up to 3.15), NumPy, gemmi, shelxfile, qtpy, and either PySide6 or PyQt6.
 
 ## Quick Start
 

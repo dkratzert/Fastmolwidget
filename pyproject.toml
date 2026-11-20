@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Scientific/Engineering :: Chemistry",
     "Topic :: Software Development :: User Interfaces",
 ]
@@ -29,6 +30,8 @@ dependencies = [
 [project.optional-dependencies]
 pyside6 = [
     "pyside6-essentials>=6.11.0",
+    # PySide6 < 6.12 declares Requires-Python < 3.15.
+    "pyside6-essentials>=6.12.0; python_version >= '3.15'",
 ]
 pyqt6 = [
     "pyqt6>=6.9.0",
@@ -87,6 +90,10 @@ fastmolwidget = "fastmolwidget:main"
 requires = ["setuptools>=68", "pybind11>=2.13", "numpy>=2.2.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv]
+# gemmi 0.7.5 has no cp315 wheels and its sdist does not build with nanobind 3.
+build-constraint-dependencies = ["nanobind<3"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -106,9 +113,9 @@ fastmolwidget = [
 version = {attr = "fastmolwidget.__version__"}
 
 [tool.cibuildwheel]
-# Build wheels for Python 3.12, 3.13, and 3.14 on Windows, macOS, and Linux
+# Build wheels for Python 3.12 to 3.15 on Windows, macOS, and Linux
 skip = ["*-win32", "*-manylinux_i686"]
-build = ["cp312-*", "cp313-*", "cp314-*"]
+build = ["cp312-*", "cp313-*", "cp314-*", "cp315-*"]
 # Skip per-wheel testing — the dedicated `tests` job (needs: tests) already
 # validates the code before release-build runs.
 test-skip = "*"
