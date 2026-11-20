@@ -1,6 +1,12 @@
 Fastmolwidget changes
 =====================
 
+v1.6.1
+------
+- Fixed: the macOS release build ran on the retired macos-14 runner image
+  and failed ("configuration 'macos-14-arm64-us-default' is not supported").
+  It now runs on macos-15. The wheels still target macOS 14.0+.
+
 v1.6.0
 ------
 - New: Python 3.15 support. cp315 wheels are built (cibuildwheel v4.3) and
