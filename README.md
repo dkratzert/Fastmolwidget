@@ -853,9 +853,31 @@ neither can drift away from the other:
   undo steps back through `Edit text`, `Split C4`, `Move N1`, … in order.
 - **Selection is shared.** Clicking an atom scrolls the editor to its line;
   moving the text cursor onto an atom highlights it in 3D.
-- **Refine (SHELXL)** runs on the current text and loads the refined `.res`
-  back into both views. Any residual-density map is dropped, because it was
-  computed from the pre-refinement *F*c.
+- **Refine (SHELXL)** runs on the current text **in the background** — the GUI
+  never waits for SHELXL — and loads the refined `.res` back into both views as
+  one undo step. While it runs, the text is read-only and drags, undo/redo and
+  Save Model are disabled, because the result replaces the model it was started
+  on. Any residual-density map is dropped afterwards, because it was computed
+  from the pre-refinement *F*c.
+- **SHELXL output** appears live in a collapsible panel under the editor text,
+  taking a quarter of the pane's height. It opens when a refinement starts,
+  collapses when it succeeds (click its header to read the output again), and
+  stays open with the reason when it fails. Its second tab, **List file**,
+  shows SHELXL's `<model>.lst`; it is read when the tab is opened and re-read
+  after every refinement, or whenever the file has changed.
+- **Refinement summary** — in the space beside the control rows, right under
+  the editor pane and as wide as it: cycle *n* / *N*, data / restraints /
+  parameters, R1 [Fo > 4σ(Fo)], R1 (all data), wR2, GooF, restrained GooF,
+  max and mean shift/esd, highest peak and deepest hole, Flack *x* (classical
+  fit) and Parsons *z* (quotients) in one field, and the
+  `WGHT` SHELXL recommends. It follows SHELXL's console output cycle by cycle
+  while it runs, then takes the final values from the `.lst` file; on loading a
+  model with a `.lst` it shows that file's last refinement. Its header also
+  shows the model's **space group** — also for a file that was never refined —
+  derived from `LATT`/`SYMM` (the name in `TITL … in …` is free text and only
+  the fallback). Hover over a value
+  for details. In a window too narrow for it, it shrinks rather than widening
+  the window.
 
 The editor pane opens 84 characters wide — SHELXL's 80-column limit plus a
 little — and can be resized or collapsed by dragging the splitter. Its toolbar

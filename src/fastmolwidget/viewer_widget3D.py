@@ -20,6 +20,8 @@ from fastmolwidget.loader import MoleculeLoader
 from fastmolwidget.model_edit import CommitReport, ModelEditError
 from fastmolwidget.molecule3D import MoleculeWidget3D
 from fastmolwidget.part_combo import PartFilterWidget
+from fastmolwidget.refine_log import RefineLogPanel, RefinementSummaryWidget
+from fastmolwidget.shelxl_summary import RefinementSummary, space_group_of
 
 #: How long the editor has to be idle before its text is applied to the
 #: model, in milliseconds.  Long enough not to re-parse mid-word, short
@@ -145,10 +147,21 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         # atom_selected, select_atoms emits nothing).
         self._render_widget.atomClicked.connect(self._editor.jump_to_atom)
         self._editor.atom_selected.connect(self._on_editor_atom_selected)
-        # Connected after the editor's own handler, so it runs once the
-        # refinement is over: the residual-density map was computed from
-        # the pre-refinement Fc and means nothing afterwards.
-        self._editor.refine_button.clicked.connect(self._on_refine_clicked)
+
+        # SHELXL runs in the background (the editor starts it on a worker
+        # thread); its console output appears live in a collapsible panel
+        # under the editor text.
+        self._log_panel = RefineLogPanel()
+        self._editor.refine_started.connect(self._on_refine_started)
+        self._editor.refine_output.connect(self._on_refine_output)
+        self._editor.refine_finished.connect(self._on_refine_finished)
+
+        # The headline numbers of the running or last refinement: live from
+        # SHELXL's console output, then from its .lst file.
+        self._summary = RefinementSummary()
+        self._summary_widget = RefinementSummaryWidget()
+        # Only meaningful for a SHELX model.
+        self._summary_widget.hide()
 
         # Apply initial defaults.
         self._render_widget.set_bond_width(3)
@@ -167,9 +180,22 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         # rows rather than part of the editor pane: a row of buttons is far
         # wider than 80 columns, and inside the splitter its minimum width
         # would stop the pane from ever being as narrow as a SHELX file.
+        # The editor pane is the text with the SHELXL log underneath; opened,
+        # the log takes a quarter of the pane's height.
+        self._editor_pane = QtWidgets.QWidget()
+        pane_layout = QtWidgets.QVBoxLayout(self._editor_pane)
+        pane_layout.setContentsMargins(0, 0, 0, 0)
+        pane_layout.setSpacing(0)
+        pane_layout.addWidget(self._editor, 3)
+        pane_layout.addWidget(self._log_panel, 1)
+        # Line the log up with the editor text, which sits inside the
+        # editor's own layout margins.
+        margins = self._editor.layout().contentsMargins()
+        self._log_panel.layout().setContentsMargins(margins.left(), 0, margins.right(), margins.bottom())
+
         self._splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self._splitter.addWidget(self._render_widget)
-        self._splitter.addWidget(self._editor)
+        self._splitter.addWidget(self._editor_pane)
         self._splitter.setCollapsible(0, False)
         self._splitter.setCollapsible(1, True)
         # Resizing the window grows the 3-D view; the editor keeps its width.
@@ -207,10 +233,19 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         # The splitter takes every bit of leftover height; the control rows
         # are only as tall as their widgets.
         vl.addWidget(self._splitter, 1)
-        vl.addLayout(control_bar)
-        vl.addLayout(control_bar2)
+        rows = QtWidgets.QVBoxLayout()
+        rows.addLayout(control_bar)
+        rows.addLayout(control_bar2)
         # Row 3: the SHELX editor's own actions.
-        vl.addWidget(self._editor.toolbar)
+        rows.addWidget(self._editor.toolbar)
+        # The refinement summary sits beside the rows, right under the
+        # editor pane, and as wide as it (see eventFilter).
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.addLayout(rows, 1)
+        bottom.addWidget(self._summary_widget, 0)
+        vl.addLayout(bottom)
+        self._summary_widget.layout().setContentsMargins(margins.left(), 0, margins.right(), 0)
+        self._editor_pane.installEventFilter(self)
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,6 +272,9 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         self._loader.load_file(filename)
         self.setWindowTitle(str(Path(filename).resolve()))
         self._bind_editor()
+        self._log_panel.set_list_file(self._list_file_path())
+        self._load_refinement_summary()
+        self._update_space_group()
         # Keep the controls in sync if a new model cleared density.
         self._sync_density_controls()
         self._update_edit_controls()
@@ -280,7 +318,16 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
             self._loader.reload()
         finally:
             self._reloading = False
+        # LATT/SYMM may just have been edited in the text.
+        self._update_space_group()
         self._update_edit_controls()
+
+    def _update_space_group(self) -> None:
+        session = self._loader.edit_session
+        if session is None:
+            self._summary_widget.set_space_group(None)
+            return
+        self._summary_widget.set_space_group(*space_group_of(session.shelxfile))
 
     # ------------------------------------------------------------------
     # Live text editing
@@ -326,15 +373,76 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
     def _on_editor_atom_selected(self, name: str) -> None:
         self._render_widget.select_atoms({name})
 
-    def _on_refine_clicked(self) -> None:
-        """A refinement replaced the coordinates, so the density map is stale.
+    def _on_refine_started(self) -> None:
+        # A pending live-apply would change the model under SHELXL's feet
+        # (the editor is read-only from now on, so nothing restarts it).
+        self._apply_timer.stop()
+        self._log_panel.start()
+        self._summary = RefinementSummary(cycles=self._requested_cycles())
+        self._summary_widget.show_summary(self._summary, 'running…')
+        self._update_edit_controls()
 
-        It was computed from the pre-refinement ``Fc``, and the model's
-        path has not changed, so nothing else would drop it.
+    def _on_refine_output(self, line: str) -> None:
+        self._log_panel.append(line)
+        if self._summary.feed(line):
+            self._summary_widget.show_summary(self._summary, 'running…')
+
+    def _on_refine_finished(self, success: bool, message: str) -> None:
+        """Collapse the log and, after a success, drop the stale density map.
+
+        The map was computed from the pre-refinement ``Fc``, and the
+        model's path has not changed, so nothing else would drop it.
         """
-        if self._render_widget.residual_density_map is not None:
+        self._log_panel.finish(success, message)
+        # Also after a failure: the list file is where SHELXL explains it.
+        self._log_panel.set_list_file(self._list_file_path())
+        if success:
+            # The refined model states the cycles that really ran (refine()
+            # may have overridden L.S.), and the .lst adds what only it
+            # holds, such as the WGHT suggestion.  A failed run may have left
+            # an older .lst behind, so not then.
+            self._summary.cycles = self._requested_cycles()
+            lst = self._list_file_path()
+            if lst is not None:
+                self._summary.update_from_list_file(lst)
+            self._summary_widget.show_summary(self._summary, 'finished')
+        else:
+            self._summary_widget.show_summary(self._summary, 'failed')
+        self._update_edit_controls()
+        if success and self._render_widget.residual_density_map is not None:
             self.clear_residual_density()
             self._sync_density_controls()
+
+    def _requested_cycles(self) -> int | None:
+        """The model's ``L.S.``/``CGLS`` cycle count, if it has one."""
+        session = self._loader.edit_session
+        cycles = None if session is None else session.shelxfile.cycles
+        return None if cycles is None else cycles.number
+
+    def _load_refinement_summary(self) -> None:
+        """Show what the loaded model's ``.lst`` says about its last refinement."""
+        lst = self._list_file_path()
+        self._summary_widget.setVisible(lst is not None)
+        summary = None if lst is None else RefinementSummary.from_list_file(
+            lst, cycles=self._requested_cycles())
+        if summary is None:
+            self._summary = RefinementSummary()
+            self._summary_widget.show_summary(None, 'no refinement yet')
+        else:
+            self._summary = summary
+            self._summary_widget.show_summary(summary, f'from {lst.name}')
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        # Keep the refinement summary exactly as wide as the editor pane
+        # above it, however the splitter or the window is resized.
+        if watched is self._editor_pane and event.type() == QtCore.QEvent.Type.Resize:
+            self._summary_widget.set_target_width(self._editor_pane.width())
+        return super().eventFilter(watched, event)
+
+    def _list_file_path(self) -> Path | None:
+        """SHELXL's ``<stem>.lst`` next to the loaded model, or ``None`` for CIF/XYZ."""
+        session = self._loader.edit_session
+        return None if session is None else Path(session.path).with_suffix('.lst')
 
     # ------------------------------------------------------------------
     # Model editing
@@ -382,7 +490,8 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
 
     def _step_history(self, *, redo: bool) -> str | None:
         session = self._loader.edit_session
-        if session is None or self._render_widget.drag_in_progress:
+        if (session is None or self._render_widget.drag_in_progress
+                or self._editor.is_refining):
             return None
         self._apply_timer.stop()
         self._reloaded_for_edit = False
@@ -398,6 +507,17 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
         if session is None:
             return  # not an editable format: the drag stays visual only
         from fastmolwidget.atoms import HYDROGEN_ELEMENTS
+
+        if self._editor.is_refining:
+            # The refined result replaces the model SHELXL was started on,
+            # so anything committed now would be lost (or block the result).
+            self.last_commit_report = None
+            QtWidgets.QMessageBox.warning(
+                self, 'Cannot change the model',
+                'SHELXL is refining the model. Wait until it has finished.'
+                '\n\nThe drag was discarded.')
+            self._reload_display()
+            return
 
         # A pending text edit has to reach the model before the drag does,
         # or the drag is committed against a model the user has already
@@ -431,15 +551,17 @@ class MoleculeViewer3DWidget(DensityControlsMixin, QtWidgets.QWidget):
 
     def _update_edit_controls(self) -> None:
         session = self._loader.edit_session
-        can_undo = session is not None and session.can_undo
-        can_redo = session is not None and session.can_redo
+        # A running refinement replaces the model when it is done.
+        refining = self._editor.is_refining
+        can_undo = session is not None and session.can_undo and not refining
+        can_redo = session is not None and session.can_redo and not refining
         self._undo_button.setEnabled(can_undo)
         self._redo_button.setEnabled(can_redo)
         self._undo_button.setToolTip(
             f'Undo {session.undo_label} (Ctrl+Z)' if can_undo else 'Nothing to undo')
         self._redo_button.setToolTip(
             f'Redo {session.redo_label} (Ctrl+Y)' if can_redo else 'Nothing to redo')
-        self._save_model_button.setEnabled(session is not None)
+        self._save_model_button.setEnabled(session is not None and not refining)
         self._save_model_button.setToolTip(
             'Write the edited model as a SHELX .ins file' if session is not None
             else 'Only SHELX .res/.ins models can be edited and saved')
